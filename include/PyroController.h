@@ -7,7 +7,8 @@ public:
   enum class ContinuityState : uint8_t {
     Open,
     Connected,
-    Uncertain
+    Uncertain,
+    BatteryNotConnected
   };
 
   struct ContinuityReading {
@@ -38,8 +39,8 @@ private:
 
   static constexpr unsigned int ADC_SETTLE_US = 250;
   static constexpr uint8_t ADC_SAMPLE_COUNT = 16;
-  static constexpr uint16_t CONTINUITY_OPEN_MAX_RAW = 300;
-  static constexpr uint16_t CONTINUITY_CONNECTED_MIN_RAW = 3000;
+  static constexpr uint16_t CONTINUITY_BATTERY_NOT_CONNECTED_MAX_RAW = 1000;
+  static constexpr uint16_t CONTINUITY_CONNECTED_MIN_RAW = 2500;
 
   bool softwareEnabled = false;
   uint8_t currentChannel = NO_CHANNEL;

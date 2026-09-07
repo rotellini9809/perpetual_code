@@ -54,6 +54,9 @@ constexpr uint8_t MISO_SENSOR = 12;
 constexpr uint8_t CS_IMU      = 27;  // GP27 / ADC1
 constexpr uint8_t CS_BARO     = 26;  // GP26 / ADC0
 
+constexpr uint8_t CS_LSM6DSV32X = CS_IMU;
+constexpr uint8_t CS_BMP581     = CS_BARO;
+
 // Compatibility with recovery_system_avionics sensor names.
 constexpr uint8_t CS_LSM6    = CS_IMU;
 constexpr uint8_t CS_BMP     = CS_BARO;
@@ -74,8 +77,10 @@ constexpr uint8_t SCL_TELEMETRY = RX_TELEMETRY;
 constexpr uint8_t RGB_LED = 16;
 
 // ===================== Servo PWM outputs =====================
-constexpr uint8_t SERVO_PWM_1 = 21;
-constexpr uint8_t SERVO_PWM_2 = 20;
+// TEMP TEST ONLY: route servo channel 1 to GP18 / TX_TELEMETRY. Hardware servo PWM1 is GP21.
+constexpr uint8_t SERVO_PWM_1 = TX_TELEMETRY;
+// TEMP TEST ONLY: route servo channel 2 to GP19 / RX_TELEMETRY. Hardware servo PWM2 is GP20.
+constexpr uint8_t SERVO_PWM_2 = RX_TELEMETRY;
 constexpr uint8_t SERVO_PWM_3 = 23;
 constexpr uint8_t SERVO_PWM_4 = 22;
 

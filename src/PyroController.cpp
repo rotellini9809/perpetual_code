@@ -149,13 +149,13 @@ void PyroController::selectContinuityChannel(uint8_t channel) {
 }
 
 PyroController::ContinuityState PyroController::classifyContinuity(uint16_t raw) const {
-  if (raw <= CONTINUITY_OPEN_MAX_RAW) {
-    return ContinuityState::Open;
+  if (raw < CONTINUITY_BATTERY_NOT_CONNECTED_MAX_RAW) {
+    return ContinuityState::BatteryNotConnected;
   }
 
   if (raw >= CONTINUITY_CONNECTED_MIN_RAW) {
     return ContinuityState::Connected;
   }
 
-  return ContinuityState::Uncertain;
+  return ContinuityState::Open;
 }
