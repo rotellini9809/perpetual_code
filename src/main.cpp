@@ -3,31 +3,27 @@
 #include <SPI.h>
 #include <board_pins.h>
 #include "PyroController.h"
+#include "Sensors.h"
 
 Adafruit_NeoPixel statusLed(1, RGB_LED, NEO_RGB + NEO_KHZ800);
 PyroController pyros;
+Sensors sensors;
 SPIClassRP2040 memorySpi(FLASH_SPI_PORT, MISO_FLASH, CS_FLASH1, SCK_FLASH, MOSI_FLASH);
 
 constexpr unsigned long CONTINUITY_LOG_INTERVAL_MS = 1000;
-// TEMP BENCH TEST ONLY: use only with no igniters or live pyro charges connected.
-constexpr bool PYRO_ENABLE_LED_TEST = true;
+constexpr unsigned long IMU_STREAM_INTERVAL_MS = 1000;
+constexpr unsigned long IMU_ERROR_LOG_INTERVAL_MS = 1000;
 constexpr uint32_t MEMORY_SPI_HZ = 1000000;
 constexpr uint32_t EXPECTED_W25Q64JV_JEDEC = 0xEF4017;
 constexpr uint8_t CMD_FLASH_RELEASE_POWER_DOWN = 0xAB;
 constexpr uint8_t CMD_FLASH_READ_JEDEC = 0x9F;
 unsigned long lastContinuityLogMs = 0;
+unsigned long lastImuStreamMs = 0;
+unsigned long lastImuErrorLogMs = 0;
 
 void setRgb(uint8_t r, uint8_t g, uint8_t b) {
   statusLed.setPixelColor(0, statusLed.Color(r, g, b));
   statusLed.show();
-}
-
-void setPyroEnableLedTest(bool enabled) {
-  digitalWrite(PYRO_1, LOW);
-  digitalWrite(PYRO_2, LOW);
-  digitalWrite(PYRO_3, LOW);
-  digitalWrite(PYRO_4, LOW);
-  digitalWrite(PYRO_ENABLE, enabled ? HIGH : LOW);
 }
 
 void printHexByte(uint8_t value) {
@@ -102,6 +98,57 @@ const char *continuityStateName(PyroController::ContinuityState state) {
   return "UNCERTAIN";
 }
 
+void handlePyroKeyboardInput() {
+  while (Serial.available() > 0) {
+    const char input = static_cast<char>(Serial.read());
+    if (input != 'f' && input != 'F') {
+      continue;
+    }
+
+    pyros.enablePyros();
+    if (pyros.firePyro(1)) {
+      Serial.println("Firing pyro channel 1.");
+    } else {
+      pyros.disablePyros();
+      Serial.println("Pyro channel 1 fire request rejected (busy or already fired).");
+    }
+  }
+}
+
+void streamImu(unsigned long now) {
+  if (!sensors.imuOk() || now - lastImuStreamMs < IMU_STREAM_INTERVAL_MS) {
+    return;
+  }
+  lastImuStreamMs = now;
+
+  // The combined read can fail for the barometer while the IMU is valid.
+  sensors.read();
+  const SensorSample &sample = sensors.sample();
+  if (!sample.imuValid) {
+    if (now - lastImuErrorLogMs >= IMU_ERROR_LOG_INTERVAL_MS) {
+      lastImuErrorLogMs = now;
+      Serial.print("IMU read failed, error=");
+      Serial.println(sensors.lastImuError());
+    }
+    return;
+  }
+
+  Serial.print("t_ms:");
+  Serial.print(now);
+  const char *accelLabels[] = {",ax_mps2:", ",ay_mps2:", ",az_mps2:"};
+  const char *gyroLabels[] = {",gx_radps:", ",gy_radps:", ",gz_radps:"};
+  for (uint8_t axis = 0; axis < 3; axis++) {
+    Serial.print(accelLabels[axis]);
+    Serial.print(sample.accelMps2[axis], 4);
+  }
+  for (uint8_t axis = 0; axis < 3; axis++) {
+    Serial.print(gyroLabels[axis]);
+    Serial.print(sample.gyroRadps[axis], 4);
+  }
+  Serial.print(",temp_C:");
+  Serial.println(sample.imuTempC, 2);
+}
+
 void setup() {
   Serial.begin(115200);
   delay(5000);
@@ -112,22 +159,28 @@ void setup() {
 
   pyros.begin();
   Serial.println("PyroController ready. Pyros are disabled.");
-  if (PYRO_ENABLE_LED_TEST) {
-    setPyroEnableLedTest(true);
-    Serial.println("TEMP TEST: PYRO_ENABLE held HIGH for LED test. Fire outputs held LOW.");
-  }
+  Serial.println("Press F in the Serial Monitor to fire pyro channel 1 once.");
 
   beginMemoryProbe();
-  setRgb(0, 80, 0);
+  sensors.begin();
+  if (sensors.imuOk()) {
+    Serial.println("IMU ready. Sampling and streaming once per second: acceleration in m/s^2, gyro in rad/s, temperature in C.");
+    setRgb(0, 80, 0);
+  } else {
+    Serial.print("IMU initialization failed. WHO_AM_I=0x");
+    printHexByte(sensors.imuWhoAmI());
+    Serial.print(" error=");
+    Serial.println(sensors.lastImuError());
+    setRgb(80, 0, 0);
+  }
 }
 
 void loop() {
   pyros.update();
-  if (PYRO_ENABLE_LED_TEST) {
-    setPyroEnableLedTest(true);
-  }
+  handlePyroKeyboardInput();
 
   const unsigned long now = millis();
+  streamImu(now);
   if (now - lastContinuityLogMs >= CONTINUITY_LOG_INTERVAL_MS) {
     lastContinuityLogMs = now;
 

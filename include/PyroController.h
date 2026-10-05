@@ -21,6 +21,7 @@ public:
   void disablePyros();
   bool firePyro(uint8_t channel);
   void update();
+  bool isFiring() const { return currentChannel != NO_CHANNEL; }
   ContinuityReading checkContinuity(uint8_t channel);
 
 private:

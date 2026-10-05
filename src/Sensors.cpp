@@ -106,7 +106,8 @@ void lsm6dsv32xDelayMs(uint32_t periodMs) {
 }
 }
 
-bool Sensors::begin() {
+bool Sensors::begin(Print *debugOutput) {
+  debug = debugOutput;
   initChipSelects();
   sensorSpi.begin(false);
   delay(5);
@@ -141,6 +142,7 @@ bool Sensors::beginBaro() {
   (void)probeBaroSpiSettings();
 
   baroError = bmp5_init(&bmpDev);
+  traceStep("BARO bmp5_init (reset / NVM / identity)", baroError);
   if (baroError != BMP5_OK) {
     baroId = bmpDev.chip_id;
     return false;
@@ -149,11 +151,13 @@ bool Sensors::beginBaro() {
   baroId = bmpDev.chip_id;
 
   baroError = bmp5_set_power_mode(BMP5_POWERMODE_STANDBY, &bmpDev);
+  traceStep("BARO standby", baroError);
   if (baroError != BMP5_OK) {
     return false;
   }
 
   baroError = bmp5_get_osr_odr_press_config(&bmpConfig, &bmpDev);
+  traceStep("BARO read measurement configuration", baroError);
   if (baroError != BMP5_OK) {
     return false;
   }
@@ -164,11 +168,13 @@ bool Sensors::beginBaro() {
   bmpConfig.osr_p = BMP5_OVERSAMPLING_4X;
 
   baroError = bmp5_set_osr_odr_press_config(&bmpConfig, &bmpDev);
+  traceStep("BARO write measurement configuration", baroError);
   if (baroError != BMP5_OK) {
     return false;
   }
 
   baroError = bmp5_set_power_mode(BMP5_POWERMODE_NORMAL, &bmpDev);
+  traceStep("BARO normal mode", baroError);
   if (baroError != BMP5_OK) {
     return false;
   }
@@ -193,6 +199,7 @@ bool Sensors::beginImu() {
   }
 
   imuError = lsm6dsv32x_sw_reset(&imuCtx);
+  traceStep("IMU reset", imuError);
   if (imuError != 0) {
     return false;
   }
@@ -200,6 +207,7 @@ bool Sensors::beginImu() {
   delay(10);
 
   imuError = lsm6dsv32x_device_id_get(&imuCtx, &imuId);
+  traceProbe("IMU after reset", imuSpi, imuId);
   if (imuError != 0 || imuId != LSM6DSV32X_ID) {
     return false;
   }
@@ -212,6 +220,7 @@ bool Sensors::beginImu() {
   imuError += lsm6dsv32x_gy_full_scale_set(&imuCtx, LSM6DSV32X_2000dps);
   imuError += lsm6dsv32x_xl_data_rate_set(&imuCtx, LSM6DSV32X_ODR_AT_120Hz);
   imuError += lsm6dsv32x_gy_data_rate_set(&imuCtx, LSM6DSV32X_ODR_AT_120Hz);
+  traceStep("IMU measurement configuration (aggregate)", imuError);
 
   return imuError == 0;
 }
@@ -281,6 +290,10 @@ bool Sensors::probeImuSpiMode(uint8_t spiMode) {
   uint8_t whoAmI = 0;
   imuError = lsm6dsv32x_device_id_get(&imuCtx, &whoAmI);
   imuId = whoAmI;
+  traceProbe("IMU identity probe", imuSpi, whoAmI);
+  if (debug && imuError == 0 && whoAmI != LSM6DSV32X_ID) {
+    debug->println("  FAIL: identity mismatch, expected 0x70; transport error=0 does not confirm a response.");
+  }
   return imuError == 0 && whoAmI == LSM6DSV32X_ID;
 }
 
@@ -295,6 +308,7 @@ bool Sensors::probeBaroSpiSettings() {
       delay(1);
 
       baroRawId = readBaroChipIdRaw();
+      traceProbe("BARO identity probe", baroSpi, baroRawId);
       if (isValidBaroChipId(baroRawId)) {
         return true;
       }

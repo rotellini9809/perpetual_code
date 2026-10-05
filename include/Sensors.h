@@ -27,8 +27,9 @@ struct SensorSample {
 
 class Sensors {
 public:
-  bool begin();
+  bool begin(Print *debugOutput = nullptr);
   bool read();
+  void troubleshoot(Print &out);
 
   bool imuOk() const { return imuReady; }
   bool baroOk() const { return baroReady; }
@@ -45,6 +46,9 @@ public:
   const SensorSample &sample() const { return latest; }
 
 private:
+  void traceStep(const char *step, int32_t result);
+  void traceProbe(const char *name, const SensorSpiDevice &device, uint8_t id);
+  Print *debug = nullptr;
   bool beginImu();
   bool beginBaro();
   bool readImu();
