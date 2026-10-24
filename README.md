@@ -12,6 +12,12 @@ Recorded Flights and Console. During development, launch it from source using
 
 ## Build and start
 
+Firmware dependencies are pinned in [platformio.ini](platformio.ini): exact Git commits
+for the RP2350 platform and Bosch/ST drivers, and NeoPixel 1.15.5. The pinned platform
+also selects a fixed Arduino-Pico framework commit and versioned toolchain archives.
+Desktop dependencies are pinned in [perpetual_app/requirements.txt](perpetual_app/requirements.txt).
+Update these references explicitly when upgrading dependencies.
+
 ```powershell
 pio run
 python tools/run_tests.py
