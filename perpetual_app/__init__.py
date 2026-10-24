@@ -1,0 +1,1 @@
+"""Perpetual desktop application."""

@@ -1,0 +1,26 @@
+PERPETUAL · FLIGHT CONSOLE · PROTOTIPO 01
+
+Estrarre tutta la cartella e avviare Perpetual.exe.
+La cartella _internal deve rimanere accanto all'eseguibile.
+Python non serve sul PC di destinazione.
+
+Selezionare la porta della scheda USB o quella Bluetooth SPP in uscita.
+Chiudere Serial Monitor o altre applicazioni che occupano la stessa porta.
+La connessione è verificata dalle risposte della scheda, non dalla dashboard Bluetooth di Windows.
+
+Dashboard: stato e motivi di mancata readiness.
+Configurazione: canali e regole, bozza locale, Valida / Applica / Scarta.
+Test e simulazione: simulazione onboard virtuale di 25 secondi, registrazione opzionale.
+Voli: lettura elenco, download CSV + JSON e grafico locale della quota.
+Console: comandi manuali e risposte.
+
+Le funzioni non disponibili sulla scheda sono disabilitate. Preparazione/movimento servo,
+test fisici e simulazione con uscite fisiche non sono implementati in questo prototipo.
+I dati mostrati dipendono dalle risposte reali del firmware MAIN.
+
+La GUI non salva automaticamente la configurazione. Applica è un salvataggio esplicito.
+I CSV esistenti non vengono sovrascritti. Un download interrotto può lasciare un CSV parziale.
+La disconnessione termina i replay alimentati dal PC; la simulazione autonoma continua.
+Chiudendo l'app, i cambiamenti locali non applicati vanno persi.
+
+Il pacchetto include i sorgenti dell'app in source e le informazioni sulle dipendenze in notices.

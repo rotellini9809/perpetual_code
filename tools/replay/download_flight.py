@@ -1,0 +1,213 @@
+"""Download a retained flight as CSV and configuration/output-start metadata JSON."""
+import argparse
+from concurrent.futures import CancelledError
+import csv
+import json
+import math
+from pathlib import Path
+import struct
+import sys
+import uuid
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import device_client as transport
+FIELDS = ['t_ms', 'accelX', 'accelY', 'accelZ', 'gyroX', 'gyroY', 'gyroZ', 'pressure',
+          'temp', 'z_est', 'vz_est', 'roll', 'pitch', 'yaw', 'az_est', 'state', 'battery_v']
+STATUS = {1: 'recording', 2: 'completed', 3: 'interrupted', 4: 'stopped_full', 5: 'invalidated', 6: 'CORRUPT'}
+
+
+def configuration(payload):
+    offset = 0
+
+    def read(fmt):
+        nonlocal offset
+        size = struct.calcsize('<' + fmt)
+        if offset + size > len(payload):
+            raise ValueError('Truncated configuration snapshot')
+        values = struct.unpack_from('<' + fmt, payload, offset)
+        offset += size
+        return values[0] if len(values) == 1 else values
+
+    count = read('B')
+    if not 1 <= count <= 8:
+        raise ValueError('Invalid rule count')
+    result = {'pyros': [{'channel': i+1, 'pulse_ms': read('I')} for i in range(4)], 'servos': [], 'rules': []}
+    for i in range(4):
+        calibrated, initial, final = read('BHH')
+        result['servos'].append(dict(channel=i+1, calibrated=bool(calibrated), initial_us=initial,
+                                     final_us=final))
+    for _ in range(count):
+        rule = {'id': read('I'), 'name': read('48s').split(b'\0', 1)[0].decode('utf-8', errors='replace'),
+                'delay_ms': read('I')}
+        conditions, outputs = read('BB')
+        if not 1 <= conditions <= 8 or not 1 <= outputs <= 8:
+            raise ValueError('Invalid rule capacities')
+        rule['conditions'] = []
+        for _ in range(conditions):
+            kind, comparison, phases, value, upper, elapsed, reference = read('BBBffII')
+            rule['conditions'].append(dict(kind=kind, comparison=comparison, phase_mask=phases,
+                                           value=value if math.isfinite(value) else None,
+                                           upper=upper if math.isfinite(upper) else None,
+                                           elapsed_ms=elapsed, reference=reference))
+        rule['outputs'] = []
+        for _ in range(outputs):
+            kind, channel, delay = read('BBI')
+            rule['outputs'].append(dict(kind='pyro' if kind == 0 else 'servo', channel=channel, delay_ms=delay))
+        result['rules'].append(rule)
+    if offset != len(payload):
+        raise ValueError('Extra bytes in configuration snapshot')
+    return result
+
+
+def sequence_text(sequence):
+    text = str(sequence)
+    if not text.isascii() or not text.isdigit() or not 0 < int(text) <= 0xFFFFFFFFFFFFFFFF:
+        raise ValueError('Sequence must be a positive uint64')
+    return str(int(text))
+
+
+def download(client, sequence, destination, *, progress=None, cancelled=None):
+    """Export CSV/JSON; cancel between replies and remove only this export's partial files."""
+    owned=[]
+    try: return _download(client,sequence,destination,progress,cancelled,owned)
+    except CancelledError:
+        for path in owned: path.unlink(missing_ok=True)
+        raise
+
+
+def _download(client,sequence,destination,progress,cancelled,owned):
+    def checkpoint():
+        if cancelled and cancelled(): raise CancelledError('Download annullato')
+    def request(command,**kwargs):
+        checkpoint()
+        response=client.request(command,**kwargs)
+        checkpoint() # Always consume an in-flight reply before stopping.
+        return response
+    checkpoint()
+    sequence = sequence_text(sequence)
+    destination = Path(destination)
+    metadata_path = destination.with_suffix('.json')
+    if destination == metadata_path or destination.exists() or metadata_path.exists():
+        raise FileExistsError('CSV/metadata destination already exists or overlaps')
+    info = request(f'flights info {sequence}', timeout=600)
+    if info.get('config_version') != 2:
+        raise ValueError('Unsupported configuration export format; upload current MAIN firmware')
+    response = request(f'flights summary {sequence}')
+    summary = response.get('summary', {})
+    if response.get('sequence') != sequence or summary.get('state') not in ('Missing', 'Incomplete', 'Valid', 'Corrupt', 'Unsupported'):
+        raise RuntimeError('Invalid recording summary')
+    if summary['state'] == 'Valid':
+        counts = [summary.get(field) for field in ('saved_samples', 'dropped_samples', 'queue_peak', 'queue_capacity')]
+        if (summary.get('version') != 1 or any(type(value) is not int or not 0 <= value <= 0xFFFFFFFF for value in counts)
+                or summary['saved_samples'] != info['samples'] or summary['queue_peak'] > summary['queue_capacity']
+                or summary.get('reason') not in ('Completed', 'Stopped', 'Disconnected', 'StorageFull')):
+            raise RuntimeError('Invalid committed recording summary')
+    if info.get('sequence') != sequence or info.get('status') not in (2, 3, 4):
+        raise RuntimeError('Flight is not a closed retained selection')
+    if not 0 <= info['samples'] <= 0xFFFFFFFF or not 0 <= info['blocks'] <= 16384:
+        raise RuntimeError('Invalid recording dimensions')
+    if not 1 <= info['config_bytes'] <= 4096:
+        raise RuntimeError('Invalid snapshot size')
+    payload = bytearray()
+    while len(payload) < info['config_bytes']:
+        response = request(f'flights config {sequence} {len(payload)}')
+        chunk = bytes.fromhex(response['hex'])
+        if response.get('sequence') != sequence or response['offset'] != len(payload) or not 1 <= len(chunk) <= 128:
+            raise RuntimeError('Invalid configuration chunk')
+        payload.extend(chunk)
+        if len(payload) > info['config_bytes']:
+            raise RuntimeError('Oversized configuration snapshot')
+    snapshot = configuration(payload)
+    names = {rule['id']: rule['name'] for rule in snapshot['rules']}
+    starts = []
+    for rule, kind, channel, state, stamp in info['starts']:
+        if rule not in names or kind not in (0, 1) or not 1 <= channel <= 4 or state not in (0, 2, 3):
+            raise RuntimeError('Invalid output-start metadata')
+        if (state == 2 and (not isinstance(stamp, int) or not 0 <= stamp <= 0xFFFFFFFF)) or (state != 2 and stamp is not None):
+            raise RuntimeError('Invalid output-start timestamp')
+        starts.append(dict(rule_id=rule, rule_name=names[rule], kind='pyro' if kind == 0 else 'servo',
+                           channel=channel, state={0: 'empty', 2: 'recorded', 3: 'invalid'}[state], t_ms=stamp))
+    count, previous = 0, None
+    if progress: progress(0,info['samples'])
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint()
+    with destination.open('x', newline='', encoding='utf-8') as target:
+        owned.append(destination)
+        writer = csv.writer(target)
+        writer.writerow(FIELDS)
+        for block in range(info['blocks']):
+            offset = 0
+            while True:
+                response = request(f'flights read {sequence} {block} {offset}')
+                rows = response['rows']
+                total = response['block_count']
+                if response.get('sequence') != sequence or response['block'] != block or response['offset'] != offset or response['first'] != count:
+                    raise RuntimeError('Unexpected sample chunk identity/order')
+                if not 1 <= total <= 11 or not 1 <= len(rows) <= 2 or offset+len(rows) > total:
+                    raise RuntimeError('Invalid sample chunk dimensions')
+                for row in rows:
+                    if len(row) != len(FIELDS) or not isinstance(row[0], int) or not 0 <= row[0] <= 0xFFFFFFFF or row[15] not in range(5):
+                        raise RuntimeError('Invalid stored sample')
+                    if previous is not None and row[0] <= previous:
+                        raise RuntimeError('Stored timestamps are not increasing')
+                    previous = row[0]
+                    writer.writerow(['nan' if value is None else value for value in row])
+                    count += 1
+                offset += len(rows)
+                if progress: progress(count,info['samples'])
+                if offset == total:
+                    break
+    if count != info['samples']:
+        raise RuntimeError('Stored sample count mismatch; partial CSV retained')
+    metadata = dict(sequence=sequence, status=STATUS[info['status']], sample_count=count,
+                    sensor_mode=info['sensor_mode'], output_mode=info['output_mode'], frame=info['frame'],
+                    configuration=snapshot, configuration_version=2, configuration_hex=payload.hex(), output_starts=starts,
+                    recording_summary=summary)
+    checkpoint()
+    with metadata_path.open('x', encoding='utf-8') as target:
+        owned.append(metadata_path)
+        json.dump(metadata, target, ensure_ascii=False, allow_nan=False, indent=2)
+        target.write('\n')
+    checkpoint()
+    print(f'Flight {sequence}: {count} stored samples -> {destination}')
+    print(f'Configuration/output starts: {metadata_path}')
+    return metadata
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--port', required=True)
+    selection = parser.add_mutually_exclusive_group(required=True)
+    selection.add_argument('--list', action='store_true')
+    selection.add_argument('--sequence', type=sequence_text)
+    selection.add_argument('--delete', type=sequence_text, help='Explicitly release this flight for reuse; its data will no longer be downloadable')
+    parser.add_argument('--output', type=Path)
+    args = parser.parse_args()
+    with transport.DeviceConnection(args.port) as client:
+        recovered = client.request('flights recover', timeout=600)
+        if recovered.get('corrupt_flights', 0):
+            print(f'Warning: {recovered["corrupt_flights"]} corrupt flight(s) retained; their space remains reserved.', flush=True)
+        if args.list:
+            for index in range(48):
+                entry = client.request(f'flights list {index}')
+                if not entry.get('available'):
+                    break
+                print(f'{index}: sequence {entry["sequence"]}, {STATUS[entry["status"]]}, '
+                      f'{entry["committed_bytes"]} committed bytes')
+        elif args.delete:
+            response = client.request(f'flights delete {args.delete}', timeout=600)
+            if response.get('sequence') != args.delete or response.get('deleted') is not True:
+                raise RuntimeError('Deletion not acknowledged')
+            print(f'Flight {args.delete} deleted; its space can be reused.')
+        else:
+            destination = args.output or ROOT / '.pio' / f'flight_{args.sequence}_{uuid.uuid4().hex}.csv'
+            download(client, args.sequence, destination)
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (Exception, KeyboardInterrupt) as error:
+        print(f'Download failed: {error}', file=sys.stderr)
+        sys.exit(1)

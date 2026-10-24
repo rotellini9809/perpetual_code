@@ -1,0 +1,822 @@
+#include <cstdio>
+#include "communication/CommandService.h"
+#include <cassert>
+#include <string>
+#include <vector>
+#include "../fixtures/CommandFixture.h"
+#include "configuration/ConfigurationCommands.h"
+#include <cstring>
+#include <iostream>
+#include "communication/CommandRouter.h"
+#include "communication/CommandEndpoint.h"
+#include "simulation/EstimateReplayCommands.h"
+#include "../fixtures/ReplayFixture.h"
+#include "simulation/SensorHilCommands.h"
+#include <cmath>
+#include <limits>
+#include "hardware/StatusLed.h"
+
+struct FakePowerHardware : PowerHardware {
+  unsigned sleeps=0, wakes=0;
+  const char *sleepError=nullptr, *wakeError=nullptr;
+  const char *suspend() override { ++sleeps; return sleepError; }
+  const char *resume() override { ++wakes; return wakeError; }
+};
+
+// Each namespace isolates one component scenario and its fault model.
+namespace test_usb_command_service {
+std::vector<std::string> send(CommandService &service, const std::string &bytes, uint16_t batteryMv=UINT16_MAX) {
+  CommandService::Status status;
+  status.uptimeMs = 1234; status.flashJedec = 0xEF4018; status.flashIdentified = true;
+  status.batteryMv=batteryMv;
+  std::vector<std::string> replies;
+  char reply[CommandService::MaxReply];
+  for (char byte : bytes)
+    if (service.feed(byte, status, reply, sizeof(reply))) replies.emplace_back(reply);
+  return replies;
+}
+void run() {
+  CommandService service;
+  assert(send(service, "pi").empty());
+  assert(send(service, "ng\n").at(0) == "PONG\n");
+  auto replies = send(service, "\n \r\n ping\r\ninfo\nstatus\nhelp\n");
+  assert(replies.size() == 4 && replies[0] == "PONG\n");
+  assert(replies[2].find("Readiness: use preflight") != std::string::npos);
+  assert(replies[2].find("EF4018") != std::string::npos);
+  replies = send(service, "@42 status\r\n@0 ping\n@4294967295 info\n");
+  assert(replies.size() == 3);
+  assert(replies[0].find("\"id\":42") != std::string::npos);
+  assert(replies[0].find("\"phase\":null") != std::string::npos);
+  assert(replies[0].find("\"battery_v\":null") != std::string::npos);
+  assert(send(service,"@43 status\n",8240).at(0).find("\"battery_v\":8.240")!=std::string::npos);
+  assert(replies[1].find("\"id\":0") != std::string::npos);
+  assert(replies[2].find("\"id\":4294967295") != std::string::npos);
+  for (const auto &text : replies) {
+    assert(text.front() == '{' && text.back() == '\n');
+    assert(text.find('\n') == text.size() - 1);
+  }
+  for (const char *request : {"@4294967296 ping\n", "@-1 ping\n", "@ ping\n", "@1ping\n"})
+    assert(send(service, request).at(0).find("INVALID_ARGUMENT") != std::string::npos);
+  assert(send(service, "@5 arm\n").at(0).find("UNKNOWN_COMMAND") != std::string::npos);
+  assert(send(service, "ping extra\n").at(0).find("INVALID_ARGUMENT") != std::string::npos);
+  assert(send(service, "@5 ping extra\n").at(0).find("\"type\":\"error\"") != std::string::npos);
+  assert(send(service, std::string("ping\0suffix\n", 12)).at(0).find("INVALID_ARGUMENT") != std::string::npos);
+  assert(send(service, "pi\rng\n").at(0).find("INVALID_ARGUMENT") != std::string::npos);
+  replies = send(service, std::string(129, 'x') + "ping\nstatus\n");
+  assert(replies.size() == 2 && replies[0].find("LINE_TOO_LONG") != std::string::npos);
+  assert(replies[1].find("Disarmed") == 0);
+  replies = send(service, "@8 " + std::string(130, 'x') + "\nping\n");
+  assert(replies[0].find("\"id\":8") != std::string::npos);
+  assert(replies[0].find("LINE_TOO_LONG") != std::string::npos && replies[1] == "PONG\n");
+  // Exactly MaxLine bytes are accepted; the next byte crosses the boundary.
+  replies = send(service, "ping" + std::string(124, ' ') + "\n");
+  assert(replies.at(0) == "PONG\n");
+  send(service, "sta"); service.reset();
+  assert(send(service, "ping\n").at(0) == "PONG\n");
+  assert(send(service, "ping\\n").empty()); // Literal backslash-n isn't LF.
+  service.reset();
+  // Read-only IDs correlate requests; repeating status is safe and reevaluates it.
+  assert(send(service, "@2 ping\n@2 ping\n").size() == 2);
+  {
+    CommandService::Status status;
+    status.baroReady = true; status.baroId = 0x50;
+    status.baroSampleValid = true; status.pressurePa = 101325; status.temperatureC = 20;
+    char output[CommandService::MaxReply];
+    std::string result;
+    for (char c : std::string("@42 sensors\n"))
+      if (service.feed(c, status, output, sizeof(output))) result = output;
+    assert(result.find("\"imu_ready\":false") != std::string::npos);
+    assert(result.find("\"baro_ready\":true") != std::string::npos);
+    assert(result.find("\"pressure_pa\":101325.000") != std::string::npos);
+    assert(result.find("\"imu_sample_valid\":false") != std::string::npos && result.find("\"accel_mps2\":null") != std::string::npos);
+    status.imuReady = status.imuSampleValid = true; status.imuSampleAgeMs = 7; status.uptimeMs = 12345;
+    status.accelMps2[0] = 1.25f; status.accelMps2[1] = -2; status.accelMps2[2] = 9.8f;
+    status.gyroRadps[0] = .1f; status.gyroRadps[1] = .2f; status.gyroRadps[2] = .3f;
+    for (char c : std::string("@45 sensors\n"))
+      if (service.feed(c, status, output, sizeof(output))) result = output;
+    assert(result.find("\"accel_mps2\":[1.25,-2,9.8]") != std::string::npos);
+    assert(result.find("\"gyro_radps\":[0.1,0.2,0.3]") != std::string::npos && result.find("\"imu_sample_age_ms\":7") != std::string::npos);
+    assert(result.find("\"uptime_ms\":12345") != std::string::npos);
+    status.imuSampleValid = false; // Stale samples must not expose old vectors.
+    for (char c : std::string("@46 sensors\n"))
+      if (service.feed(c, status, output, sizeof(output))) result = output;
+    assert(result.find("\"accel_mps2\":null") != std::string::npos && result.find("\"gyro_radps\":null") != std::string::npos);
+    status.imuSampleValid = true; status.gyroRadps[1] = std::numeric_limits<float>::quiet_NaN();
+    for (char c : std::string("@47 sensors\n"))
+      if (service.feed(c, status, output, sizeof(output))) result = output;
+    assert(result.find("\"imu_sample_valid\":false") != std::string::npos && result.find("\"accel_mps2\":null") != std::string::npos);
+    assert(result.size() < CommandService::MaxReply && result.back() == '\n');
+    status.imuReady = status.imuSampleValid = false;
+    for (char c : std::string("@43 status\n"))
+      if (service.feed(c, status, output, sizeof(output))) result = output;
+    assert(result.find("\"imu_ready\":false") != std::string::npos && result.find("\"baro_ready\":true") != std::string::npos);
+    assert(result.find("\"reasons\"") == std::string::npos && result.back() == '\n'); // Readiness belongs to preflight.
+    status.baroSampleValid = false; status.baroSampleAgeMs = 5000;
+    for (char c : std::string("@44 sensors\n"))
+      if (service.feed(c, status, output, sizeof(output))) result = output;
+    assert(result.find("\"pressure_pa\":null") != std::string::npos && result.find("\"temperature_c\":null") != std::string::npos);
+    assert(send(service, "sensors extra\n").at(0).find("INVALID_ARGUMENT") != std::string::npos);
+    status.armingState = "armed"; status.flightMode = "simulation"; status.phase = 1;
+    status.outputsActive = true; status.outputMode = "PHYSICAL";
+    status.gyroTarget = 500; status.uptimeMs = UINT32_MAX; status.configError = "UnsupportedVersion";
+    for (char c : std::string("@4294967295 status\n"))
+      if (service.feed(c, status, output, sizeof(output))) result = output;
+    assert(result.find("\"mode\":\"armed\"") != std::string::npos && result.find("\"phase\":1") != std::string::npos);
+    assert(result.find("\"flight_mode\":\"simulation\"") != std::string::npos);
+    assert(result.find("\"gyro_calibration_skipped\":true") != std::string::npos);
+    assert(result.find("\"outputs_active\":true") != std::string::npos && result.find("\"output_mode\":\"PHYSICAL\"") != std::string::npos);
+    assert(result.find("\"uptime_ms\":4294967295}") != std::string::npos && result.size() < CommandService::MaxReply);
+  }
+  std::puts("USB command service tests passed.");
+}
+} // namespace test_usb_command_service
+
+namespace test_configuration_commands {
+using command_test::send;
+using namespace storage;
+class MemoryFlash : public FlashDevice {
+public:
+  std::vector<uint8_t> bytes = std::vector<uint8_t>(0x5000, 255);
+  unsigned mutations = 0;
+  bool failProgram = false;
+  bool read(uint32_t a, void *p, std::size_t n) override {
+    if (a > bytes.size() || n > bytes.size() - a) return false;
+    memcpy(p, bytes.data() + a, n); return true;
+  }
+  bool program(uint32_t a, const void *p, std::size_t n) override {
+    if (failProgram) return false;
+    assert(a >= 0x1000 && a + n <= 0x5000); ++mutations;
+    const auto *source = static_cast<const uint8_t *>(p);
+    for (std::size_t i = 0; i < n; ++i) { assert((bytes[a + i] & source[i]) == source[i]); bytes[a + i] &= source[i]; }
+    return true;
+  }
+  bool eraseSector(uint32_t a) override {
+    assert(a >= 0x1000 && a + 4096 <= 0x5000); ++mutations; memset(bytes.data() + a, 255, 4096); return true;
+  }
+};
+const recovery::ValidationLimits limits{1000, 2000, 1000, 3600000};
+
+void contains(const std::string &text, const char *part) {
+  if (text.find(part) == std::string::npos) { std::cerr << text << "Missing: " << part << '\n'; assert(false); }
+}
+void run() {
+  MemoryFlash flash; ConfigurationStore store(flash); ConfigurationService settings(store, limits); ConfigurationCommands config(settings);
+  CommandService usb; usb.setExtension(&config); config.boot(true);
+  assert(!config.configValid() && flash.mutations == 0);
+  contains(send(usb, "config show"), "\"available\":false");
+  contains(send(usb, "capabilities"), "\"max_rules\":8");
+  contains(send(usb, "pyro set 1 100"), "NO_DRAFT");
+  contains(send(usb, "@1 config begin"), "\"ok\":true");
+  contains(send(usb, "@1 config begin"), "\"ok\":true");
+  contains(send(usb, "@1 config discard"), "ID_CONFLICT");
+  contains(send(usb, "@0 config discard"), "STALE_REQUEST");
+  contains(send(usb, "config begin"), "DRAFT_ACTIVE");
+  contains(send(usb, "config validate"), "EmptyPlan");
+  contains(send(usb, "rule add 10 \"Main \\\"example\\\"\""), "\"ok\":true");
+  contains(send(usb, "rule show 10"), "Main \\\"example\\\"");
+  contains(send(usb, "rule add 10 Duplicate"), "DUPLICATE_RULE_ID");
+  contains(send(usb, "condition add 10 apogee"), "\"ok\":true");
+  contains(send(usb, "output assign 10 pyro 1"), "\"ok\":true");
+  contains(send(usb, "output assign 10 pyro 2 100"), "\"ok\":true");
+  contains(send(usb, "output show 10 1"), "\"delay_ms\":100");
+  contains(send(usb, "output unassign 10 pyro 2"), "\"ok\":true");
+  contains(send(usb, "output assign 10 pyro 2 -1"), "INVALID_ARGUMENT");
+  contains(send(usb, "output assign 10 pyro 2 3600001"), "INVALID_ARGUMENT");
+  contains(send(usb, "output assign 10 pyro 2 1 2"), "INVALID_ARGUMENT");
+  contains(send(usb, "output delay 10 pyro 1 100"), "INVALID_ARGUMENT");
+  contains(send(usb, "config validate"), "\"valid\":true");
+  contains(send(usb, "pyro show 1"), "\"pulse_ms\":1000");
+  contains(send(usb, "rule delay 10 250"), "\"ok\":true");
+  contains(send(usb, "rule show 10"), "\"delay_ms\":250");
+  contains(send(usb, "rule delay 10 0"), "\"ok\":true");
+  contains(send(usb, "pyro set 1 -1"), "INVALID_ARGUMENT");
+  contains(send(usb, "pyro set 1 100000"), "INVALID_ARGUMENT");
+  contains(send(usb, "pyro set 1 100"), "\"ok\":true");
+  contains(send(usb, "config validate"), "\"valid\":true"); assert(flash.mutations == 0);
+  contains(send(usb, "@2 config apply"), "\"persisted\":true"); assert(config.configValid());
+  const auto mutations = flash.mutations;
+  contains(send(usb, "@2 config apply"), "\"persisted\":true"); assert(flash.mutations == mutations);
+  contains(send(usb, "@3 config show"), "\"available\":true");
+  contains(send(usb, "@2 config apply"), "STALE_REQUEST"); assert(flash.mutations == mutations);
+  ConfigurationService rebootSettings(store, limits); ConfigurationCommands reboot(rebootSettings); reboot.boot(true); assert(reboot.configValid());
+  usb.reset(); usb.setExtension(&reboot);
+  contains(send(usb, "rule show 10"), "Main \\\"example\\\"");
+  contains(send(usb, "config begin"), "\"ok\":true");
+  contains(send(usb, "rule rename 10 Changed"), "\"ok\":true");
+  contains(send(usb, "config discard"), "\"ok\":true");
+  contains(send(usb, "rule show 10"), "Main \\\"example\\\"");
+  contains(send(usb, "config begin"), "\"ok\":true");
+  contains(send(usb, "rule add 20 Backup"), "\"ok\":true");
+  contains(send(usb, "condition add 20 since_rule_ms 10 250"), "\"ok\":true");
+  contains(send(usb, "output assign 20 pyro 1"), "OUTPUT_ALREADY_ASSIGNED");
+  contains(send(usb, "output assign 20 servo 1"), "\"ok\":true");
+  contains(send(usb, "servo set 1 1000 2000"), "\"hardware_moved\":false");
+  contains(send(usb, "servo set 1 1000 2000 500"), "INVALID_ARGUMENT");
+  contains(send(usb, "rule remove 10"), "RULE_REFERENCED");
+  contains(send(usb, "condition add 10 since_rule_ms 20 0"), "\"ok\":true");
+  contains(send(usb, "config validate"), "DependencyCycle");
+  contains(send(usb, "condition remove 10 1"), "\"ok\":true");
+  for (const char *condition : {"phase descent", "altitude < 100", "altitude_range -5 100", "speed >= 10", "speed_range 0 20", "since_launch_ms 100", "since_apogee_ms 100"}) {
+    contains(send(usb, std::string("condition replace 10 0 ") + condition), "\"ok\":true");
+    contains(send(usb, "config validate"), "\"valid\":true");
+  }
+  contains(send(usb, "condition replace 10 0 altitude < nan"), "INVALID_ARGUMENT");
+  contains(send(usb, "condition replace 10 0 altitude < inf"), "INVALID_ARGUMENT");
+  contains(send(usb, "condition replace 10 0 altitude_range 100 -1"), "\"ok\":true");
+  contains(send(usb, "config validate"), "InvalidCondition");
+  contains(send(usb, "condition replace 10 0 apogee"), "\"ok\":true");
+  reboot.setDisarmed(false);
+  contains(send(usb, "pyro set 1 200"), "ARMED");
+  contains(send(usb, "config show"), "\"ok\":true");
+  reboot.setDisarmed(true); reboot.disconnect(); usb.reset();
+  contains(send(usb, "config apply"), "NO_DRAFT");
+  contains(send(usb, "config begin"), "\"ok\":true");
+  flash.failProgram = true;
+  contains(send(usb, "config apply"), "STORAGE_ERROR"); assert(!reboot.configValid());
+  assert(!reboot.storageReady());
+  std::cout << "Configuration USB integration tests passed.\n";
+}
+} // namespace test_configuration_commands
+
+namespace test_estimate_replay {
+using command_test::send;
+using namespace replay_test;
+
+void has(const std::string &s, const char *part) {
+  if (s.find(part) == std::string::npos) { std::cerr << s << " missing " << part << '\n'; assert(false); }
+}
+void run() {
+  MemoryFlash flash; storage::ConfigurationStore store(flash);
+  assert(store.save(fixture(), limits, true));
+  ConfigurationService settings(store, limits); ConfigurationCommands config(settings);
+  flight::RunController run; config.boot(true);
+  EstimateReplayCommands replay(settings, run); simulation::HilSession hilSession(settings, run); SensorHilCommands hil(hilSession);
+  CommandRouter router(config, replay, hil, settings, run); CommandService usb; usb.setExtension(&router);
+
+  const auto before = flash.mutations;
+  has(send(usb, "replay sample 0 0 0 0"), "NOT_REPLAYING");
+  has(send(usb, "config begin"), "\"ok\":true");
+  has(send(usb, "replay begin"), "DRAFT_ACTIVE");
+  send(usb, "config discard");
+  has(send(usb, "replay begin"), "VIRTUAL");
+  has(send(usb, "config begin"), "BUSY");
+  has(send(usb, "config apply"), "BUSY");
+  has(send(usb, "config show"), "\"available\":true");
+  has(send(usb, "replay begin"), "BUSY");
+  has(send(usb, "replay sample 0 0 0 0"), "\"starts\":[]");
+  has(send(usb, "replay sample 1 1 10 20"), "\"triggered\":[]");
+  has(send(usb, "@1 replay sample 100 3 100 0"), "[10,\"pyro\",1,100]");
+  const auto duplicate = send(usb, "@1 replay sample 100 3 100 0"); has(duplicate, "[10,\"pyro\",1,100]");
+  has(send(usb, "replay status"), "\"samples\":3");
+  has(send(usb, "replay sample 100 3 100 0"), "INVALID_TIMESTAMP");
+  has(send(usb, "replay sample 99 3 100 0"), "INVALID_TIMESTAMP");
+  has(send(usb, "replay sample 101 6 100 0"), "INVALID_ARGUMENT");
+  has(send(usb, "replay sample 101 3 garbage 0"), "INVALID_ARGUMENT");
+  has(send(usb, "replay sample 101 3 1e999 0"), "INVALID_ARGUMENT");
+  has(send(usb, "replay sample -1 3 100 0"), "INVALID_ARGUMENT");
+  has(send(usb, "replay sample 4294967296 3 100 0"), "INVALID_ARGUMENT");
+  has(send(usb, "replay sample 350 4 nan nan"), "\"starts\":[]");
+  has(send(usb, "replay sample 400 4 20 -10"), "\"triggered\":[20]");
+  has(send(usb, "replay sample 450 4 20 -10"), "\"triggered\":[]");
+  has(send(usb, "replay sample 500 4 20 -10"), "[20,\"pyro\",2,500]");
+  has(send(usb, "replay sample 600 5 0 0"), "\"phase\":4");
+  has(send(usb, "replay stop"), "\"active\":false");
+  has(send(usb, "replay begin"), "\"active\":true");
+  has(send(usb, "replay sample 0 3 100 0"), "[10,\"pyro\",1,0]");
+  has(send(usb, "replay stop"), "\"cancelled_pending\":0");
+  send(usb, "replay begin"); router.disconnect(); usb.reset();
+  has(send(usb, "replay status"), "\"active\":false");
+  assert(flash.mutations == before); // Replay/config inspections never touch flash.
+  auto maximum = fixture(); maximum.ruleCount = 8;
+  for (unsigned i = 0; i < 4; ++i) {
+    maximum.pyros[i].pulseMs = 100; maximum.servos[i] = maximum.servos[0];
+  }
+  for (unsigned i = 0; i < 8; ++i) {
+    auto &r = maximum.rules[i]; r = {}; r.id = 0xFFFFFFFFu - i;
+    strcpy(r.name.data(), "All outputs"); r.conditionCount = r.assignmentCount = 1;
+    r.assignments[0].kind = i < 4 ? recovery::OutputKind::Pyro : recovery::OutputKind::Servo;
+    r.assignments[0].channel = uint8_t(i % 4 + 1);
+  }
+  assert(store.save(maximum, limits, true)); config.boot(true);
+  has(send(usb, "replay begin"), "\"active\":true");
+  const auto all = send(usb, "replay sample 4294967295 3 100 0");
+  has(all, "[4294967295,\"pyro\",1,4294967295]");
+  has(all, "[4294967288,\"servo\",4,4294967295]");
+  assert(all.size() < CommandService::MaxReply);
+  std::cout << "Estimate replay USB tests passed (no flash mutations).\n";
+}
+} // namespace test_estimate_replay
+
+namespace test_sensor_hil {
+using command_test::send;
+using namespace replay_test;
+
+void has(const std::string &value, const char *part) {
+  if (value.find(part) == std::string::npos) { std::cerr << value << " missing " << part << '\n'; assert(false); }
+}
+uint32_t fakeClock() { static uint32_t time = 0xFFFFFFF0u; time += 20; return time; }
+class FakeHardwareSource : public sensors::SensorSource {
+public:
+  sensors::Reading reading;
+  bool pending = true;
+  bool poll(sensors::Reading &out) override { if (!pending) return false; out = reading; pending = false; return true; }
+  sensors::FrameConvention convention() const override { return sensors::FrameConvention::SensorAxes; }
+};
+void sourceTests() {
+  FakeHardwareSource hardware;
+  hardware.reading.imuValid = true; hardware.reading.imuSequence = 1;
+  hardware.reading.accelMps2[0] = 9.80665f; hardware.reading.gyroRadps[1] = 0.1f;
+  hardware.reading.baroValid = true; hardware.reading.pressurePa = 101325;
+  navigation::SensorCalibration calibration;
+  calibration.configured = true; calibration.gyroBias[1] = 0.1f;
+  calibration.upAxis = navigation::UpAxis::NegativeZ;
+  sensors::HilSensorSource hil;
+  assert(hil.submit(hardware.reading) && !hil.submit(hardware.reading));
+  navigation::SensorPipeline normal, injected;
+  const navigation::SensorCalibration unset;
+  assert(!normal.begin(hardware, unset, 0, 200));
+  assert(normal.begin(hardware, calibration, 0, 200));
+  assert(injected.begin(hil, calibration, 0, 200));
+  assert(!normal.begin(hil, calibration, 0, 200)); // No source replacement while active.
+  navigation::NavigationOutput a, b;
+  assert(normal.poll(a) && injected.poll(b));
+  assert(a.valid && b.valid && a.altitude == b.altitude && a.verticalVelocity == b.verticalVelocity);
+  assert(std::fabs(a.verticalSpecificForce - 9.80665f) < 1e-4f);
+  assert(!normal.poll(a) && !injected.poll(b));
+  normal.end();
+  auto invalid = calibration; invalid.upAxis = static_cast<navigation::UpAxis>(255);
+  assert(!normal.begin(hardware, invalid, 0, 200));
+  sensors::HilSensorSource logged(sensors::FrameConvention::LoggedCalibratedBody);
+  assert(normal.begin(logged, unset, 0, 200));
+  auto body = hardware.reading; body.accelMps2[0] = 0; body.accelMps2[2] = 9.80665f; body.gyroRadps[1] = 0;
+  assert(logged.submit(body)); assert(normal.poll(b)); assert(b.valid);
+  assert(b.altitude == a.altitude); // Logged-body adapter avoids a second rotation/bias subtraction.
+  assert(b.verticalSpecificForce == a.verticalSpecificForce);
+  for (unsigned i = 0; i < 3; ++i) assert(b.eulerRadians[i] == a.eulerRadians[i]);
+}
+void mountingTests() {
+  using navigation::UpAxis;
+  // Inverse mappings: encode one BODY trajectory in each physical sensor mounting.
+  // Bias is always attached to sensor axes, regardless of mounting selection.
+  const int sensorAxes[6][3] = {{1,2,3}, {-1,2,-3}, {-2,1,3}, {2,-1,3}, {-3,2,1}, {3,2,-1}};
+  navigation::SensorCalibration defaults;
+  assert(defaults.upAxis == UpAxis::PositiveX);
+  for (unsigned mounting = 0; mounting < 6; ++mounting) {
+    FakeHardwareSource hardware;
+    sensors::HilSensorSource body(sensors::FrameConvention::LoggedCalibratedBody);
+    navigation::SensorCalibration calibration;
+    calibration.configured = true;
+    if (mounting) calibration.upAxis = static_cast<UpAxis>(mounting); // Omitted means +X.
+    calibration.accelBias[0] = 0.25f; calibration.accelBias[1] = -0.5f; calibration.accelBias[2] = 0.125f;
+    calibration.gyroBias[0] = -0.125f; calibration.gyroBias[1] = 0.25f; calibration.gyroBias[2] = 0.5f;
+    navigation::SensorPipeline rawPipeline, bodyPipeline;
+    assert(rawPipeline.begin(hardware, calibration, 0, 200));
+    assert(bodyPipeline.begin(body, defaults, 0, 200));
+    for (unsigned n = 0; n < 80; ++n) {
+      sensors::Reading expected;
+      expected.imuValid = expected.baroValid = true;
+      expected.timeUs = expected.baroTimeUs = n * 5000;
+      expected.imuSequence = expected.baroSequence = n + 1;
+      expected.pressurePa = 101325;
+      expected.accelMps2[0] = n < 20 ? 9.75f : n < 60 ? 35.0f : -0.25f;
+      expected.accelMps2[1] = 0.25f; expected.accelMps2[2] = -0.125f;
+      expected.gyroRadps[0] = 0.03125f; expected.gyroRadps[1] = -0.015625f; expected.gyroRadps[2] = 0.0078125f;
+      hardware.reading = expected; hardware.pending = true;
+      for (unsigned i = 0; i < 3; ++i) {
+        const int axis = sensorAxes[mounting][i];
+        const unsigned j = unsigned(axis < 0 ? -axis : axis) - 1;
+        const float sign = axis < 0 ? -1.0f : 1.0f;
+        hardware.reading.accelMps2[i] = sign * expected.accelMps2[j] + calibration.accelBias[i];
+        hardware.reading.gyroRadps[i] = sign * expected.gyroRadps[j] + calibration.gyroBias[i];
+      }
+      assert(body.submit(expected));
+      navigation::NavigationOutput a, b;
+      assert(rawPipeline.poll(a) && bodyPipeline.poll(b) && a.valid && b.valid);
+      assert(a.phase == b.phase && a.altitude == b.altitude && a.verticalVelocity == b.verticalVelocity);
+      assert(a.verticalSpecificForce == b.verticalSpecificForce && a.eulerRadians == b.eulerRadians);
+    }
+  }
+}
+void run() {
+  MemoryFlash flash; storage::ConfigurationStore store(flash); assert(store.save(fixture(), limits, true));
+  ConfigurationService settings(store, limits); ConfigurationCommands config(settings);
+  flight::RunController run; config.boot(true);
+  EstimateReplayCommands estimates(settings, run);
+  simulation::HilSession hilSession(settings, run, fakeClock);
+  SensorHilCommands hil(hilSession);
+  CommandRouter router(config, estimates, hil, settings, run);
+  CommandService usb; usb.setExtension(&router);
+
+  sourceTests(); mountingTests(); const auto before = flash.mutations;
+  has(send(usb, "hil sample 0 0 0 9.81 0 0 0 101325"), "NOT_REPLAYING");
+  send(usb, "config begin"); has(send(usb, "hil begin 0 200 logged_body"), "DRAFT_ACTIVE"); send(usb, "config discard");
+  has(send(usb, "hil begin 0 200 raw_axes"), "INVALID_ARGUMENT");
+  has(send(usb, "hil begin 0 200 logged_body"), "\"active\":true");
+  has(send(usb, "config begin"), "BUSY"); has(send(usb, "replay begin"), "BUSY");
+  has(send(usb, "config show"), "\"available\":true");
+  has(send(usb, "@1 hil sample 0 0 0 9.80665 0 0 0 101325"), "\"imu_valid\":true");
+  has(send(usb, "@1 hil sample 0 0 0 9.80665 0 0 0 101325"), "\"imu_valid\":true");
+  has(send(usb, "hil status"), "\"samples\":1");
+  has(send(usb, "hil sample 0 0 0 9.81 0 0 0 101325"), "INVALID_TIMESTAMP");
+  has(send(usb, "hil sample 5 nan 0 9.81 0 0 0 nan"), "\"imu_valid\":false");
+  has(send(usb, "hil sample 10 0 0 9.81 0 0 0 nan"), "\"imu_valid\":true");
+  has(send(usb, "hil sample 11 junk 0 0 0 0 0 101325"), "INVALID_ARGUMENT");
+  has(send(usb, "hil sample 11 1e999 0 0 0 0 0 101325"), "INVALID_ARGUMENT");
+  has(send(usb, "hil sample -1 0 0 0 0 0 0 101325"), "INVALID_ARGUMENT");
+  has(send(usb, "hil stop"), "\"max_compute_us\":20");
+  has(send(usb, "replay begin"), "\"active\":true");
+  has(send(usb, "hil begin 0 200 logged_body"), "BUSY"); send(usb, "replay stop");
+  send(usb, "hil begin 0 200 logged_body"); router.disconnect(); usb.reset();
+  has(send(usb, "hil status"), "\"active\":false"); assert(flash.mutations == before);
+  auto all = fixture(); all.ruleCount = 8;
+  for (unsigned i = 0; i < 4; ++i) { all.pyros[i].pulseMs = 100; all.servos[i] = all.servos[0]; }
+  for (unsigned i = 0; i < 8; ++i) {
+    auto &r = all.rules[i]; r = {}; r.id = 0xFFFFFFFFu - i; strcpy(r.name.data(), "All");
+    r.conditionCount = r.assignmentCount = 1; r.conditions[0].kind = recovery::ConditionKind::Phase;
+    r.conditions[0].phases = recovery::AirborneMask;
+    r.assignments[0].kind = i < 4 ? recovery::OutputKind::Pyro : recovery::OutputKind::Servo;
+    r.assignments[0].channel = uint8_t(i % 4 + 1);
+  }
+  assert(store.save(all, limits, true)); config.boot(true);
+  send(usb, "hil begin 0 200 logged_body");
+  const auto burst = send(usb, "hil sample 4294967295 35 0 0 0 0 0 nan");
+  has(burst, "[4294967295,\"pyro\",1,4294967295]");
+  has(burst, "[4294967288,\"servo\",4,4294967295]");
+  assert(burst.size() < CommandService::MaxReply);
+  std::cout << "Sensor source/HIL tests passed: common calibration path, locking, timing, freshness and no flash writes.\n";
+}
+} // namespace test_sensor_hil
+
+namespace test_recording_commands {
+using command_test::send;
+using namespace replay_test;
+uint32_t elapsedUs = 0;
+uint32_t clockUs() { return elapsedUs; }
+struct Device : storage::FlashDevice {
+  std::vector<uint8_t> bytes = std::vector<uint8_t>(storage::FlashLayout::Capacity, 255);
+  unsigned programs = 0, erases = 0;
+  bool failProgram = false;
+  bool read(uint32_t a, void *p, std::size_t n) override {
+    elapsedUs += 10;
+    if (a > bytes.size() || n > bytes.size()-a) return false;
+    memcpy(p, bytes.data()+a, n); return true;
+  }
+  bool program(uint32_t a, const void *p, std::size_t n) override {
+    elapsedUs += 100;
+    ++programs; if (failProgram || a > bytes.size() || n > bytes.size()-a) return false;
+    const auto *in = static_cast<const uint8_t *>(p);
+    for (std::size_t i = 0; i < n; ++i) { assert((bytes[a+i] & in[i]) == in[i]); bytes[a+i] &= in[i]; }
+    return true;
+  }
+  bool eraseSector(uint32_t a) override {
+    elapsedUs += 1000;
+    assert(a >= 0x1000 && a%4096 == 0 && a+4096 <= bytes.size()); ++erases;
+    memset(bytes.data()+a, 255, 4096); return true;
+  }
+};
+
+void has(const std::string &reply, const char *part) {
+  if (reply.find(part) == std::string::npos) { std::cerr << reply << " missing " << part << '\n'; assert(false); }
+}
+void run() {
+  Device flash; const timing::Clock clock = clockUs;
+  storage::ProfiledFlashDevice profiled(flash, clock);
+  storage::ConfigurationStore store(profiled); assert(store.save(fixture(), limits, true));
+  ConfigurationService config(store, limits); config.boot(true); ConfigurationCommands settings(config);
+  flight::RunController run; storage::FlightRecorder recorder(profiled);
+  storage::QueuedRecorder queued(recorder, clock);
+
+  storage::RecordingSink *sink = &recorder;
+  simulation::HilSession session(config, run, clock, sensors::FrameConvention::LoggedCalibratedBody, sink);
+  SensorHilCommands hil(session); EstimateReplayCommands estimates(config, run);
+  FlightCommands flights(recorder, config, run, &profiled, nullptr, clock); CommandRouter router(settings, estimates, hil, config, run, &flights);
+  CommandService usb; usb.setExtension(&router);
+
+  const auto before = flash.programs;
+  has(send(usb, "hil begin 0 200 logged_body record 4096"), "STORAGE_NOT_READY");
+  has(send(usb, "hil begin 0 200 logged_body"), "\"active\":true");
+  has(send(usb, "hil sample 0 0 0 9.80665 0 0 0 101325"), "\"imu_valid\":true");
+  send(usb, "hil stop"); assert(flash.programs == before); // Plain HIL remains write-free.
+  flash.bytes[0x5000+512] = 0; // Blank headers alone are not enough to authorize initialization.
+  has(send(usb, "flights init"), "NotBlank"); assert(flash.programs == before);
+  flash.bytes[0x5000+512] = 255;
+  has(send(usb, "flights init"), "\"ready\":true");
+  const auto initialized = flash.programs; send(usb, "flights init"); assert(flash.programs == initialized);
+  const auto timingWrites = flash.programs;
+  has(send(usb, "flights timing reset"), "\"reset\":true"); assert(flash.programs == timingWrites);
+  has(send(usb, "flights timing"), "\"program\":[0,0,0]");
+  has(send(usb, "hil begin 0 200 logged_body record 4096"), "\"recording_sequence\":\"1\"");
+  has(send(usb, "flights timing reset"), "BUSY");
+  has(send(usb, "flights timing"), "\"timing_valid\":true");
+  has(send(usb, "hil timing"), "\"nominal_period_us\":5000");
+  has(send(usb, "flights info 1"), "BUSY"); has(send(usb, "config begin"), "BUSY");
+  has(send(usb, "flights delete 1"), "BUSY");
+  for (unsigned i = 0; i < 45; ++i) {
+    const auto command = "hil sample " + std::to_string(i*5) + " 0 0 9.80665 0 0 0 101325 22.5";
+    has(send(usb, command), "\"ok\":true");
+  }
+  has(send(usb, "hil stop"), "\"saved_samples\":44");
+  assert(session.timing().prepareUs > 0 && session.timing().finishUs > 0);
+  assert(session.timing().step.count == 45 && session.timing().storage.count == 45 && session.timing().storage.maxUs > 400);
+  has(send(usb, "hil timing"), "\"timing_valid\":true");
+  has(send(usb, "flights timing"), "\"failures\":[0,0,0]");
+  has(send(usb, "hil status"), "\"dropped_samples\":1");
+  has(send(usb, "flights info 1"), "\"samples\":44");
+  has(send(usb, "flights info 1"), "\"status\":4");
+  has(send(usb, "flights read 1 0 0"), "22.5");
+  has(send(usb, "flights info 18446744073709551616"), "INVALID_ARGUMENT");
+  has(send(usb, "flights read 1 1000 0"), "Bounds");
+  has(send(usb, "flights list 1"), "\"available\":false");
+  has(send(usb, "hil begin 0 200 logged_body record 4096"), "\"recording_sequence\":\"2\"");
+  has(send(usb, "@500 hil sample 0 0 0 9.80665 0 0 0 101325"), "\"ok\":true");
+  has(send(usb, "@500 hil sample 0 0 0 9.80665 0 0 0 101325"), "\"ok\":true");
+  router.disconnect(); usb.reset();
+  has(send(usb, "flights info 2"), "\"samples\":1");
+  has(send(usb, "flights info 2"), "\"status\":2");
+  has(send(usb, "flights list 0"), "\"sequence\":\"2\"");
+  has(send(usb, "flights list 1"), "\"sequence\":\"1\"");
+  send(usb, "hil begin 0 200 logged_body record 4096"); flash.failProgram = true;
+  for (unsigned i = 0; i < 12; ++i) has(send(usb, "hil sample " + std::to_string(i*5) + " 0 0 9.80665 0 0 0 101325"), "\"imu_valid\":true");
+  has(send(usb, "hil status"), "\"recording_error\":\"Sample\"");
+  has(send(usb, "hil status"), "\"active\":true");
+  has(send(usb, "flights failure"), "\"component\":\"Sample\"");
+  has(send(usb, "flights failure"), "\"cause\":\"Io\"");
+  send(usb, "hil stop"); flash.failProgram = false;
+  has(send(usb, "flights recover"), "\"ready\":true");
+  has(send(usb, "flights info 3"), "\"status\":3");
+  config.setDisarmed(false);
+  has(send(usb, "flights info 1"), "ARMED");
+  has(send(usb, "flights init"), "ARMED");
+  const auto beforeRejectedDelete=flash.programs;
+  has(send(usb, "flights delete 1"), "ARMED"); assert(flash.programs==beforeRejectedDelete);
+  config.setDisarmed(true);
+  // Exercise maximum-width sample values, identities and all eight start slots.
+  recovery::Configuration wide; wide.ruleCount = 1;
+  auto &rule = wide.rules[0]; rule.id = UINT32_MAX; strcpy(rule.name.data(), "All eight outputs");
+  rule.conditionCount = 1; rule.assignmentCount = recovery::MaxAssignments;
+  for (unsigned i = 0; i < recovery::ChannelCount; ++i) {
+    wide.pyros[i].pulseMs = 100;
+    auto &servo = wide.servos[i]; servo.calibrated = true;
+    servo.initialUs = 1000; servo.finalUs = 2000;
+    rule.assignments[i].channel = uint8_t(i+1);
+    rule.assignments[i+4].kind = recovery::OutputKind::Servo; rule.assignments[i+4].channel = uint8_t(i+1);
+  }
+  assert(recorder.begin(wide, limits, 4096, storage::SensorMode::Simulation, storage::OutputMode::Virtual,
+                        sensors::FrameConvention::LoggedCalibratedBody));
+  for (const auto &a : rule.assignments) assert(recorder.recordStart(rule.id, a.kind, a.channel, UINT32_MAX));
+  storage::FlightSample sample; sample.phase = recovery::FlightPhase::Landed;
+  sample.values.fill(-std::numeric_limits<float>::max()); sample.timeMs = UINT32_MAX-1;
+  assert(recorder.append(sample)); ++sample.timeMs; assert(recorder.append(sample)); assert(recorder.finish(true));
+  const auto info = send(usb, "@4294967294 flights info 4");
+  has(info, "\"ok\":true"); has(info, "[4294967295,1,4,2,4294967295]");
+  const auto rows = send(usb, "@4294967295 flights read 4 0 0");
+  has(rows, "\"ok\":true"); has(rows, "],[4294967295,");
+  assert(info.size() < CommandService::MaxReply && rows.size() < CommandService::MaxReply);
+  // Keep the worker paused: stop/disconnect return immediately, and every flash
+  // mutation/new run remains gated until ownership is explicitly acknowledged.
+  queued.workerStarted();
+  simulation::HilSession asyncSession(config,run,clock,sensors::FrameConvention::LoggedCalibratedBody,&queued);
+  SensorHilCommands asyncHil(asyncSession);
+  simulation::SimulationSession asyncSim(config,run,clock,&queued); SimulationCommands simCommands(asyncSim);
+  flight::ArmingController physical(config,run,clock,&queued);
+  sensors::HilSensorSource missingHardware;
+  struct MissingChecks : flight::PhysicalChecks {
+    flight::PhysicalReadiness inspect() override { return {}; }
+  } missingChecks;
+  ArmingCommands arming(physical,missingHardware,missingChecks,&asyncSim,&asyncSession);
+  FlightCommands asyncFlights(recorder,config,run,&profiled,&queued);
+  CommandRouter asyncRouter(settings,estimates,asyncHil,config,run,&asyncFlights,&simCommands,&arming);
+  FakePowerHardware powerHardware; PowerManager power(powerHardware); asyncRouter.setPower(power);
+  usb.setExtension(&asyncRouter); usb.reset();
+  send(usb,"hil begin 0 200 logged_body record 4096");
+  send(usb,"hil sample 0 0 0 9.80665 0 0 0 101325");
+  const auto closingWrites=flash.programs, closingErases=flash.erases;
+  has(send(usb,"hil stop completed"),"\"recording_busy\":true");
+  has(send(usb,"disarm"),"\"arming_state\":\"closing\"");
+  assert(!run.active() && queued.busy() && flash.programs==closingWrites);
+  for (const auto *command : {"sleep","config begin","config apply","hil begin 0 200 logged_body","replay begin","sim begin","flights recover","flights info 1","flights timing"})
+    has(send(usb,command),"BUSY");
+  has(send(usb,"config show"),"\"ok\":true");
+  has(send(usb,"hil status"),"\"recording_busy\":true");
+  assert(flash.programs==closingWrites && flash.erases==closingErases);
+  while (queued.busy()) assert(queued.poll());
+  has(send(usb,"hil status"),"\"recording_busy\":false");
+  has(send(usb,"hil status"),"\"saved_samples\":1");
+  send(usb,"hil begin 0 200 logged_body record 4096");
+  send(usb,"hil sample 0 0 0 9.80665 0 0 0 101325");
+  asyncRouter.disconnect(); assert(queued.busy());
+  while (queued.busy()) assert(queued.poll());
+  // A late persistence failure is observable after stop already returned.
+  send(usb,"hil begin 0 200 logged_body record 4096");
+  send(usb,"hil sample 0 0 0 9.80665 0 0 0 101325");
+  has(send(usb,"hil stop"),"\"recording_busy\":true");
+  flash.failProgram=true; while (queued.busy()) queued.poll(); flash.failProgram=false;
+  has(send(usb,"hil status"),"\"recording_error\":\"Sample\"");
+  has(send(usb,"hil status"),"\"recording_busy\":false");
+  send(usb,"flights recover");
+  has(send(usb,"sim begin record"),"\"active\":true");
+  const auto simOrigin=elapsedUs;
+  for (uint32_t t=0;t<=sensors::SimulatedSensorSource::durationMs();++t) { elapsedUs=simOrigin+t*1000; asyncSim.poll(); }
+  assert(!asyncSim.active() && asyncSim.status().recordingBusy && asyncSim.status().savedSamples==0);
+  while (queued.busy()) assert(queued.poll());
+  assert(asyncSim.status().samples==3600 && asyncSim.status().savedSamples==64 && !asyncSim.status().recordingBusy);
+  send(usb,"hil begin 0 200 logged_body record 4096");
+  // Starting a different HIL recording must not replace the previous simulation's final report.
+  assert(asyncSim.status().samples==3600 && asyncSim.status().savedSamples==64 && !asyncSim.status().recordingBusy);
+  send(usb,"hil stop"); while (queued.busy()) queued.poll();
+  // A damaged interrupted flight is visible without blocking healthy history.
+  assert(recorder.begin(fixture(),limits,4096,storage::SensorMode::Simulation,storage::OutputMode::Virtual,
+                        sensors::FrameConvention::LoggedCalibratedBody));
+  const auto damaged=*recorder.current(); const auto headerBytes=recorder.metadata()->layout.headerBytes;
+  for(unsigned i=0;i<11;++i) { storage::FlightSample s; s.timeMs=i; assert(recorder.append(s)); }
+  assert(recorder.service()); recorder.abort(); flash.bytes[damaged.start+headerBytes+36]^=1;
+  const auto damagedBytes=std::vector<uint8_t>(flash.bytes.begin()+damaged.start,flash.bytes.begin()+damaged.start+damaged.allocatedBytes);
+  has(send(usb,"flights recover"),"\"corrupt_flights\":1");
+  has(send(usb,"flights status"),"\"corrupt_flights\":1");
+  has(send(usb,"flights list 0"),"\"corrupt\":true");
+  has(send(usb,"flights list 0"),"\"status\":6");
+  has(send(usb,"flights info "+std::to_string(damaged.sequence)),"Corrupt");
+  has(send(usb,"flights info 1"),"\"samples\":44");
+  has(send(usb,"flights recover"),"\"ready\":true");
+  assert(std::equal(damagedBytes.begin(),damagedBytes.end(),flash.bytes.begin()+damaged.start));
+  usb.setExtension(&router); usb.reset(); router.setPower(power);
+  has(send(usb,"flights read 1 0 0"),"\"ok\":true");
+  has(send(usb,"sleep"),"BUSY"); assert(!powerHardware.sleeps);
+  elapsedUs+=5000000; // A stopped/cancelled transfer's lease expires without retaining ownership.
+  has(send(usb,"sleep"),"\"power_mode\":\"sleeping\"");
+  has(send(usb,"wake"),"\"power_mode\":\"active\"");
+  std::cout << "Recording USB tests passed: explicit blank initialization, opt-in writes, full/drop counts, ID retries, disconnect, storage-fault isolation and bounded downloads.\n";
+}
+} // namespace test_recording_commands
+
+namespace test_dual_transport {
+using namespace replay_test;
+using command_test::send;
+uint32_t clock() { return 1000; }
+bool pending=false;
+uint32_t powerMs=0;
+uint32_t powerClock() { return powerMs; }
+bool transportBusy() { return pending; }
+void has(const std::string &reply, const char *part) { assert(reply.find(part)!=std::string::npos); }
+std::string drain(CommandEndpoint &endpoint, unsigned chunk) {
+  std::string result;
+  while(endpoint.pending()) {
+    const auto n=endpoint.remaining()<chunk ? endpoint.remaining() : chunk;
+    result.append(reinterpret_cast<const char *>(endpoint.data()),n); endpoint.sent(n);
+  }
+  return result;
+}
+void run() {
+  MemoryFlash flash; storage::ConfigurationStore store(flash); assert(store.save(fixture(),limits,true));
+  ConfigurationService settings(store,limits); settings.boot(true);
+  ConfigurationCommands configuration(settings); flight::RunController run;
+  EstimateReplayCommands replay(settings,run);
+  simulation::HilSession hilSession(settings,run); SensorHilCommands hil(hilSession);
+  simulation::SimulationSession sim(settings,run,clock); SimulationCommands simulation(sim);
+  CommandRouter router(configuration,replay,hil,settings,run,nullptr,&simulation);
+  CommandSession usbSession(router,CommandRouter::Source::Usb), btSession(router,CommandRouter::Source::Bluetooth);
+  CommandService usb, bt; usb.setExtension(&usbSession); bt.setExtension(&btSession);
+  // IDs, partial frames and retry caches belong to the individual endpoint.
+  has(send(usb,"@1 config begin"),"\"draft_active\":true");
+  has(send(bt,"@1 ping"),"PONG");
+  has(send(bt,"control status"),"\"owner\":\"usb\"");
+  has(send(bt,"config discard"),"CONTROL_BUSY"); assert(settings.hasDraft());
+  btSession.disconnect(); assert(settings.hasDraft());
+  usbSession.disconnect(); assert(!settings.hasDraft()); usb.reset(); bt.reset();
+  has(send(bt,"@1 config begin"),"\"draft_active\":true");
+  const auto cached=send(bt,"@1 config begin");
+  assert(send(bt,"@1 config begin")==cached);
+  has(send(usb,"config begin"),"CONTROL_BUSY");
+  has(send(usb,"config show"),"\"ok\":true");
+  has(send(bt,"config discard"),"\"ok\":true");
+  has(send(usb,"replay begin"),"\"ok\":true"); assert(replay.active());
+  has(send(bt,"replay sample 0 0 0 0"),"CONTROL_BUSY");
+  has(send(bt,"replay status"),"\"active\":true");
+  btSession.disconnect(); assert(replay.active());
+  usbSession.disconnect(); assert(!replay.active());
+  has(send(bt,"hil begin 0 200 logged_body"),"\"ok\":true"); assert(hil.active());
+  has(send(usb,"hil sample 0 0 0 9.80665 0 0 0 101325"),"CONTROL_BUSY");
+  has(send(bt,"hil sample 0 0 0 9.80665 0 0 0 101325"),"\"ok\":true");
+  usbSession.disconnect(); assert(hil.active());
+  btSession.disconnect(); assert(!hil.active());
+  has(send(bt,"sim begin"),"\"ok\":true"); assert(sim.active());
+  has(send(usb,"sim stop"),"CONTROL_BUSY");
+  has(send(usb,"sim timing"),"\"ok\":true");
+  usbSession.disconnect(); assert(sim.active());
+  btSession.disconnect(); assert(sim.active()); // Autonomous flight survives its owner.
+  bt.reset();
+  has(send(usb,"sim stop"),"\"ok\":true"); assert(!sim.active()); // Explicit takeover.
+  has(send(bt,"control status"),"\"owner\":\"none\"");
+  has(send(bt,"bluetooth status"),"NOT_INITIALIZED");
+  has(send(bt,"bluetooth status extra"),"INVALID_ARGUMENT");
+  has(send(bt,"control status extra"),"INVALID_ARGUMENT");
+  // A slow radio reply neither overwrites its own response nor blocks USB.
+  CommandEndpoint usbEndpoint(usbSession), btEndpoint(btSession); CommandService::Status status;
+  for(char c:std::string("pi")) btEndpoint.feed(c,status);
+  for(char c:std::string("ping\n")) usbEndpoint.feed(c,status);
+  assert(drain(usbEndpoint,3)=="PONG\n" && !btEndpoint.pending());
+  for(char c:std::string("ng\n")) btEndpoint.feed(c,status);
+  btEndpoint.sent(1);
+  for(char c:std::string("ping\n")) usbEndpoint.feed(c,status);
+  assert(drain(usbEndpoint,1)=="PONG\n" && drain(btEndpoint,2)=="ONG\n");
+  for(char c:std::string("@77 config begin\n")) btEndpoint.feed(c,status);
+  const auto response=drain(btEndpoint,1);
+  for(char c:std::string("@77 config begin\n")) btEndpoint.feed(c,status);
+  assert(drain(btEndpoint,7)==response);
+  btSession.disconnect(); btEndpoint.reset();
+  for(char c:std::string("@1 ping\n")) btEndpoint.feed(c,status);
+  has(drain(btEndpoint,1),"PONG"); // Reconnection resets numbering and partial TX.
+  FakePowerHardware hardware; PowerManager power(hardware,powerClock); router.setPower(power,transportBusy);
+  has(send(usb,"wake"),"\"power_mode\":\"active\""); assert(!hardware.wakes);
+  has(send(usb,"sleep now"),"INVALID_ARGUMENT"); assert(!hardware.sleeps);
+  settings.setDisarmed(false); has(send(usb,"sleep"),"BUSY"); settings.setDisarmed(true);
+  has(send(usb,"config begin"),"\"ok\":true");
+  has(send(bt,"sleep"),"CONTROL_BUSY"); has(send(usb,"sleep"),"BUSY"); send(usb,"config discard");
+  send(usb,"sim begin"); has(send(usb,"sleep"),"BUSY"); send(usb,"sim stop");
+  pending=true; has(send(usb,"sleep"),"BUSY"); pending=false; assert(!hardware.sleeps);
+  hardware.sleepError="SENSOR_SLEEP_FAILED";
+  has(send(usb,"sleep"),"SENSOR_SLEEP_FAILED"); assert(!power.sleeping()); hardware.sleepError=nullptr;
+  const auto writes=flash.mutations;
+  has(send(usb,"sleep"),"\"power_mode\":\"sleeping\""); assert(hardware.sleeps==2);
+  has(send(bt,"sleep"),"\"power_mode\":\"sleeping\""); assert(hardware.sleeps==2);
+  for (const char *command : {"ping","status","info","help","capabilities","control status","bluetooth status","sim status","sim timing","sim events"})
+    send(bt,command);
+  assert(power.sleeping() && !hardware.wakes);
+  hardware.wakeError="FLASH_WAKE_FAILED";
+  for (const char *command : {"arm","config begin","servo preview 1 1500","servo arm","pyro continuity","flights recover","sim begin","replay begin","hil begin 0 200 logged_body","preflight","sensors"}) {
+    has(send(bt,command),"FLASH_WAKE_FAILED"); assert(power.sleeping());
+  }
+  assert(!settings.hasDraft() && !run.active()); // Wake failure never executes the original request.
+  hardware.wakeError="FLASH_WAKE_FAILED"; has(send(bt,"wake"),"FLASH_WAKE_FAILED"); assert(power.sleeping());
+  hardware.wakeError=nullptr; has(send(bt,"config begin"),"\"draft_active\":true");
+  assert(!power.sleeping() && settings.hasDraft()); send(bt,"config discard");
+  assert(flash.mutations==writes);
+  // A connected client can keep polling for five minutes without preventing sleep.
+  for (unsigned i=0;i<300;++i) {
+    assert(!power.sleeping()); powerMs+=1000;
+    send(usb,"ping"); send(usb,"status"); send(usb,"control status"); send(usb,"sim status"); router.pollPower();
+  }
+  assert(power.sleeping());
+  has(send(bt,"config show"),"\"ok\":true"); assert(!power.sleeping());
+  powerMs+=PowerManager::IdleMs-1; send(usb,"sensors"); router.pollPower(); assert(!power.sleeping());
+  powerMs+=PowerManager::IdleMs-1; router.pollPower(); assert(!power.sleeping());
+  ++powerMs; pending=true; router.pollPower(); assert(!power.sleeping());
+  pending=false; router.pollPower(); assert(power.sleeping());
+  send(usb,"sim begin"); assert(!power.sleeping() && sim.active());
+  powerMs+=PowerManager::IdleMs*2; router.pollPower(); assert(!power.sleeping());
+  send(usb,"sim stop"); powerMs+=PowerManager::IdleMs-1; router.pollPower(); assert(!power.sleeping());
+  ++powerMs; router.pollPower(); assert(power.sleeping());
+  send(usb,"wake"); assert(!power.sleeping() && flash.mutations==writes);
+  puts("Dual transport passed: independent framing/retries/backpressure, shared ownership and source-specific disconnect/takeover.");
+}
+}
+
+namespace test_power_idle {
+uint32_t now=UINT32_MAX-100;
+uint32_t clock() { return now; }
+void run() {
+  FakePowerHardware hardware; PowerManager power(hardware,clock); power.poll(false);
+  now+=PowerManager::IdleMs-1; power.poll(false); assert(!hardware.sleeps);
+  hardware.sleepError="SENSOR_SLEEP_FAILED";
+  ++now; power.poll(false); assert(hardware.sleeps==1 && !power.sleeping());
+  assert(!strcmp(power.error(),"SENSOR_SLEEP_FAILED"));
+  ++now; power.poll(false); assert(hardware.sleeps==1); // No per-loop hardware retry after an automatic failure.
+  hardware.sleepError=nullptr; now+=PowerManager::IdleMs; power.poll(false); assert(power.sleeping());
+  assert(!strcmp(power.error(),"None")); power.wake();
+  now+=PowerManager::IdleMs-1; power.poll(false); assert(!power.sleeping());
+  ++now; power.poll(false); assert(power.sleeping());
+}
+}
+
+namespace test_status_led {
+uint32_t color=0; unsigned writes=0;
+void write(uint8_t r,uint8_t g,uint8_t b) { color=(uint32_t(r)<<16)|(uint32_t(g)<<8)|b; ++writes; }
+void run() {
+  StatusLed led(write);
+  const uint32_t expected[]={0xFFA500,0xFF0000,0xFF00FF,0x00FFFF,0x00FF00,0x000050};
+  for (unsigned i=0;i<6;++i) { led.update(i*20,static_cast<LedMode>(i)); assert(color==expected[i]); }
+  const auto count=writes; led.update(1000,LedMode::Disarmed); assert(writes==count);
+  led.update(1100,LedMode::Calibrating); assert(color==255);
+  led.update(1900,LedMode::Calibrating); assert(color==40);
+  led.update(2700,LedMode::Calibrating); assert(color==255);
+  led.update(UINT32_MAX-10,LedMode::PowerSaving); assert(color==0xFF0000);
+  const auto before=writes; led.update(1,LedMode::PowerSaving); assert(writes==before);
+  led.update(29,LedMode::PowerSaving); assert(color==0xFE0001); // Wrap-safe animation, full colour amplitude.
+}
+}
+
+int main() {
+  std::puts("  usb_command_service"); std::fflush(stdout);
+  test_usb_command_service::run();
+  std::puts("  configuration_commands"); std::fflush(stdout);
+  test_configuration_commands::run();
+  std::puts("  estimate_replay"); std::fflush(stdout);
+  test_estimate_replay::run();
+  std::puts("  sensor_hil"); std::fflush(stdout);
+  test_sensor_hil::run();
+  std::puts("  recording_commands"); std::fflush(stdout);
+  test_recording_commands::run();
+  test_dual_transport::run();
+  test_power_idle::run();
+  test_status_led::run();
+}

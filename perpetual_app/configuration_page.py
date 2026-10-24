@@ -1,0 +1,140 @@
+"""Configuration page: rule/channel editing and local draft presentation."""
+from copy import deepcopy
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QWidget,QFrame,QVBoxLayout,QHBoxLayout,QTabWidget,QTreeWidget,QTreeWidgetItem,QHeaderView,QMessageBox
+from .configuration import condition_text,rule_label,next_rule_id
+from .dialogs import RuleDialog,ChannelDialog
+from .widgets import label,button,card,row,table,fill_table
+
+
+class ConfigurationPage(QWidget):
+    def __init__(self,controller):
+        super().__init__(); self.controller=controller; self._rendered_plan=None; self._rendered_pulse=None; self.channel_buttons=[]
+        self.setObjectName('canvas'); box=QVBoxLayout(self); box.setContentsMargins(0,0,0,0); box.setSpacing(18)
+        title,subtitle='Configurazione','Regole di deployment e canali. Le modifiche rimangono in una bozza locale fino ad Applica.'
+        self.reload_config=button('Ricarica dalla scheda',self.reload_configuration)
+        box.addWidget(label(title,'title'))
+        sub=label(subtitle,'subtitle'); sub.setWordWrap(True); box.addWidget(sub)
+        self.servo_notice=label('','hint'); self.servo_notice.setWordWrap(True); box.addWidget(self.servo_notice)
+        tabs=QTabWidget(); self.tabs=tabs; box.addWidget(tabs,1)
+        tabs.setCornerWidget(self.reload_config,Qt.TopRightCorner)
+        channels=QWidget(); ch=QVBoxLayout(channels); ch.setContentsMargins(0,14,0,0)
+        frame,table_box=card(); ch.addWidget(frame,1)
+        self.channels_table=table(['CANALE','IMPOSTAZIONI','REGOLA ASSEGNATA','STATO']); self.channels_table.itemDoubleClicked.connect(lambda _:self.edit_channel())
+        table_box.addWidget(self.channels_table)
+        rules=QWidget(); rl=QVBoxLayout(rules); rl.setContentsMargins(0,14,0,0)
+        frame,rule_box=card(); rl.addWidget(frame,1)
+        self.rules_tree=QTreeWidget(); self.rules_tree.setHeaderLabels(['REGOLA / CONDIZIONE','DETTAGLI']); self.rules_tree.setRootIsDecorated(True)
+        self.rules_tree.setObjectName('rulesTree')
+        self.rules_tree.header().setSectionResizeMode(QHeaderView.ResizeMode.Stretch); self.rules_tree.itemDoubleClicked.connect(lambda *_:self.edit_rule())
+        rule_box.addWidget(self.rules_tree)
+        self.add_rule_button=button('+ Nuova regola',self.add_rule,'primary'); self.edit_rule_button=button('Modifica',self.edit_rule); self.remove_rule_button=button('Rimuovi',self.remove_rule)
+        rule_box.addLayout(row(self.add_rule_button,self.edit_rule_button,self.remove_rule_button,None))
+        tabs.addTab(rules,'Regole'); tabs.addTab(channels,'Canali'); tabs.setCurrentIndex(0)
+
+    def attach_footer(self,layout):
+        self.draft_bar=QFrame(); self.draft_bar.setObjectName('draftBar'); box=QHBoxLayout(self.draft_bar); box.setContentsMargins(16,12,16,12)
+        self.draft_text=label('Modifiche non applicate · bozza locale')
+        self.validate_button=button('Valida',self.controller.validate)
+        self.apply_button=button('Applica',self.apply_configuration,'primary')
+        self.discard_button=button('Scarta',self.controller.discard)
+        box.addWidget(self.draft_text,1); box.addWidget(self.validate_button); box.addWidget(self.apply_button); box.addWidget(self.discard_button); layout.addWidget(self.draft_bar)
+
+    def render(self,s):
+        self.draft_bar.setVisible(s.dirty or s.staged)
+        self.draft_text.setText('Bozza validata dalla scheda · non ancora applicata' if s.validated else 'Modifiche non applicate · bozza locale')
+        self.validate_button.setEnabled(s.editable and s.dirty); self.apply_button.setEnabled(s.editable and s.dirty and s.validated)
+        self.discard_button.setEnabled(not s.foreground)
+        self.reload_config.setEnabled(s.connected and not s.foreground)
+        editable=s.editable
+        for b in (*self.channel_buttons,self.add_rule_button,self.edit_rule_button,self.remove_rule_button): b.setEnabled(editable)
+        plan=s.local
+        missing=[f'SERVO {i+1}' for i,v in enumerate(plan.servos) if plan.assigned('servo',i+1) and not v['calibrated']] if plan else []
+        self.servo_notice.setText(', '.join(missing)+': posizioni da configurare in Canali. Le regole si possono salvare; l’armamento reale richiede la configurazione dei servo.')
+        self.servo_notice.setVisible(bool(missing))
+        pulse=s.capabilities.get('pyro_pulse_ms',1000)
+        if plan==self._rendered_plan and pulse==self._rendered_pulse: return
+        self._rendered_plan=deepcopy(plan); self._rendered_pulse=pulse
+        if plan is None: fill_table(self.channels_table,[]); self.channel_buttons=[]; self.rules_tree.clear(); return
+        rows=[]
+        for kind,values in [('pyro',[pulse]*4),('servo',plan.servos)]:
+            for i,value in enumerate(values):
+                r=plan.assigned(kind,i+1)
+                if kind=='pyro': text=f'Impulso fisso {value} ms · firmware'
+                elif value['calibrated']: text=f'{value["initial_us"]} → {value["final_us"]} PWM'
+                else: text='Posizioni iniziale e finale da definire'
+                state='Da configurare' if kind=='servo' and r and not value['calibrated'] else 'Assegnato' if r else 'Libero'
+                rows.append((f'{kind.upper()} {i+1}',text,rule_label(plan.rules,r['id']) if r else '—',state))
+        fill_table(self.channels_table,rows)
+        self.channel_buttons=[]
+        for i,value in enumerate(plan.servos):
+            self.channels_table.removeCellWidget(i+4,3); self.channels_table.setRowHeight(i+4,43)
+            if not plan.assigned('servo',i+1): continue
+            self.channels_table.item(i+4,3).setText(''); self.channels_table.setRowHeight(i+4,60)
+            action=button('Modifica' if value['calibrated'] else 'Configura',lambda channel=i+1:self.edit_channel(channel))
+            action.setEnabled(editable); action.setMinimumWidth(100); self.channel_buttons.append(action)
+            cell=QWidget(); cell_box=QHBoxLayout(cell); cell_box.setContentsMargins(6,3,6,3)
+            cell_box.addWidget(action,0,Qt.AlignCenter); self.channels_table.setCellWidget(i+4,3,cell)
+        expanded={self.rules_tree.topLevelItem(i).data(0,Qt.ItemDataRole.UserRole) for i in range(self.rules_tree.topLevelItemCount()) if self.rules_tree.topLevelItem(i).isExpanded()}
+        self.rules_tree.clear()
+        for r in plan.rules:
+            item=QTreeWidgetItem([rule_label(plan.rules,r['id']),f'Ritardo {r["delay_ms"]} ms · {len(r["outputs"])} uscite'])
+            item.setData(0,Qt.ItemDataRole.UserRole,r['id']); self.rules_tree.addTopLevelItem(item)
+            for c in r['conditions']: QTreeWidgetItem(item,['Condizione · AND',condition_text(c,plan.rules)])
+            for a in r['outputs']: QTreeWidgetItem(item,[f'{a["kind"].upper()} {a["channel"]}',f'Ritardo canale {a.get("delay_ms",0)} ms'])
+            item.setExpanded(r['id'] in expanded or len(plan.rules)<=2)
+
+    def show_servo(self,channel,edit=False):
+        self.tabs.setCurrentIndex(1); self.channels_table.selectRow(channel+3)
+        self.channels_table.scrollToItem(self.channels_table.item(channel+3,0))
+        if edit: self.edit_channel(channel)
+
+    def edit_channel(self,channel=None):
+        s=self.controller.state; i=channel+3 if channel is not None else self.channels_table.currentRow()
+        if not s.editable or s.local is None or i<0: return
+        kind='pyro' if i<4 else 'servo'; index=i%4
+        if kind=='pyro':
+            QMessageBox.information(self,'Profilo pyro del firmware',
+                f'Impulso fisso di {s.capabilities.get("pyro_pulse_ms",1000)} ms, senza ripetizione. Non richiede impostazioni per canale.')
+            return
+        value=s.local.servos[index]
+        dialog=ChannelDialog(self,kind,index+1,value,s.capabilities,self.controller)
+        if dialog.exec():
+            plan=s.local.clone()
+            plan.servos[index]=dialog.result_value(); self.controller.edit_plan(plan)
+
+    def selected_rule(self):
+        item=self.rules_tree.currentItem()
+        while item and item.parent(): item=item.parent()
+        return item.data(0,Qt.ItemDataRole.UserRole) if item else None
+
+    def add_rule(self):
+        s=self.controller.state
+        if not s.editable or s.local is None or len(s.local.rules)>=8: return
+        rule=dict(id=next_rule_id(s.local,s.base),name='',delay_ms=0,conditions=[],outputs=[])
+        dialog=RuleDialog(self,rule,s.local.rules)
+        if dialog.exec(): plan=s.local.clone(); plan.rules.append(dialog.rule); self.controller.edit_plan(plan)
+
+    def edit_rule(self):
+        s=self.controller.state; identity=self.selected_rule()
+        if not s.editable or not identity: return
+        rule=next(r for r in s.local.rules if r['id']==identity)
+        dialog=RuleDialog(self,rule,s.local.rules)
+        if dialog.exec():
+            plan=s.local.clone(); plan.rules=[dialog.rule if r['id']==identity else r for r in plan.rules]; self.controller.edit_plan(plan)
+
+    def remove_rule(self):
+        s=self.controller.state; identity=self.selected_rule()
+        if not s.editable or not identity: return
+        plan=s.local.clone(); plan.rules=[r for r in plan.rules if r['id']!=identity]; self.controller.edit_plan(plan)
+
+    def reload_configuration(self):
+        s=self.controller.state
+        if s.dirty:
+            if QMessageBox.question(self,'Ricarica configurazione','Scartare le modifiche locali e rileggere la scheda?')!=QMessageBox.StandardButton.Yes: return
+            s.local=s.base.clone() if s.base else None
+        self.controller.reload_config()
+
+    def apply_configuration(self):
+        if QMessageBox.question(self,'Applica configurazione','Salvare la bozza validata nella memoria della scheda?')==QMessageBox.StandardButton.Yes:
+            self.controller.validate(apply=True)

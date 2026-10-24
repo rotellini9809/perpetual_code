@@ -1,0 +1,510 @@
+#include <cstdio>
+#include "storage/ConfigurationStore.h"
+#include <algorithm>
+#include <cassert>
+#include <cstring>
+#include <iostream>
+#include <vector>
+#include "storage/FlightHeaderStore.h"
+#include "storage/FlightSampleStore.h"
+#include "storage/BinaryEncoding.h"
+#include "../fixtures/ReplayFixture.h"
+#include "storage/FlightDirectory.h"
+
+// Each namespace isolates one component scenario and its fault model.
+namespace test_configuration_store {
+using namespace storage;
+using namespace recovery;
+const ValidationLimits limits{1000, 2000, 1000, 60000};
+struct PowerLoss {};
+class MemoryFlash : public FlashDevice {
+public:
+  std::vector<uint8_t> bytes = std::vector<uint8_t>(0x6000, 0xA5);
+  long budget = -1;
+  unsigned writes = 0, erases = 0;
+  bool ioFail = false;
+  MemoryFlash() { std::memset(bytes.data() + 0x1000, 255, 16384); }
+  void tick() { if (budget == 0) throw PowerLoss{}; if (budget > 0) --budget; }
+  bool read(uint32_t a, void *p, std::size_t n) override {
+    if (ioFail || a > bytes.size() || n > bytes.size() - a) return false;
+    std::memcpy(p, bytes.data() + a, n); return true;
+  }
+  bool program(uint32_t a, const void *p, std::size_t n) override {
+    if (ioFail) return false;
+    assert(a >= 0x1000 && a + n <= 0x5000 && a % 256 == 0 && n == 256);
+    const auto *source = static_cast<const uint8_t *>(p); ++writes;
+    for (std::size_t i = 0; i < n; ++i) {
+      assert(bytes[a + i] == 255); tick(); bytes[a + i] &= source[i];
+    }
+    return true;
+  }
+  bool eraseSector(uint32_t a) override {
+    if (ioFail) return false;
+    assert(a == ConfigurationStore::Begin); ++writes; ++erases;
+    for (unsigned i = 0; i < 4096; ++i) { tick(); bytes[a + i] = 255; }
+    return true;
+  }
+};
+Configuration plan() {
+  Configuration c; c.ruleCount = 1; c.pyros[0].pulseMs = 100;
+  auto &r = c.rules[0]; r.id = 0x12345678; std::strcpy(r.name.data(), "Main");
+  r.conditionCount = r.assignmentCount = 1; r.assignments[0].channel = 1;
+  r.conditions[0].kind = ConditionKind::AltitudeComparison;
+  r.conditions[0].comparison = Comparison::Less; r.conditions[0].value = -12.5f;
+  return c;
+}
+std::vector<uint8_t> encoded(const Configuration &c) {
+  std::vector<uint8_t> bytes(ConfigurationStore::MaxPayload); std::size_t n;
+  assert(ConfigurationStore::encode(c, bytes.data(), bytes.size(), n)); bytes.resize(n); return bytes;
+}
+void neighbors(const MemoryFlash &f) {
+  for (std::size_t i = 0; i < f.bytes.size(); ++i)
+    if (i < 0x1000 || i >= 0x5000) assert(f.bytes[i] == 0xA5);
+}
+uint32_t checksum(const uint8_t *p, std::size_t n) {
+  uint32_t crc = 0xFFFFFFFF;
+  while (n--) { crc ^= *p++; for (unsigned i = 0; i < 8; ++i) crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1))); }
+  return ~crc;
+}
+void put32(uint8_t *p, uint32_t n) { for (unsigned i = 0; i < 4; ++i) p[i] = uint8_t(n >> (8 * i)); }
+void refreshHeader(MemoryFlash &f) {
+  const auto crc = checksum(f.bytes.data() + 0x1000, 252);
+  put32(f.bytes.data() + 0x10FC, crc); put32(f.bytes.data() + 0x1104, crc);
+}
+void run() {
+  auto c = plan(); const auto payload = encoded(c);
+  assert(payload[0] == 1 && payload[1] == 100);
+  assert(payload[37] == 0x78 && payload[38] == 0x56 && payload[39] == 0x34 && payload[40] == 0x12);
+  Configuration out;
+  assert(ConfigurationStore::decode(payload.data(), payload.size(), out)); assert(encoded(out) == payload);
+  // Channel delays occupy the existing four-byte assignment slot, without changing offsets.
+  auto oldDelay = payload; put32(oldDelay.data()+oldDelay.size()-4, 1000);
+  assert(ConfigurationStore::decode(oldDelay.data(), oldDelay.size(), out));
+  assert(out.rules[0].assignments[0].delayMs == 1000 && encoded(out) == oldDelay);
+  for (std::size_t n = 0; n < payload.size(); ++n) assert(!ConfigurationStore::decode(payload.data(), n, out));
+  auto trailing = payload; trailing.push_back(0); assert(!ConfigurationStore::decode(trailing.data(), trailing.size(), out));
+  auto malformed = payload; malformed[0] = 255; assert(!ConfigurationStore::decode(malformed.data(), malformed.size(), out));
+  std::size_t used = 99; uint8_t tiny[1]; assert(!ConfigurationStore::encode(c, tiny, 1, used) && used == 0);
+  MemoryFlash flash; ConfigurationStore store(flash);
+  out.ruleCount = 7;
+  assert(!store.load(out, limits) && store.error() == ConfigError::Missing && out.ruleCount == 7);
+  const auto unchanged = flash.bytes;
+  assert(!store.save(c, limits, false) && store.error() == ConfigError::Armed && flash.bytes == unchanged);
+  assert(!store.save(Configuration{}, limits, true) && store.error() == ConfigError::InvalidConfiguration && flash.bytes == unchanged);
+  // The unused three reserved sectors need not be blank and must survive saves.
+  std::fill(flash.bytes.begin()+0x2000,flash.bytes.begin()+0x5000,0x5A);
+  assert(store.save(c, limits, true)); assert(flash.erases==1);
+  assert(store.load(out, limits) && encoded(out) == payload); neighbors(flash);
+  // Current policy is revalidated at boot, even if package integrity is valid.
+  auto restricted = limits; restricted.maxPyroPulseMs = 50;
+  out.ruleCount = 7; assert(!store.load(out, restricted) && store.error() == ConfigError::InvalidConfiguration && out.ruleCount == 7);
+  const auto baseline = flash;
+  c.pyros[0].pulseMs = 200; c.rules[0].assignments[0].delayMs = 250; const auto replacement = encoded(c);
+  std::vector<long> cuts;
+  for (long i = 0; i <= 768; ++i) cuts.push_back(4096 + i);
+  for (long offset : {0L, 1L, 2048L, 4095L}) cuts.push_back(offset);
+  for (long cut : cuts) {
+    auto f = baseline; f.budget = cut; ConfigurationStore writer(f);
+    try { writer.save(c, limits, true); } catch (const PowerLoss &) {}
+    f.budget = -1; ConfigurationStore boot(f); Configuration recovered;
+    if (boot.load(recovered, limits)) {
+      const auto bytes = encoded(recovered); assert(bytes == payload || bytes == replacement);
+    } else assert(boot.error() == ConfigError::Missing || boot.error() == ConfigError::Corrupt);
+    neighbors(f);
+    for (unsigned a=0x2000; a<0x5000; ++a) assert(f.bytes[a]==0x5A);
+  }
+  auto broken = baseline; broken.bytes[0x1200 + 10] ^= 1; ConfigurationStore corrupt(broken);
+  assert(!corrupt.load(out, limits) && corrupt.error() == ConfigError::Corrupt);
+  auto marker = baseline; marker.bytes[0x1100] ^= 1; ConfigurationStore noCommit(marker);
+  assert(!noCommit.load(out, limits) && noCommit.error() == ConfigError::Corrupt);
+  for (uint8_t version : {1,3}) {
+    auto future = baseline; future.bytes[0x1004] = version; refreshHeader(future);
+    ConfigurationStore unsupported(future);
+    assert(!unsupported.load(out, limits) && unsupported.error() == ConfigError::UnsupportedVersion);
+  }
+  auto semantic = baseline; semantic.bytes[0x1200 + 95] = 99; // Unknown condition kind, with valid CRCs.
+  const auto payloadCrc = checksum(semantic.bytes.data() + 0x1200, payload.size());
+  put32(semantic.bytes.data() + 0x100C, payloadCrc); put32(semantic.bytes.data() + 0x1108, payloadCrc);
+  refreshHeader(semantic); ConfigurationStore invalid(semantic);
+  assert(!invalid.load(out, limits) && invalid.error() == ConfigError::InvalidConfiguration);
+  auto oversized = baseline; put32(oversized.bytes.data() + 0x1008, 0xFFFFFFFF);
+  put32(oversized.bytes.data() + 0x110C, 0xFFFFFFFF); refreshHeader(oversized);
+  ConfigurationStore bounded(oversized); assert(!bounded.load(out, limits) && bounded.error() == ConfigError::Corrupt);
+  auto io = baseline; io.ioFail = true; ConfigurationStore unavailable(io);
+  assert(!unavailable.load(out, limits) && unavailable.error() == ConfigError::Io);
+  // Maximum current structural payload fits comfortably in the reserved region.
+  Configuration maximum;
+  maximum.ruleCount = MaxRules;
+  for (std::size_t i = 0; i < 4; ++i) {
+    maximum.pyros[i].pulseMs = 100; auto &s = maximum.servos[i];
+    s.calibrated = true; s.initialUs = 1000; s.finalUs = 2000;
+  }
+  for (std::size_t i = 0; i < MaxRules; ++i) {
+    auto &r = maximum.rules[i]; r.id = uint32_t(i + 1); std::strcpy(r.name.data(), "Example");
+    r.conditionCount = MaxConditions; r.assignmentCount = 1;
+    r.assignments[0].kind = i < 4 ? OutputKind::Pyro : OutputKind::Servo;
+    r.assignments[0].channel = uint8_t(i % 4 + 1);
+  }
+  assert(store.save(maximum, limits, true)); assert(store.load(out, limits));
+  assert(encoded(maximum) == encoded(out)); neighbors(flash);
+  // Codec supports every condition/assignment slot even before semantic validation.
+  for (auto &r : maximum.rules) r.assignmentCount = MaxAssignments;
+  const auto largest = encoded(maximum);
+  assert(largest.size() == 2101 && largest.size() < ConfigurationStore::MaxPayload);
+  assert(ConfigurationStore::decode(largest.data(), largest.size(), out)); assert(encoded(out) == largest);
+  std::cout << "Configuration store tests passed: " << cuts.size() << " power cuts; max payload " << largest.size() << " bytes.\n";
+}
+} // namespace test_configuration_store
+
+namespace test_flight_header_store {
+using namespace storage;
+using namespace replay_test;
+struct Cut {};
+struct HeaderFlash : FlashDevice {
+  std::vector<uint8_t> bytes = std::vector<uint8_t>(0x1D000, 255);
+  std::vector<unsigned> pageWrites = std::vector<unsigned>(0x1D000 / 256, 0);
+  long budget = -1;
+  unsigned writes = 0, reads = 0, failAfterProgram = 0;
+  bool failRead = false, failProgram = false;
+  bool read(uint32_t a, void *p, std::size_t n) override {
+    ++reads; if (failRead || a > bytes.size() || n > bytes.size() - a) return false;
+    memcpy(p, bytes.data() + a, n); return true;
+  }
+  bool program(uint32_t a, const void *p, std::size_t n) override {
+    assert(a >= 0x15000 && a + n <= bytes.size() && a % 256 == 0 && n == 256);
+    assert(pageWrites[a/256]++ == 0); ++writes;
+    if (failProgram) return false;
+    const auto *in = static_cast<const uint8_t *>(p);
+    for (unsigned i = 0; i < n; ++i) {
+      if (budget == 0) throw Cut{};
+      if (budget > 0) --budget;
+      assert((bytes[a+i] & in[i]) == in[i]); bytes[a+i] &= in[i];
+    }
+    return writes != failAfterProgram;
+  }
+  bool eraseSector(uint32_t) override { assert(false); return false; }
+};
+bool create(FlightHeaderStore &store, const recovery::Configuration &config = fixture(), uint32_t address = 0x15000) {
+  return store.create(address, config, limits, SensorMode::Simulation, OutputMode::Virtual, sensors::FrameConvention::LoggedCalibratedBody);
+}
+std::vector<uint8_t> encoded(const recovery::Configuration &config) {
+  std::vector<uint8_t> bytes(ConfigurationStore::MaxPayload); std::size_t n;
+  assert(ConfigurationStore::encode(config, bytes.data(), bytes.size(), n)); bytes.resize(n); return bytes;
+}
+void run() {
+  HeaderFlash flash; FlightHeaderStore header(flash);
+  FlightHeaderLayout layout;
+  assert(header.plan(fixture(), limits, layout)); assert(layout.slotCount == 3 && layout.headerBytes == 4096);
+  assert(layout.summaryOffset == layout.tableOffset + layout.slotCount * FlightHeaderStore::SlotBytes);
+  assert(flash.writes == 0 && flash.reads == 0);
+  const auto pristine = flash.bytes;
+  assert(!create(header, fixture(), 0x14000) && header.error() == HeaderError::Bounds);
+  assert(!create(header, fixture(), 0x15001));
+  assert(!create(header, fixture(), 0xFFFFF000));
+  assert(!create(header, recovery::Configuration{}) && header.error() == HeaderError::InvalidConfiguration);
+  assert(!header.create(0x15000, fixture(), limits, static_cast<SensorMode>(255), OutputMode::Virtual,
+                        sensors::FrameConvention::LoggedCalibratedBody));
+  assert(flash.bytes == pristine && flash.writes == 0);
+  assert(!header.load(0x15000) && header.error() == HeaderError::Empty);
+  auto config = fixture(); config.rules[0].assignments[0].delayMs = 75;
+  config.rules[0].assignments[1].delayMs = 200; config.rules[1].assignments[0].delayMs = 325;
+  assert(create(header, config));
+  const auto frozen = config;
+  const auto saved = encoded(config); config.rules[0].name[0] = 'X'; config.pyros[0].pulseMs = 999;
+  assert(encoded(header.view()->configuration) == saved); // Frozen complete plan.
+  assert(header.view()->layout.tableOffset == layout.tableOffset);
+  assert(header.view()->sensorMode == SensorMode::Simulation && header.view()->outputMode == OutputMode::Virtual);
+  assert(header.view()->starts[0].rule == 10 && header.view()->starts[0].channel == 1);
+  assert(header.view()->starts[1].kind == recovery::OutputKind::Servo && header.view()->starts[2].rule == 20);
+  const auto initial = flash; const auto writes = flash.writes, reads = flash.reads;
+  // A valid CRC/commit cannot enable an old or unknown header format.
+  for (unsigned field : {4u, 20u}) for (unsigned version : {1u, 3u}) {
+    auto wrong = initial; auto *descriptor = wrong.bytes.data() + 0x15000;
+    storage::binary::put(descriptor + field, version, 2);
+    const auto payloadBytes = (layout.configBytes + 255) / 256 * 256;
+    const auto checksum = storage::binary::extendCrc(storage::binary::extendCrc(storage::binary::CrcInitial, descriptor, 252), descriptor + 512, payloadBytes) ^ storage::binary::CrcInitial;
+    storage::binary::put(descriptor + 252, checksum, 4);
+    storage::binary::put(descriptor + 256 + 4, checksum, 4);
+    storage::binary::put(descriptor + 256 + 8, ~checksum, 4);
+    const auto before = wrong.bytes; FlightHeaderStore unsupported(wrong);
+    assert(!unsupported.load(0x15000) && unsupported.error() == HeaderError::UnsupportedVersion && !unsupported.view());
+    assert(wrong.bytes == before && wrong.writes == writes);
+  }
+  assert(!create(header) && header.error() == HeaderError::Active);
+  assert(!header.load(0x15000) && header.error() == HeaderError::Active);
+  assert(!header.recordStart(999, recovery::OutputKind::Pyro, 1, 0) && header.error() == HeaderError::UnknownOutput);
+  assert(!header.recordStart(10, recovery::OutputKind::Pyro, 2, 0));
+  assert(header.recordStart(10, recovery::OutputKind::Pyro, 1, 0));
+  assert(header.recordStart(10, recovery::OutputKind::Pyro, 1, 0));
+  assert(!header.recordStart(10, recovery::OutputKind::Pyro, 1, 1) && header.error() == HeaderError::Conflict);
+  assert(header.view()->starts[0].timeMs == 0 && header.view()->starts[0].state == StartState::Pending);
+  assert(flash.writes == writes && flash.reads == reads); // Capture never accesses flash.
+  assert(!header.finish(false) && header.error() == HeaderError::ProducerActive);
+  assert(header.flushStarts()); assert(header.view()->starts[0].state == StartState::Recorded);
+  const auto afterFirst = flash;
+  assert(header.recordStart(10, recovery::OutputKind::Pyro, 1, 0) && header.flushStarts());
+  assert(flash.writes == writes + 2); // No reprogramming for a duplicate notification.
+  assert(header.recordStart(10, recovery::OutputKind::Servo, 1, UINT32_MAX));
+  assert(header.finish(true));
+  assert(!header.recordStart(20, recovery::OutputKind::Pyro, 2, 123) && header.error() == HeaderError::Closed);
+  FlightHeaderStore reader(flash); assert(reader.load(0x15000));
+  assert(encoded(reader.view()->configuration) == saved);
+  assert(reader.view()->starts[0].state == StartState::Recorded && reader.view()->starts[0].timeMs == 0);
+  assert(reader.view()->starts[1].timeMs == UINT32_MAX && reader.view()->starts[2].state == StartState::Empty);
+  assert(!reader.recordStart(20, recovery::OutputKind::Pyro, 2, 42) && reader.error() == HeaderError::Closed);
+  // The immutable header survives a corrupt/torn output slot.
+  const auto firstSlot = 0x15000 + layout.tableOffset;
+  flash.bytes[firstSlot + 24] ^= 1;
+  assert(reader.load(0x15000) && reader.view()->starts[0].state == StartState::Invalid);
+  flash = afterFirst;
+  std::copy(flash.bytes.begin()+0x15000, flash.bytes.begin()+0x16000, flash.bytes.begin()+0x17000);
+  assert(!reader.load(0x17000)); // Relocated headers cannot authorize old slot data.
+  flash.bytes[0x15000 + 512] ^= 1;
+  assert(!reader.load(0x15000) && reader.error() == HeaderError::Corrupt && !reader.view());
+  // Every byte boundary of immutable payload/descriptor/commit writes.
+  const unsigned createBytes = initial.writes * 256;
+  for (unsigned cut = 0; cut <= createBytes; ++cut) {
+    HeaderFlash f; FlightHeaderStore h(f); f.budget = cut;
+    try { create(h, frozen); } catch (const Cut &) {}
+    f.budget = -1; FlightHeaderStore boot(f);
+    if (boot.load(0x15000)) {
+      assert(encoded(boot.view()->configuration) == saved && boot.view()->starts[0].state == StartState::Empty);
+      assert(!boot.recordStart(10, recovery::OutputKind::Pyro, 1, 0));
+    } else assert(!boot.view());
+    assert(std::equal(pristine.begin(), pristine.begin()+0x15000, f.bytes.begin()));
+  }
+  // Every byte boundary of one output slot, preserving a previously recorded start.
+  for (unsigned cut = 0; cut <= 512; ++cut) {
+    HeaderFlash f; FlightHeaderStore h(f); assert(create(h));
+    assert(h.recordStart(10, recovery::OutputKind::Pyro, 1, 0) && h.flushStarts());
+    assert(h.recordStart(10, recovery::OutputKind::Servo, 1, 250)); f.budget = cut;
+    try { h.flushStarts(); } catch (const Cut &) {}
+    f.budget = -1; FlightHeaderStore boot(f); assert(boot.load(0x15000));
+    assert(boot.view()->starts[0].state == StartState::Recorded && boot.view()->starts[0].timeMs == 0);
+    const auto &s = boot.view()->starts[1];
+    if (s.state == StartState::Recorded) assert(s.timeMs == 250);
+    else assert(s.state == StartState::Empty || s.state == StartState::Invalid);
+  }
+  HeaderFlash uncertain; FlightHeaderStore u(uncertain); assert(create(u));
+  uncertain.failAfterProgram = uncertain.writes + 2;
+  assert(u.recordStart(10, recovery::OutputKind::Pyro, 1, 0));
+  assert(!u.flushStarts()); const auto attempted = uncertain.writes;
+  assert(!u.flushStarts() && uncertain.writes == attempted && u.error() == HeaderError::Persistence);
+  assert(!u.finish(true));
+  FlightHeaderStore recovered(uncertain); assert(recovered.load(0x15000));
+  assert(recovered.view()->starts[0].state == StartState::Recorded);
+  // Reserve exactly eight independent channels, with all notifications pending together.
+  auto all = fixture(); all.rules[0].assignmentCount = 8; all.ruleCount = 1;
+  for (unsigned i = 0; i < 8; ++i) {
+    auto &a = all.rules[0].assignments[i]; a.kind = i < 4 ? recovery::OutputKind::Pyro : recovery::OutputKind::Servo;
+    a.channel = uint8_t(i % 4 + 1); all.pyros[i%4].pulseMs = 100; all.servos[i%4] = all.servos[0];
+  }
+  HeaderFlash eight; FlightHeaderStore e(eight); assert(create(e, all));
+  assert(e.view()->layout.slotCount == 8 && e.view()->layout.headerBytes == 8192);
+  const auto beforeNotifications = eight.writes;
+  for (unsigned i = 0; i < 8; ++i) {
+    const auto &a = all.rules[0].assignments[i]; assert(e.recordStart(10, a.kind, a.channel, i));
+  }
+  assert(eight.writes == beforeNotifications); assert(e.finish(true));
+  assert(eight.writes == beforeNotifications + 16);
+  // A large valid plan spans multiple payload pages, with a slot for every assigned channel.
+  auto large = fixture(); large.ruleCount = 8;
+  for (unsigned i = 0; i < 4; ++i) { large.pyros[i].pulseMs = 100; large.servos[i] = large.servos[0]; }
+  for (unsigned i = 0; i < 8; ++i) {
+    auto &r = large.rules[i]; r = {}; r.id = i + 1; strcpy(r.name.data(), "Large snapshot");
+    r.conditionCount = 8; r.assignmentCount = 1;
+    r.assignments[0].kind = i < 4 ? recovery::OutputKind::Pyro : recovery::OutputKind::Servo;
+    r.assignments[0].channel = uint8_t(i%4 + 1);
+  }
+  HeaderFlash big; FlightHeaderStore b(big); assert(create(b, large));
+  assert(b.view()->layout.configBytes > 1024 && encoded(b.view()->configuration) == encoded(large));
+  assert(b.finish(true)); assert(b.load(0x15000));
+  const auto configEnd = 0x15000 + 512 + b.view()->layout.configBytes - 1;
+  big.bytes[configEnd] ^= 1;
+  assert(!b.load(0x15000) && b.error() == HeaderError::Corrupt);
+  // Mode metadata is descriptive: physical mode never calls an actuator API.
+  HeaderFlash real; FlightHeaderStore hw(real);
+  assert(hw.create(0x15000, fixture(), limits, SensorMode::Hardware, OutputMode::Physical, sensors::FrameConvention::SensorAxes));
+  assert(hw.view()->outputMode == OutputMode::Physical && hw.view()->sensorMode == SensorMode::Hardware);
+  assert(hw.finish(true)); assert(hw.load(0x15000));
+  assert(hw.view()->frame == sensors::FrameConvention::SensorAxes);
+  HeaderFlash bad; FlightHeaderStore failed(bad); bad.failProgram = true;
+  assert(!create(failed) && failed.error() == HeaderError::Io && !failed.view());
+  // Ambiguous durable header commit must be read, never overwritten.
+  HeaderFlash late; FlightHeaderStore ambiguous(late);
+  late.failAfterProgram = initial.writes;
+  assert(!create(ambiguous)); const auto headerWrites = late.writes;
+  assert(!create(ambiguous) && ambiguous.error() == HeaderError::NotErased && late.writes == headerWrites);
+  FlightHeaderStore lateBoot(late); assert(lateBoot.load(0x15000));
+  late.failRead = true; FlightHeaderStore unreadable(late);
+  assert(!unreadable.load(0x15000) && unreadable.error() == HeaderError::Io);
+  // Samples can exhaust their extent while the already-reserved start table remains writable.
+  HeaderFlash combined; FlightHeaderStore meta(combined); assert(create(meta));
+  FlightSampleStore samples(combined); assert(samples.begin(7, 0x16000, 4096));
+  for (unsigned i = 0; i < 4; ++i) { FlightSample s; s.timeMs = i; assert(samples.append(s) && samples.flush()); }
+  FlightSample extra; extra.timeMs = 4;
+  assert(!samples.append(extra) && samples.error() == SampleError::Full);
+  assert(meta.recordStart(10, recovery::OutputKind::Pyro, 1, 500) && meta.finish(true));
+  FlightHeaderStore final(combined); assert(final.load(0x15000));
+  assert(final.view()->starts[0].timeMs == 500);
+  std::cout << "Flight header tests passed: frozen configuration, modes, slot ownership, eight pending starts, stopped-full independence, "
+            << createBytes + 1 << " header cuts and 513 output-start cuts.\n";
+}
+} // namespace test_flight_header_store
+
+namespace test_flight_directory {
+using namespace storage;
+struct PowerLoss {};
+class MemoryFlash : public FlashDevice {
+public:
+  std::vector<uint8_t> bytes = std::vector<uint8_t>(0x15000, 255);
+  long budget = -1;
+  std::size_t mutations = 0;
+  void tick() { if (budget == 0) throw PowerLoss{}; if (budget > 0) --budget; ++mutations; }
+  bool read(uint32_t a, void *p, std::size_t n) override {
+    if (a > bytes.size() || n > bytes.size() - a) return false;
+    std::memcpy(p, bytes.data() + a, n); return true;
+  }
+  bool program(uint32_t a, const void *p, std::size_t n) override {
+    assert(a >= 0x5000 && a + n <= 0x15000 && n == 256 && a % 256 == 0);
+    const auto *source = static_cast<const uint8_t *>(p);
+    for (std::size_t i = 0; i < n; ++i) {
+      assert((bytes[a + i] & source[i]) == source[i]); tick(); bytes[a + i] &= source[i];
+    }
+    return true;
+  }
+  bool eraseSector(uint32_t a) override {
+    assert(a >= 0x5000 && a + 4096 <= 0x15000 && a % 4096 == 0);
+    for (unsigned i = 0; i < 4096; ++i) { tick(); bytes[a + i] = 255; }
+    return true;
+  }
+};
+FlightEntry flight(uint64_t sequence = 1, uint32_t start = 0x15000) {
+  FlightEntry e; e.sequence = sequence; e.start = start; e.allocatedBytes = 4096; return e;
+}
+void appendCuts(const MemoryFlash &initial, const FlightEntry &e) {
+  for (long cut = 0; cut <= 512; ++cut) {
+    auto flash = initial; FlightDirectory d(flash); assert(d.mount()); flash.budget = cut;
+    try { d.update(e); } catch (const PowerLoss &) {}
+    flash.budget = -1; FlightDirectory boot(flash); assert(boot.mount());
+    assert(boot.count() == 1);
+    assert(boot.entries()[0].committedBytes == 0 || boot.entries()[0].committedBytes == e.committedBytes);
+    // A torn slot is consumed, never programmed again.
+    assert(boot.update(e));
+  }
+}
+void run() {
+  MemoryFlash flash; FlightDirectory directory(flash);
+  const auto pristine = flash.bytes;
+  assert(!directory.mount() && directory.error() == DirectoryError::Missing);
+  assert(pristine == flash.bytes);
+  assert(directory.format());
+  auto e = flight(); assert(directory.update(e));
+  const auto baseline = flash;
+  {
+    auto padFlash=baseline; FlightDirectory pad(padFlash); assert(pad.mount());
+    auto discarded=e; discarded.status=FlightStatus::Invalidated; discarded.allocatedBytes+=4096;
+    assert(!pad.update(discarded) && padFlash.bytes==baseline.bytes);
+    discarded=e; discarded.status=FlightStatus::Invalidated; ++discarded.committedBytes;
+    assert(!pad.update(discarded) && padFlash.bytes==baseline.bytes);
+    discarded=e; discarded.status=FlightStatus::Invalidated;
+    assert(pad.update(discarded));
+    FlightDirectory remount(padFlash); assert(remount.mount() && remount.retainedCount()==0 && remount.highWater()==1);
+    assert(!remount.update(e)); // Discarded identities cannot be revived.
+  }
+  e.committedBytes = 100; appendCuts(baseline, e);
+  assert(directory.update(e));
+  e.status = FlightStatus::Completed; assert(directory.update(e));
+  auto next = flight(2, 0x16000); assert(directory.update(next));
+  auto overlap = flight(3, 0x15000); assert(!directory.update(overlap));
+  next.status = FlightStatus::Interrupted; assert(directory.update(next));
+  e.status = FlightStatus::Invalidated; assert(directory.update(e));
+  const auto beforeCompact = flash;
+  // Every byte boundary of each programmed page, plus representative partial erases.
+  std::vector<long> cuts;
+  for (long cut = 32768; cut <= 32768 + 1536; ++cut) cuts.push_back(cut);
+  for (long sector = 0; sector < 8; ++sector)
+    for (long offset : {0L, 1L, 2048L, 4095L}) cuts.push_back(sector * 4096 + offset);
+  for (long cut : cuts) {
+    auto f = beforeCompact; FlightDirectory d(f); assert(d.mount()); f.budget = cut;
+    try { d.compact(); } catch (const PowerLoss &) {}
+    f.budget = -1; FlightDirectory boot(f); assert(boot.mount());
+    assert((boot.count() == 1 || boot.count() == 2) && boot.highWater() == 2);
+    if (boot.count()==2) assert(boot.entries()[0].status==FlightStatus::Invalidated);
+    assert(boot.entries()[boot.count()-1].status == FlightStatus::Interrupted);
+  }
+  assert(directory.compact());
+  assert(directory.generation() == 2);
+  assert(directory.compact()); assert(directory.generation() == 3);
+  // Repeated checkpoints exercise automatic compaction/reserved slots.
+  MemoryFlash checkpoints; FlightDirectory log(checkpoints); assert(log.format());
+  e = flight(); assert(log.update(e));
+  for (unsigned i = 1; i <= 180; ++i) { e.committedBytes = i; assert(log.update(e)); }
+  FlightDirectory reboot(checkpoints); assert(reboot.mount());
+  assert(reboot.entries()[0].committedBytes == 180 && reboot.generation() > 1);
+  // Deliberately corrupt a committed record: fail closed, never silently roll back.
+  MemoryFlash corrupted = baseline; corrupted.bytes[0x5000 + 512 + 32] ^= 1;
+  FlightDirectory bad(corrupted); assert(!bad.mount() && bad.error() == DirectoryError::Corrupt);
+  // Unsupported wrapped extents are rejected before mutation; adjacent extents remain valid.
+  MemoryFlash boundary; FlightDirectory contiguous(boundary); assert(contiguous.format());
+  const auto boundaryBefore=boundary.bytes;
+  e=flight(1,0xFFF000); e.allocatedBytes=8192;
+  assert(!contiguous.update(e) && contiguous.error()==DirectoryError::InvalidEntry && boundary.bytes==boundaryBefore);
+  e.allocatedBytes=4096; assert(contiguous.update(e)); e.status=FlightStatus::Completed; assert(contiguous.update(e));
+  next=flight(2,0xFFE000); assert(contiguous.update(next)); next.status=FlightStatus::Completed; assert(contiguous.update(next));
+  assert(!contiguous.update(flight(3,0xFFF000)));
+  // Even CRC-valid wrapped metadata must fail mounting without changing bytes.
+  auto incompatibleExtent=boundary;
+  auto *extent=incompatibleExtent.bytes.data()+FlashLayout::DirectoryA+FlightDirectory::SlotBytes;
+  binary::put(extent+40,8192,4);
+  const auto extentCrc=binary::crc(extent,252);
+  binary::put(extent+252,extentCrc,4); binary::put(extent+256+4,extentCrc,4);
+  binary::put(extent+256+8,~extentCrc,4);
+  const auto extentBefore=incompatibleExtent.bytes;
+  FlightDirectory rejectedExtent(incompatibleExtent);
+  assert(!rejectedExtent.mount() && rejectedExtent.error()==DirectoryError::Corrupt && incompatibleExtent.bytes==extentBefore);
+  // Unknown/nonblank directory isn't autoformatted.
+  MemoryFlash unknown; unknown.bytes[0x5000] = 0; const auto saved = unknown.bytes;
+  FlightDirectory unrecognized(unknown); assert(!unrecognized.mount()); assert(unknown.bytes == saved);
+  MemoryFlash capacity; FlightDirectory full(capacity); assert(full.format());
+  for (uint64_t i = 1; i <= FlightDirectory::MaxEntries; ++i) {
+    auto item = flight(i, uint32_t(0x15000 + (i - 1) * 4096));
+    assert(full.update(item)); item.status = FlightStatus::Completed; assert(full.update(item));
+  }
+  const auto capacityBefore = capacity.bytes;
+  assert(!full.update(flight(49, 0x45000)) && full.error() == DirectoryError::Full);
+  assert(capacityBefore == capacity.bytes);
+  assert(full.compact()); FlightDirectory fullBoot(capacity); assert(fullBoot.mount());
+  assert(fullBoot.count() == FlightDirectory::MaxEntries);
+  // A valid CRC/commit cannot authorize metadata from an incompatible geometry.
+  const auto bank = fullBoot.generation() % 2 ? FlashLayout::DirectoryA : FlashLayout::DirectoryB;
+  const auto other = bank == FlashLayout::DirectoryA ? FlashLayout::DirectoryB : FlashLayout::DirectoryA;
+  auto *body = capacity.bytes.data() + bank;
+  body[52] ^= 0x10; // Persisted data-region start differs from this board's fixed layout.
+  uint32_t checksum = 0xFFFFFFFFu;
+  for (unsigned i = 0; i < 252; ++i) {
+    checksum ^= body[i];
+    for (unsigned bit = 0; bit < 8; ++bit) checksum = (checksum >> 1) ^ ((checksum & 1) ? 0xEDB88320u : 0);
+  }
+  checksum ^= 0xFFFFFFFFu;
+  for (unsigned i = 0; i < 4; ++i) {
+    body[252+i] = uint8_t(checksum >> (8*i));
+    body[256+4+i] = uint8_t(checksum >> (8*i));
+    body[256+8+i] = uint8_t((~checksum) >> (8*i));
+  }
+  // Destroy the alternative older bank so mount cannot legitimately use it.
+  std::fill(capacity.bytes.begin()+other, capacity.bytes.begin()+other+FlashLayout::DirectoryBankBytes, 255);
+  FlightDirectory incompatible(capacity); assert(!incompatible.mount());
+  std::cout << "Flight directory tests passed: " << 513 + cuts.size()
+            << " simulated power cuts, compaction, bounds, corruption and contiguous ownership.\n";
+}
+} // namespace test_flight_directory
+
+int main() {
+  std::puts("  configuration_store"); std::fflush(stdout);
+  test_configuration_store::run();
+  std::puts("  flight_header_store"); std::fflush(stdout);
+  test_flight_header_store::run();
+  std::puts("  flight_directory"); std::fflush(stdout);
+  test_flight_directory::run();
+}
