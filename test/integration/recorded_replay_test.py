@@ -5,6 +5,7 @@ import io
 from pathlib import Path
 import tempfile
 import json
+import math
 import subprocess
 
 import sys
@@ -18,18 +19,37 @@ def check_navigation_replay():
         folder = Path(directory)
         with contextlib.redirect_stdout(io.StringIO()):
             actual = module.replay(module.DEFAULT_INPUT, folder / 'actual.csv')
-        assert len(actual) == 3600 and all(row['imu_valid'] == '1' for row in actual)
+        assert len(actual) == 6600 and all(row['imu_valid'] == '1' for row in actual)
         transitions = {}
         for row in actual:
             transitions.setdefault(int(row['phase']), int(row['t_ms']))
-        assert transitions == {0: 0, 1: 4199, 2: 6192, 3: 8553}, transitions
-        assert sum(row['baro_updated'] == '1' for row in actual) == 896
+        assert transitions == {0: 0, 1: 8199, 2: 10192, 3: 12553, 4: 30223}, transitions
+        assert sum(row['baro_updated'] == '1' for row in actual) == 1506
+        subprocess.run([sys.executable,str(ROOT/'tools/replay/trim_hoppino.py'),'--check'],check=True,capture_output=True)
+        # Compare physical rotations, not Euler components near pitch=-90 degrees.
+        with contextlib.redirect_stdout(io.StringIO()):
+            full=module.replay(ROOT/'datasets/hoppino_VOLO_UFFICIALE_original.csv',folder/'full.csv')
+        original={int(r['source_t_ms']):r for r in full}
+        def quaternion(row):
+            a,b,c=(float(row[k])/2 for k in ('roll_rad','pitch_rad','yaw_rad'))
+            cr,sr,cp,sp,cy,sy=math.cos(a),math.sin(a),math.cos(b),math.sin(b),math.cos(c),math.sin(c)
+            return (cr*cp*cy+sr*sp*sy,sr*cp*cy-cr*sp*sy,cr*sp*cy+sr*cp*sy,cr*cp*sy-sr*sp*cy)
+        differences=[]
+        for row in actual:
+            if row['phase']=='0': continue
+            before=original[int(row['t_ms'])+2003]
+            assert before['phase']==row['phase']
+            dot=abs(sum(a*b for a,b in zip(quaternion(row),quaternion(before))))
+            differences.append(math.degrees(2*math.acos(min(1,dot))))
+        assert max(differences)<.1, max(differences)
+        assert int(actual[-1]['t_ms'])-transitions[4]>=2500
+        print(f'Full-flight crop: launch through landing preserved; maximum attitude difference {max(differences):.4f} degrees.')
         subprocess.run([sys.executable,str(ROOT/'tools/replay/generate_hoppino_data.py'),'--check'],check=True,capture_output=True)
         embedded=subprocess.run([str(ROOT/'.pio/tests/bin/onboard_simulation.exe')],check=True,capture_output=True,text=True)
         onboard=list(csv.DictReader(io.StringIO(embedded.stdout)))
-        assert len(onboard)==3600
+        assert len(onboard)==6600
         assert onboard==[{key:row[key] for key in onboard[0]} for row in actual], 'Embedded Hoppino differs from CSV sensor replay'
-        print('Embedded Hoppino matches CSV navigation on all 3600 frames, including attitude and phase.')
+        print('Embedded Hoppino matches CSV navigation on all 6600 frames, including attitude and phase.')
         with module.DEFAULT_INPUT.open(newline='') as source:
             reader = csv.DictReader(source)
             fields, rows = reader.fieldnames, list(reader)
@@ -49,7 +69,7 @@ def check_navigation_replay():
         columns = [name for name in actual[0] if not name.startswith('recorded_')]
         for first, second in zip(actual, independent):
             assert all(first[name] == second[name] for name in columns)
-        print('Navigation sensor replay passed: 3600 samples; recorded estimates/phases cannot affect calculations; Pa/hPa equivalent.')
+        print('Navigation sensor replay passed: 6600 samples; recorded estimates/phases cannot affect calculations; Pa/hPa equivalent.')
     return actual
 
 
@@ -70,7 +90,7 @@ def check_sensor_hil_usb(navigation_reference):
             process.stdin.close()
             process.wait(timeout=10)
             process.stdout.close()
-        assert process.returncode == 0 and final['samples'] == 3600
+        assert process.returncode == 0 and final['samples'] == 6600
         reference = navigation_reference
         with output.open(newline='') as source:
             actual = list(csv.DictReader(source))
@@ -82,9 +102,9 @@ def check_sensor_hil_usb(navigation_reference):
             for name in ('z_est', 'vz_est', 'ba_est', 'az_est'):
                 assert abs(float(hil[name]) - float(pc[name])) < 1e-5, (name, hil[name], pc[name])
         starts = [start for row in actual for start in json.loads(row['starts'])]
-        assert starts == [[10, 'pyro', 1, 8553], [10, 'servo', 1, 8553], [20, 'pyro', 2, 14500]], starts
+        assert starts == [[10, 'pyro', 1, 12553], [10, 'servo', 1, 12553], [20, 'pyro', 2, 18491]], starts
         assert final['cancelled_pending'] == 0
-        print('Sensor HIL integration passed: all 3600 navigation results match PC replay; 3 virtual starts.')
+        print('Sensor HIL integration passed: all 6600 navigation results match PC replay; 3 virtual starts.')
 
 def check_replay_hoppino_usb():
     module = load_tool('tools/replay/replay_hoppino_usb.py')
@@ -122,7 +142,7 @@ def check_replay_hoppino_usb():
         with reference.open(newline='') as source:
             expected = list(csv.DictReader(source))
         assert actual == expected, (actual, expected)
-        assert len(samples) == 3600
+        assert len(samples) == 6600
         print(f'USB client / C++ replay matches PC reference: {len(samples)} samples, {len(actual)} events.')
 
 if __name__ == "__main__":

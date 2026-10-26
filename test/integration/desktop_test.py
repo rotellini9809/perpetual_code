@@ -25,10 +25,29 @@ from perpetual_app.dialogs import RuleDialog,ConditionDialog,OutputDialog,Channe
 from perpetual_app.window import MainWindow
 from perpetual_app.sensor_details import SensorHistory
 from perpetual_app.flight_plot import axis_scale,axis_scales
+from perpetual_app.orientation import euler_x_up
 from perpetual_app.ports import Port,describe_port,candidates
 
 
 def check_flight_plots(window,controller,app):
+    def matrix(angles):
+        r,p,y=map(math.radians,angles)
+        def multiply(a,b): return [[sum(a[i][k]*b[k][j] for k in range(3)) for j in range(3)] for i in range(3)]
+        rx=[[1,0,0],[0,math.cos(r),-math.sin(r)],[0,math.sin(r),math.cos(r)]]
+        ry=[[math.cos(p),0,math.sin(p)],[0,1,0],[-math.sin(p),0,math.cos(p)]]
+        rz=[[math.cos(y),-math.sin(y),0],[math.sin(y),math.cos(y),0],[0,0,1]]
+        return multiply(multiply(rz,ry),rx)
+    assert all(abs(a)<1e-10 for a in euler_x_up(0,-90,0))
+    assert abs(euler_x_up(30,-90,0)[0]-30)<1e-10
+    assert euler_x_up(None,-90,0)==(None,None,None)
+    assert euler_x_up(0,float('nan'),0)==(None,None,None)
+    # Independent rotation matrices check composition, including both old/new
+    # singularities and equivalent old Euler triplets at the upright attitude.
+    for angles in [(r,p,y) for r in (-170,0,37) for p in (-90,-40,0,60,90) for y in (-180,-75,0,50,180)]:
+        before=matrix(angles); after=matrix(euler_x_up(*angles))
+        expected=[before[2],before[1],[-v for v in before[0]]]
+        assert max(abs(after[i][j]-expected[i][j]) for i in range(3) for j in range(3))<1e-8,angles
+    assert max(abs(a-b) for a,b in zip(euler_x_up(0,-90,0),euler_x_up(120,-90,-120)))<1e-10
     for values in ((0,),(1,12),(-12,-1),(-3,110),(0,.000003),(-124.4,97.2)):
         low,high,ticks=axis_scale(values)
         assert 0 in ticks and low<min(values) and high>max(values) and ticks==sorted(set(ticks))
@@ -51,7 +70,11 @@ def check_flight_plots(window,controller,app):
         target.with_suffix('.json').write_text(json.dumps(dict(configuration=dict(rules=saved_rules),output_starts=starts)),encoding='utf-8')
         data=load_flight(target)
         assert data['samples']==2401 and len(data['rows'])<=1201
-        assert data['rows'][0]==(0,0,100,-9.5,12,3,-40,90,-180,45,8.4) # CSV rad/s -> displayed degrees/s; battery in volts.
+        assert data['rows'][0][:4]==(0,0,100,-9.5)
+        before=matrix((12,3,-40)); after=matrix(data['rows'][0][4:7])
+        expected=[before[2],before[1],[-v for v in before[0]]]
+        assert max(abs(after[i][j]-expected[i][j]) for i in range(3) for j in range(3))<1e-8
+        assert data['rows'][0][7:]==(90,-180,45,8.4) # Exactly one rad/s -> deg/s conversion; battery in volts.
         assert data['phases']==[(0,'PAD'),(.005,'BOOST'),(.010,'COAST')] # Before plot decimation.
         assert next(r for r in data['rows'] if r[0]==.030)[4] is None # A skipped invalid sample still breaks the curve.
         assert next(r for r in data['rows'] if r[0]==.030)[8] is None
@@ -108,6 +131,24 @@ def check_flight_plots(window,controller,app):
         assert connections==[(0,1),(2,3),(4,5),(6,7)]
         point=next(a for a,_,r,_,_ in orientation._segments if r[0]==9)
         assert '180.000' in orientation._nearest_sample(point)[1] # Isolated samples remain visible/inspectable.
+        # The illustrative 2S trace is separate from real/missing CSV telemetry.
+        legacy.with_suffix('.json').write_text(json.dumps(dict(sensor_mode=1)),encoding='utf-8')
+        simulated=load_flight(legacy)
+        assert simulated['simulated_battery'] and [r[11] for r in simulated['rows']]==[8.4,8.2]
+        assert all(r[10] is None for r in simulated['rows'])
+        controller.state.flight=simulated; window._render_flights(controller.state)
+        assert [c[1] for c in window.flight_battery.curves]==['Tensione batteria']
+        def flight_kind():
+            return next(details.topLevelItem(i).text(1) for i in range(details.topLevelItemCount()) if details.topLevelItem(i).text(0)=='Tipo di volo')
+        assert flight_kind()=='Simulato'
+        assert not window.flight_battery.grab().isNull()
+        legacy.with_suffix('.json').write_text(json.dumps(dict(sensor_mode=0)),encoding='utf-8')
+        hardware=load_flight(legacy)
+        assert not hardware['simulated_battery'] and len(hardware['rows'][0])==11
+        window._flight_path=None; controller.state.flight=hardware; window._render_flights(controller.state)
+        assert flight_kind()=='Reale' and [c[0] for c in window.flight_battery.curves]==[10]
+        controller.state.flight=data; window._render_flights(controller.state)
+        assert len(window.flight_battery.curves)==1 and flight_kind()=='Non disponibile'
         app.processEvents(); controller.state.flight=original; window._render_flights(controller.state)
 
 
@@ -309,7 +350,7 @@ class Native:
         if command=='sim stop': self.active=False
         if command.startswith('sim begin') or command in ('sim stop','sim status'):
             return dict(active=self.active,arming_state='armed' if self.active else 'disarmed',output_mode=self.output_mode,
-                        source='hoppino',duration_ms=17995,total_samples=3600,
+                        source='hoppino',duration_ms=32995,total_samples=6600,
                         samples=1 if self.active else 0,t_ms=0,phase=0,z_est=0,starts=0,reason='running' if self.active else 'stopped')
         if command=='sim events': return dict(starts=[],phases=[],output_mode=self.output_mode)
         response=self.client.request(command,timeout)
@@ -631,7 +672,7 @@ def run():
         assert len(ticks)>5 # The UI event loop stays alive during serial/business waits.
         gate.set(); wait(lambda:controller.state.sim.get('active') and not controller.state.foreground); timer.stop()
         assert scroll.value()==position
-        assert window.sim_progress.maximum()==17995 and 'Hoppino' in window.sim_summary.text() and f'{17995/1000:.2f}' in window.sim_summary.text()
+        assert window.sim_progress.maximum()==32995 and 'Hoppino' in window.sim_summary.text() and f'{32995/1000:.2f}' in window.sim_summary.text()
         assert controller.state.status['arming_state']=='armed'
         assert not window.check_pyros_button.isEnabled() and not window.prepare_servos_button.isEnabled()
         assert window.arming_state.text()=='ARMED' and window.arming_state.property('state')=='armed'

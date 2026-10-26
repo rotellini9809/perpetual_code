@@ -8,18 +8,20 @@ from PySide6.QtWidgets import QWidget,QToolTip
 PHASE_COLORS={'PAD':'#e7edf3','BOOST':'#fbe5da','COAST':'#e0edf9','DESCENT':'#dcf0e9','LANDED':'#ece7f4'}
 
 
-def axis_scale(values,angular=False):
+def axis_scale(values,angular=False,include_zero=True):
     if angular: return -180,180,[-180,-90,0,90,180]
-    low=min(0,min(values)); high=max(0,max(values)); padding=max(1,high-low)*.12
+    low=min(values); high=max(values)
+    if include_zero: low=min(0,low); high=max(0,high)
+    padding=max(1,high-low)*.12
     target=(high-low+2*padding)/4; magnitude=10**floor(log10(target))
     step=next(magnitude*n for n in (1,2,2.5,5,10) if magnitude*n>=target)
     ticks=[n*step for n in range(floor((low-padding)/step),ceil((high+padding)/step)+1)]
     return ticks[0],ticks[-1],ticks
 
 
-def axis_scales(values_by_axis,angular=False):
-    scales={axis:axis_scale(values,angular) for axis,values in values_by_axis.items() if values}
-    if len(scales)>1:
+def axis_scales(values_by_axis,angular=False,include_zero=True):
+    scales={axis:axis_scale(values,angular,include_zero) for axis,values in values_by_axis.items() if values}
+    if len(scales)>1 and include_zero:
         # Common counts of tick intervals below/above zero align both axes exactly.
         steps={axis:ticks[1]-ticks[0] for axis,(_,_,ticks) in scales.items()}
         below=max(round(-low/steps[axis]) for axis,(low,_,_) in scales.items())
@@ -32,8 +34,8 @@ def axis_scales(values_by_axis,angular=False):
 
 class FlightPlot(QWidget):
     # Each curve: (CSV row column, display name, unit, colour, axis).
-    def __init__(self,curves,angular=False):
-        super().__init__(); self.curves=curves; self.angular=angular
+    def __init__(self,curves,angular=False,include_zero=True):
+        super().__init__(); self.curves=curves; self.angular=angular; self.include_zero=include_zero
         self.rows=[]; self.points=[]; self.markers=[]; self.phases=[]
         self._segments=[]; self._hover=None; self.setMouseTracking(True)
         self.show_actuators=True; self.show_states=True; self.setMinimumHeight(240)
@@ -97,7 +99,7 @@ class FlightPlot(QWidget):
         p.drawText(QRectF(box.right()+31,box.bottom()+8,24,18),Qt.AlignLeft,'s')
         values_by_axis={axis:[r[c[0]] for c in self.curves if c[4]==axis for r in self.rows if r[c[0]] is not None]
                         for axis in ((0,1) if dual else (0,))}
-        scales=axis_scales(values_by_axis,self.angular)
+        scales=axis_scales(values_by_axis,self.angular,self.include_zero)
         for axis,(low,high,ticks) in scales.items():
             curves=[c for c in self.curves if c[4]==axis]
             color=curves[0][3] if dual else '#65768b'

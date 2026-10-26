@@ -39,7 +39,7 @@ erases only the new durably owned extent. HIL accepts `--record-bytes
 sent from Hoppino, or NaN when absent. The live USB CSV and later flash export are separate
 artifacts.
 
-For the Hoppino excerpt, expect `3600 saved, 0 dropped; storage None` when the worker keeps up.
+For the Hoppino excerpt, expect `6600 saved, 0 dropped; storage None` when the worker keeps up.
 `None` is the error name for success, not a missing storage object. Output starts depend on the
 applied plan. These are test workflows, not flight settings.
 

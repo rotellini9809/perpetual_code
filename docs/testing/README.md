@@ -103,7 +103,7 @@ requirement.
 | Storage primitives | CRC known vector/incremental splits, little-endian widths, unchanged v2 image, bounds/alignment, erased ownership and typed failures |
 | Storage transactions | Header 769, start slot 513, sample block 1025, summary 513, recorder close 2049, directory 2082 and configuration 773 interruption cases |
 | Retention/corruption | 513 deletion cuts, 160 identities/reuse/high-water, 513 quarantine cuts, healthy downloads, occupied corrupt extents, remount/compaction and no silent repair |
-| Hoppino 6..24 s excerpt | 3600 frames through references/HIL, synchronous and queued recording, fresh decoding, frozen config/temperature and three fixture starts |
+| Hoppino 2..35 s excerpt | 6600 frames through references/HIL, synchronous and queued recording, fresh decoding, frozen config/temperature and three fixture starts |
 
 Case counts describe the current tests, not independent hardware power failures. The standard
 CRC vector is `123456789`; the format fixture hashes to `0xb94a27eca6844a2c`. Quarantine tests

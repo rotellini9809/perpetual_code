@@ -9,18 +9,24 @@ allocation or matrix-library dependency.
 
 `Navigation::begin(referenceAltitude, nominalImuHz, quaternion)` resets navigation. Reference
 altitude is absolute pressure altitude in metres from arming; the first IMU step uses nominal
-dt, subsequent steps use actual timestamp deltas. The identity quaternion default preserves the
-earlier initialization. A different mounting/attitude initialization must be explicitly supplied
-and verified.
+dt, subsequent steps use actual timestamp deltas. Direct callers retain the identity quaternion
+default. Physical arming instead supplies a gravity-derived initial quaternion through the
+per-run `SensorCalibration` snapshot.
 
 The mounting selector below defines sensor-to-BODY coordinates, not the initial BODY-to-NAV
-attitude. It does not change the inherited quaternion initialization or estimate absolute heading.
+attitude. Physical calibration applies this same mounting transform to averaged acceleration
+before constructing the initial attitude. It does not estimate absolute heading.
 
 `SensorFrame` requires calibrated BODY specific force in m/s^2, gyro in rad/s, pressure in Pa,
 microsecond timestamps, independent sequence IDs and validity. BODY +X points tail-to-nose.
 Quaternion maps BODY -> NAV with +Z up. Euler output is radians. Pressure conversion is
 44330*(1-(P/101325)^0.1903); launch-relative barometer altitude subtracts the reference and
 tracked PAD baseline.
+
+The desktop orientation plot re-expresses this rotation in an X-up reference using
+`R_display = Ry(+90 degrees) R_body_to_nav` before extracting ZYX Euler angles.
+This display transform does not change navigation, stored Euler degrees, sensor mounting,
+or startup calibration. See [desktop conventions](DESKTOP.md).
 
 Repeated/backward IMU timestamps or sequences are rejected; invalid IMU or dt outside (0,0.1]
 seconds freezes numerical navigation for that frame. Fresh invalid frames still advance the
@@ -92,20 +98,34 @@ five seconds at 100 Hz; a 120 Hz source may take longer because samples inside t
 window are skipped. Launch reference is the mean of fresh pressure-altitude acquisitions,
 counted independently rather than weighting repeated barometer values as fresh samples.
 
+The same 500 accepted IMU samples also average accelerometer specific force after subtracting
+the device acceleration bias in SENSOR coordinates. The shared SENSOR-to-BODY mounting
+transform is then applied once. `AttitudeEstimator::fromGravity` constructs a normalized
+BODY-to-NAV quaternion that maps this upward vector to NAV +Z. For an upright BODY +X,
+the initial rotation is Ry(-90 degrees): vertical projection is correct from the first flight
+sample, and the X-up desktop reference displays zero attitude for the chosen transverse
+orientation. Gravity cannot determine heading about the vertical; the shortest rotation fixes
+that otherwise arbitrary reference, with a deterministic 180-degree fallback for inverted +Z.
+No calibration attitude is learned during flight. The quaternion is RAM-only, reset together
+with the gyro bias at every physical arming and discarded on disarm. Logged replay does not
+invoke this physical collector and retains its existing startup behavior.
+
 Development stationary gates require corrected acceleration magnitude within 1 m/s^2 of
 9.80665 and raw gyro norm at most 0.5 rad/s. Invalid data, stale/future pressure or IMU gaps over
 100 ms restart the collection window; repeated/backward IMU identities/times do not count.
 Pressure must be finite/positive and no older than 100 ms. These collection gates still need
 qualification with the repaired physical IMU; no estimator/detector parameters changed. There
 is no automatic calibration timeout: progress remains visible and `disarm` cancels collection.
-No calibration samples or gyro biases are written to flash.
+An averaged acceleration magnitude below 8.80665 m/s^2 restarts the window as well, rejecting
+strongly cancelling gravity directions. No calibration samples, gyro biases or initial
+quaternion are written to flash.
 
 A separate pre-arm tilt-consistency/convergence gate is not implemented yet. Its future policy
 must tolerate normal wind-driven motion of a rocket on rail buttons: compare estimated gravity
 with measurements rather than require a fixed attitude. Yaw is not a convergence prerequisite.
 The earlier proposed strict one-second immobility thresholds are not adopted; thresholds and
-averaging windows need qualification with the repaired IMU. Existing gyro-bias collection remains
-unchanged while power-saving integration is completed.
+averaging windows need qualification with the repaired IMU. Initializing from mean gravity
+does not replace that future motion-consistency policy.
 
 Persistent accelerometer calibration will contain only three additive biases in sensor-axis
 coordinates, in m/s^2. Missing calibration uses (0,0,0) and must not by itself prevent flight.

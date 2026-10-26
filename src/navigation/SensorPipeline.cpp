@@ -15,12 +15,19 @@ bool validCalibration(const SensorCalibration &c) {
   return true;
 }
 }
+void sensorToBody(UpAxis up, const float (&sensor)[3], float (&body)[3]) {
+  for (unsigned i=0;i<3;++i) {
+    const int axis=MountingAxes[static_cast<unsigned>(up)][i];
+    const unsigned j=unsigned(axis<0 ? -axis : axis)-1;
+    body[i]=(axis<0 ? -1.0f : 1.0f)*sensor[j];
+  }
+}
 bool SensorPipeline::begin(sensors::SensorSource &source, const SensorCalibration &calibration, float reference, float hz) {
   if (active()) return false;
   if (source.convention() == sensors::FrameConvention::SensorAxes) {
     if (!validCalibration(calibration)) return false;
   } else if (source.convention() != sensors::FrameConvention::LoggedCalibratedBody) return false;
-  if (!navigation_.begin(reference, hz)) return false;
+  if (!navigation_.begin(reference, hz, calibration.initialQuaternion)) return false;
   calibration_ = calibration; convention_ = source.convention(); source_ = &source; return true;
 }
 bool SensorPipeline::poll(NavigationOutput &out) {
@@ -34,16 +41,18 @@ bool SensorPipeline::process(const sensors::Reading &input, NavigationOutput &ou
   frame.timeUs = input.timeUs; frame.imuSequence = input.imuSequence; frame.imuValid = input.imuValid;
   frame.baroTimeUs = input.baroTimeUs; frame.baroSequence = input.baroSequence;
   frame.baroValid = input.baroValid; frame.pressurePa = input.pressurePa;
+  float accel[3],gyro[3];
   for (unsigned i = 0; i < 3; ++i) {
     if (convention_ == sensors::FrameConvention::LoggedCalibratedBody) {
       frame.accel[i] = input.accelMps2[i]; frame.gyro[i] = input.gyroRadps[i];
     } else {
-      const int axis = MountingAxes[static_cast<unsigned>(calibration_.upAxis)][i];
-      const unsigned j = unsigned(axis < 0 ? -axis : axis) - 1;
-      const float sign = axis < 0 ? -1.0f : 1.0f;
-      frame.accel[i] = sign * (input.accelMps2[j] - calibration_.accelBias[j]);
-      frame.gyro[i] = sign * (input.gyroRadps[j] - calibration_.gyroBias[j]);
+      accel[i]=input.accelMps2[i]-calibration_.accelBias[i];
+      gyro[i]=input.gyroRadps[i]-calibration_.gyroBias[i];
     }
+  }
+  if (convention_==sensors::FrameConvention::SensorAxes) {
+    sensorToBody(calibration_.upAxis,accel,frame.accel);
+    sensorToBody(calibration_.upAxis,gyro,frame.gyro);
   }
   out = navigation_.step(frame); return true;
 }

@@ -21,6 +21,6 @@ private:
   uint32_t samples_ = 0, pressures_ = 0;
   uint64_t lastTime_ = 0, lastSequence_ = 0, acceptedTime_ = 0, lastBaroSequence_ = 0, lastBaroTime_ = 0;
   bool haveImu_ = false, haveBaro_ = false;
-  double gyroSum_[3] = {}, altitudeSum_ = 0;
+  double gyroSum_[3] = {}, accelSum_[3] = {}, altitudeSum_ = 0;
 };
 }

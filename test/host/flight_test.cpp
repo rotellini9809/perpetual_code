@@ -348,6 +348,8 @@ void run() {
   assert(recorder.metadata()->sensorMode==storage::SensorMode::Hardware && recorder.metadata()->outputMode==storage::OutputMode::Physical);
   nowUs+=10000; acquire(device,500); const auto tick=physical.poll(result);
   assert(tick.processed && result.navigation.valid && result.timeMs==10); // Flight epoch excludes calibration.
+  assert(std::fabs(result.navigation.verticalSpecificForce-9.80665f)<1e-5f);
+  assert(std::fabs(result.navigation.eulerRadians[1]+1.57079632679f)<1e-3f); // BODY +X up immediately.
   assert(physical.disarm()==nullptr && physical.calibrationSamples()==0 && !recorder.active() && config.disarmed());
   assert(physical.runtime().status().recordingDiscarded && !physical.runtime().status().boostReached);
   assert(recorder.directory().retainedCount()==0);
@@ -373,7 +375,7 @@ void run() {
   has(send(usb,"ds"),"\"arming_state\":\"disarmed\""); assert(!outputs.hasPreparation());
   // Ordinary disarm uses the shared phase gate; virtual debug stop remains available.
   has(send(usb,"sim begin"),"\"active\":true"); const auto origin=nowUs;
-  for (unsigned n=0;n<=5000;++n) { nowUs=origin+n*1000; sim.poll(); }
+  for (unsigned n=0;n<=sensors::SimulatedSensorSource::durationMs() && sim.navigation().phase!=recovery::FlightPhase::Boost;++n) { nowUs=origin+n*1000; sim.poll(); }
   assert(sim.navigation().phase==recovery::FlightPhase::Boost);
   has(send(usb,"ds"),"DISARM_PROHIBITED_IN_FLIGHT"); assert(sim.active());
   has(send(usb,"sim stop"),"\"active\":false");

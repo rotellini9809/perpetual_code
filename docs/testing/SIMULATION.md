@@ -20,12 +20,16 @@ Estimate replay intentionally bypasses navigation and remains an independent rul
 | `run_simulation_usb.py` | Board's clock | Embedded Hoppino BODY IMU/pressure | Autonomous scheduling/shared pipeline; optional recording |
 
 Default Hoppino source: [`datasets/hoppino_VOLO_UFFICIALE.csv`](../../datasets/hoppino_VOLO_UFFICIALE.csv),
-is the 6..24-second excerpt of Recovery System's official flight log. All replay runners and
-recorded integration tests use these 3600 samples. The first retained row, originally 6003 ms,
-is timestamp zero; the last, originally 23998 ms, is now 17995 ms. Sample intervals, missing
+is the 2..35-second excerpt of Recovery System's official flight log. All replay runners and
+recorded integration tests use these 6600 samples. The first retained row, originally 2003 ms,
+is timestamp zero; the last, originally 34998 ms, is now 32995 ms. Sample intervals, missing
 values, measurement/estimate values and columns are preserved: BODY acceleration is m/s²,
-gyro rad/s and pressure hPa. This excerpt ends during DESCENT, before the original landing;
-EOF completes the replay without fabricating a LANDED transition.
+gyro rad/s and pressure hPa. This excerpt retains about 8.2 seconds of PAD and 2.8 seconds after detected LANDED,
+including the complete ascent and descent. The untouched original is stored alongside it as
+`datasets/hoppino_VOLO_UFFICIALE_original.csv`; `python tools/replay/trim_hoppino.py`
+rebuilds the crop without changing any measurement fields. The recorded replay regression
+compares rotations against the full-log replay (less than 0.1 degree difference after launch).
+Euler roll/yaw remain ill-conditioned near pitch -90 degrees; these are not absolute heading measurements.
 Recorded navigation/phase columns are references; sensor replay recomputes them onboard or on PC.
 USB tools need pyserial (`python -m pip install pyserial` if absent). Upload
 MAIN, use a valid applied plan with no active draft, and close Serial Monitor before opening
@@ -120,8 +124,8 @@ physically prepared servos until Disarm releases them.
 
 The board reads the official Hoppino sensor log from a const table in program flash, one
 sample at a time without a RAM dataset copy or external recording-flash allocation. The
-previous synthetic profile is replaced, with no profile selector. There are 3600 readings over
-17995 ms; timestamps are normalized to the first row. Real recorded gyro/acceleration,
+previous synthetic profile is replaced, with no profile selector. There are 6600 readings over
+32995 ms; timestamps are normalized to the first row. Real recorded gyro/acceleration,
 temperature, pressure and missing values are retained. Pressure is converted once to Pa;
 stored estimates, Euler angles, magnetometer and phase never enter the table. Reference altitude
 and nominal 200 Hz match PC sensor HIL's initial one-second pressure mean and median period.
@@ -140,7 +144,7 @@ checks freshness and compares the embedded source/pipeline with CSV navigation o
 Core 0 polls absolute micros deadlines before USB. It emits one latest due frame, counts missed
 slots and never catches up in a burst or shifts later deadlines. Unsigned subtraction handles
 rollover for this bounded run. This is cooperative scheduling, not an ISR/hard-real-time
-guarantee. A full virtual replay has 3600 frames; check `samples + missed_ticks == 3600`. Phase/start
+guarantee. A full virtual replay has 6600 frames; check `samples + missed_ticks == 6600`. Phase/start
 arrays are bounded to five/eight.
 
 The 1 MiB record budget is prepared before the profile clock begins. Physical outputs retain the
@@ -169,7 +173,7 @@ rules using the board's applied plan, not the PC runner's fixture. Legacy states
 1->BOOST, 2->COAST, 3/4->DESCENT, 5->LANDED; never cast the old enum to the current numeric
 phase. Each accepted row publishes fresh estimates, nan/inf marks invalid inputs, and gaps over
 100 ms reset relevant untriggered confirmations. The one-rule USB example starts Pyro 1 near
-8551 ms; sensor HIL computes DESCENT near 8553 ms. Different plans naturally differ.
+12551 ms; sensor HIL computes DESCENT near 12553 ms. Different plans naturally differ.
 
 ## Shared lifecycle and timing limits
 

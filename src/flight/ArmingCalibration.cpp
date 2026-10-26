@@ -5,9 +5,11 @@ namespace flight {
 void ArmingCalibration::resetWindow() {
   samples_ = pressures_ = 0; altitudeSum_ = 0;
   for (auto &sum : gyroSum_) sum = 0;
+  for (auto &sum : accelSum_) sum = 0;
 }
 void ArmingCalibration::begin(const navigation::SensorCalibration &device) {
   clear(); device_ = device; device_.configured = false;
+  device_.initialQuaternion={{1,0,0,0}}; // Never reuse a previous arming attitude.
   for (auto &bias : device_.gyroBias) bias = 0; // Never reuse another arming session's gyro bias.
 }
 bool ArmingCalibration::add(const sensors::Reading &r) {
@@ -35,12 +37,30 @@ bool ArmingCalibration::add(const sensors::Reading &r) {
   }
   if (samples_ && r.timeUs - acceptedTime_ < SampleSpacingUs) return false;
   acceptedTime_ = r.timeUs;
-  for (unsigned i = 0; i < 3; ++i) gyroSum_[i] += r.gyroRadps[i];
+  for (unsigned i = 0; i < 3; ++i) {
+    gyroSum_[i] += r.gyroRadps[i];
+    accelSum_[i] += r.accelMps2[i]-device_.accelBias[i];
+  }
+  // Opposing directions must not average to a fictitious stationary gravity.
+  if (samples_+1==TargetSamples) {
+    double norm=0; for (auto sum:accelSum_) norm+=sum*sum;
+    if (std::sqrt(norm)/TargetSamples<8.80665) { resetWindow(); return false; }
+  }
   ++samples_; return ready();
 }
 navigation::SensorCalibration ArmingCalibration::calibration() const {
   auto result = device_; result.configured = ready();
-  if (ready()) for (unsigned i = 0; i < 3; ++i) result.gyroBias[i] = float(gyroSum_[i] / samples_);
+  if (ready()) {
+    float sensor[3],body[3];
+    for (unsigned i = 0; i < 3; ++i) {
+      result.gyroBias[i] = float(gyroSum_[i] / samples_);
+      sensor[i]=float(accelSum_[i]/samples_);
+    }
+    if (unsigned(result.upAxis)>=6) { result.configured=false; return result; }
+    // The same bias-corrected SENSOR -> BODY rotation used during flight.
+    navigation::sensorToBody(result.upAxis,sensor,body);
+    result.configured=navigation::AttitudeEstimator::fromGravity(body,result.initialQuaternion);
+  }
   return result;
 }
 float ArmingCalibration::referenceAltitude() const {

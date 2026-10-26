@@ -17,7 +17,7 @@
 - Servo configuration contains only the configured flag and initial/final PWM. Keep one configuration codec (v2) throughout firmware/app/exporters; format changes use an explicit fresh start rather than legacy decoding or hidden compatibility settings.
 
 - Simulation replays the firmware-embedded official Hoppino sensor log, without a profile selector. Read duration/progress from firmware replies; the former 25-second synthetic profile is replaced.
-- Recorded flight plots include `battery_v` in volts. It is real 5 Hz board telemetry even in simulation; missing battery data stays unavailable, never replaced by a synthetic trace.
+- Recorded flight plots include `battery_v` in volts. It remains real 5 Hz board telemetry even in simulation; missing measured data stays unavailable. The graph is labelled Tensione batteria in both modes: simulation recordings show only an illustrative 2S trace (8.4 to 8.2 V), real recordings show measured telemetry. Synthetic values are display-only and never overwrite exports. The details show Tipo di volo from persisted sensor_mode, with Non disponibile for missing metadata.
 
 ## File map and focused changes
 
@@ -29,6 +29,7 @@
 | Configuration view, rule/channel editing, draft footer | `configuration_page.py`; editors in `dialogs.py` |
 | Live sensor detail window and 60-second history/plots | `sensor_details.py`; polling in `controller.py` |
 | Recorded flight curves, actuator markers and phase overlays | `flight_plot.py`; CSV loading in `controller.py`, view in `window.py` |
+| Euler display convention | `orientation.py`: ZYX in an X-up reference; stored NAV Z-up angles and BODY gyro axes stay unchanged |
 | Pure configuration model and firmware draft transactions | `configuration.py` |
 | Window shell, connection bar, other views | `window.py`; shared widgets in `widgets.py` |
 

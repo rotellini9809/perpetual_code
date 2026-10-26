@@ -182,27 +182,27 @@ void run() {
   router.disconnect(); usb.reset(); assert(sim.active() && config.runLocked());
   for (uint32_t t = 0; t <= source.durationMs(); ++t) { nowUs = origin+t*1000; sim.poll(); assert(!sim.poll()); }
   assert(!sim.active() && !config.runLocked() && std::string(sim.reason()) == "completed");
-  assert(sim.status().samples == 3600 && sim.invalidFrames() == 0 && sim.missed() == 0);
-  assert(sim.phaseCount() == 4 && sim.startCount() == 3); // The 6..24 s crop ends during descent.
-  for (unsigned i=0; i<4; ++i) {
+  assert(sim.status().samples == 6600 && sim.invalidFrames() == 0 && sim.missed() == 0);
+  assert(sim.phaseCount() == 5 && sim.startCount() == 3); // The 2..35 s crop includes the detected landing.
+  for (unsigned i=0; i<5; ++i) {
     assert(unsigned(sim.phases()[i].phase) == i);
     std::cout << "Phase " << i << ": " << sim.phases()[i].timeMs << " ms\n";
   }
   assert(sim.starts()[0].timeMs == sim.phases()[3].timeMs);
   assert(sim.starts()[1].timeMs == sim.starts()[0].timeMs);
-  assert(flash.writes == writes && sim.cycles().count == 3600);
-  has(send(usb,"sim status"),"\"samples\":3600"); has(send(usb,"sim status"),"\"source\":\"hoppino\"");
-  has(send(usb,"sim events"),"\"phases\":[[0,0],[1,4199],[2,6192],[3,8553]");
+  assert(flash.writes == writes && sim.cycles().count == 6600);
+  has(send(usb,"sim status"),"\"samples\":6600"); has(send(usb,"sim status"),"\"source\":\"hoppino\"");
+  has(send(usb,"sim events"),"\"phases\":[[0,0],[1,8199],[2,10192],[3,12553]");
   has(send(usb,"hil begin 0 200 logged_body"),"\"active\":true");
-  has(send(usb,"sim begin"),"BUSY"); has(send(usb,"sim status"),"\"samples\":3600"); send(usb,"sim stop");
+  has(send(usb,"sim begin"),"BUSY"); has(send(usb,"sim status"),"\"samples\":6600"); send(usb,"sim stop");
   assert(hil.active()); send(usb,"hil stop");
   assert(recorder.initializeBlank());
   assert(!sim.begin(true)); const auto recordOrigin = nowUs;
   for (uint32_t t = 0; t <= source.durationMs(); ++t) { nowUs = recordOrigin+t*1000; sim.poll(); }
-  assert(sim.status().savedSamples == 3600 && sim.status().droppedSamples == 0);
+  assert(sim.status().savedSamples == 6600 && sim.status().droppedSamples == 0);
   assert(recorder.current()->status == storage::FlightStatus::Completed);
   storage::RecordingInfo info; assert(recorder.inspect(1,info));
-  assert(info.samples == 3600);
+  assert(info.samples == 6600);
   assert(!sim.begin()); assert(sim.poll()); nowUs += 17000; assert(sim.poll());
   assert(sim.missed() == 2 && sim.status().samples == 2 && sim.status().timeMs == 15);
   sim.stop(); assert(std::string(sim.reason()) == "stopped" && !config.runLocked());

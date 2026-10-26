@@ -11,7 +11,9 @@ struct SensorCalibration {
   float gyroBias[3] = {}; // Sensor coordinates, rad/s; never persisted.
   float accelBias[3] = {}; // Sensor coordinates, m/s^2; zero without saved device calibration.
   UpAxis upAxis = UpAxis::PositiveX; // Other body axes follow a fixed right-handed convention.
+  std::array<float,4> initialQuaternion{{1,0,0,0}}; // RAM-only BODY -> NAV, measured during physical arming.
 };
+void sensorToBody(UpAxis axis, const float (&sensor)[3], float (&body)[3]);
 // Shared processing path for hardware, HIL and future autonomous sensor generator.
 class SensorPipeline {
 public:

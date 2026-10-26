@@ -130,6 +130,62 @@ void run() {
     collector.add(r);
   }
   assert(collector.ready()); for (auto gyro : collector.calibration().gyroBias) assert(gyro == 0);
+  // Gravity initialization uses corrected sensor data and exactly one mounting
+  // transform. Check tilted gravity for every supported physical mounting.
+  const int axes[6][3]={{1,2,3},{-1,2,-3},{2,-1,3},{-2,1,3},{3,2,-1},{-3,2,1}};
+  struct Source : sensors::SensorSource {
+    bool poll(sensors::Reading &) override { return false; }
+    sensors::FrameConvention convention() const override { return sensors::FrameConvention::SensorAxes; }
+  } source;
+  for (unsigned mount=0;mount<6;++mount) {
+    device.upAxis=navigation::UpAxis(mount);
+    device.initialQuaternion={{0,1,0,0}}; // Must not leak from a prior session.
+    collector.begin(device);
+    assert(collector.calibration().initialQuaternion[0]==1);
+    const float sensor[3]={3,4,std::sqrt(9.80665f*9.80665f-25)};
+    for (unsigned n=0;n<999;++n) {
+      auto r=reading(n);
+      for (unsigned i=0;i<3;++i) r.accelMps2[i]=sensor[i]+device.accelBias[i];
+      collector.add(r);
+    }
+    const auto calibrated=collector.calibration(); assert(calibrated.configured);
+    navigation::AttitudeEstimator attitude; assert(attitude.reset(calibrated.initialQuaternion));
+    const auto vertical=attitude.verticalInBody();
+    for (unsigned i=0;i<3;++i) {
+      const int axis=axes[mount][i];
+      const float expected=(axis<0 ? -1.f:1.f)*sensor[unsigned(std::abs(axis))-1]/9.80665f;
+      assert(std::fabs(vertical[i]-expected)<1e-6f);
+    }
+    navigation::SensorPipeline pipeline;
+    assert(pipeline.begin(source,calibrated,collector.referenceAltitude(),200));
+    auto r=reading(1000);
+    for (unsigned i=0;i<3;++i) r.accelMps2[i]=sensor[i]+device.accelBias[i];
+    navigation::NavigationOutput out; assert(pipeline.process(r,out) && out.valid);
+    assert(std::fabs(out.verticalSpecificForce-9.80665f)<1e-5f); // Correct from first flight frame.
+  }
+  for (unsigned axis=0;axis<3;++axis) for (float sign:{-1.f,1.f}) {
+    float a[3]={}; a[axis]=sign*9.80665f; std::array<float,4> q;
+    assert(navigation::AttitudeEstimator::fromGravity(a,q));
+    navigation::AttitudeEstimator attitude; assert(attitude.reset(q));
+    const auto up=attitude.verticalInBody();
+    for (unsigned i=0;i<3;++i) assert(std::fabs(up[i]-a[i]/9.80665f)<1e-6f);
+  }
+  float zero[3]={}; std::array<float,4> invalidQ;
+  assert(!navigation::AttitudeEstimator::fromGravity(zero,invalidQ));
+  zero[0]=std::numeric_limits<float>::quiet_NaN();
+  assert(!navigation::AttitudeEstimator::fromGravity(zero,invalidQ));
+  device.upAxis=navigation::UpAxis::PositiveX; collector.begin(device);
+  for (unsigned n=0;n<999;++n) {
+    auto r=reading(n); r.accelMps2[0]=(n<500 ? 9.80665f:-9.80665f)+device.accelBias[0];
+    collector.add(r);
+  }
+  assert(!collector.ready() && collector.samples()==0); // Reject cancelling gravity directions.
+  for (unsigned n=1000;n<1999;++n) {
+    auto r=reading(n); r.accelMps2[0]=-9.80665f+device.accelBias[0]; collector.add(r);
+  }
+  assert(collector.ready());
+  navigation::AttitudeEstimator fresh; assert(fresh.reset(collector.calibration().initialQuaternion));
+  assert(std::fabs(fresh.verticalInBody()[0]+1)<1e-6f); // Reset erased old gravity as well as bias.
   puts("Arming calibration passed: fresh/spaced samples, independent barometer, stationary reset, invalid data and session-only bias.");
 }
 } // namespace test_arming_calibration

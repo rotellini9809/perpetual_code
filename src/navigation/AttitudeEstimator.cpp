@@ -2,6 +2,19 @@
 #include <cmath>
 
 namespace navigation {
+bool AttitudeEstimator::fromGravity(const float (&a)[3], std::array<float,4> &q) {
+  float norm=0;
+  for (float v:a) { if (!std::isfinite(v)) return false; norm+=v*v; }
+  if (!std::isfinite(norm) || norm<1e-12f) return false;
+  norm=std::sqrt(norm);
+  const float x=a[0]/norm,y=a[1]/norm,z=a[2]/norm;
+  // Quaternion from unit BODY upward vector to (0,0,1): (1+dot,cross).
+  // Use atan2 near the antipode to avoid cancellation in 1+z.
+  const float horizontal=std::hypot(x,y);
+  if (horizontal<1e-7f) { q=z>=0 ? std::array<float,4>{{1,0,0,0}} : std::array<float,4>{{0,1,0,0}}; return true; }
+  const float half=.5f*std::atan2(horizontal,z),scale=std::sin(half)/horizontal;
+  q={{std::cos(half),y*scale,-x*scale,0}}; return true;
+}
 bool AttitudeEstimator::reset(const std::array<float, 4> &q) {
   float norm = 0; for (float v : q) { if (!std::isfinite(v)) return false; norm += v * v; }
   if (!std::isfinite(norm) || norm < 1e-12f) return false;

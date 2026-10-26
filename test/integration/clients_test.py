@@ -137,16 +137,16 @@ def check_simulation_client():
             if command == 'flights recover':
                 return dict(ready=True,corrupt_flights=self.corrupt)
             if command.startswith('sim begin'):
-                return dict(active=True, t_ms=0, phase=0, source='hoppino',duration_ms=17995,total_samples=3600)
+                return dict(active=True, t_ms=0, phase=0, source='hoppino',duration_ms=32995,total_samples=6600)
             if command == 'sim status':
                 busy = self.closing > 0
                 self.closing -= int(busy)
-                return dict(active=self.stuck, phase=3, t_ms=17995, samples=3600-self.missed,source='hoppino',duration_ms=17995,total_samples=3600,
+                return dict(active=self.stuck, phase=3, t_ms=32995, samples=6600-self.missed,source='hoppino',duration_ms=32995,total_samples=6600,
                             output_mode='VIRTUAL', reason='completed', error='None', invalid_frames=0,
-                            recording_sequence='9', recording_busy=busy, saved_samples=0 if busy else 3600-self.missed,
+                            recording_sequence='9', recording_busy=busy, saved_samples=0 if busy else 6600-self.missed,
                             dropped_samples=0, recording_error='None')
             if command == 'sim timing':
-                return dict(cycle=[3600-self.missed, 100000, 400], missed_ticks=self.missed, over_budget=0, max_lateness_us=12)
+                return dict(cycle=[6600-self.missed, 100000, 400], missed_ticks=self.missed, over_budget=0, max_lateness_us=12)
             if command == 'sim events':
                 return dict(phases=[[i,i*5000] for i in range(4)], starts=[[10,'pyro',1,13000]])
             return {}
@@ -161,7 +161,7 @@ def check_simulation_client():
         closing = Client(closing=3)
         with contextlib.redirect_stdout(io.StringIO()):
             report = module.run(closing,Path(folder)/'closing.json',True,sleep=lambda _:None)
-        assert closing.calls.count('sim status')==4 and report['status']['saved_samples']==3600
+        assert closing.calls.count('sim status')==4 and report['status']['saved_samples']==6600
         assert closing.calls.index('flights timing') > max(i for i,c in enumerate(closing.calls) if c=='sim status')
         flagged=Client(corrupt=2)
         warning=io.StringIO()

@@ -93,12 +93,14 @@ class AppState:
 
 
 def load_flight(path):
+    from .orientation import euler_x_up
     path = Path(path)
     rows = []; phases=[]; total=0; first=None; last=None
     fields=('z_est','vz_est','az_est','roll','pitch','yaw','gyroX','gyroY','gyroZ','battery_v')
     def number(row,key):
         try:
             value=float(row.get(key,''))
+            # CSV gyro fields are BODY rad/s; convert once for the degree/s plot.
             if key.startswith('gyro'): value=math.degrees(value)
         except (TypeError,ValueError): return None
         return value if math.isfinite(value) else None
@@ -112,7 +114,11 @@ def load_flight(path):
             previous = stamp; total+=1
             if first is None: first=stamp
             last=stamp
-            rows.append((stamp/1000,*(number(row,key) for key in fields)))
+            values=[number(row,key) for key in fields]
+            # Stored Euler fields are already degrees in NAV Z-up. Re-express
+            # the entire rotation in X-up before decimation, preserving gaps.
+            values[3:6]=euler_x_up(*values[3:6])
+            rows.append((stamp/1000,*values))
             phase=row.get('state') or ''
             name=PHASES[int(phase)] if phase.isdigit() and 0<=int(phase)<len(PHASES) else None
             if not phases or phases[-1][1]!=name: phases.append((stamp/1000,name))
@@ -127,8 +133,13 @@ def load_flight(path):
         bucket=rows[max(0,i-step+1):i+1]
         plot.append((rows[i][0],*(rows[i][col] if all(r[col] is not None for r in bucket) else None for col in range(1,len(fields)+1))))
     if (len(rows)-1)%step: plot.append(rows[-1])
+    simulated_battery = metadata.get('sensor_mode') == 1
+    if simulated_battery:
+        # Illustrative 2S trace, separate from CSV battery_v and never exported as a measurement.
+        duration=max(.001,(last-first)/1000)
+        plot=[(*r,round(8.4-.2*(r[0]-first/1000)/duration,3)) for r in plot]
     return dict(path=str(path),rows=plot,phases=phases,samples=total,valid_samples=len(valid),duration=(last-first)/1000,
-                max_altitude=max(r[1] for r in valid),max_speed=max(abs(r[2]) for r in valid),metadata=metadata)
+                max_altitude=max(r[1] for r in valid),max_speed=max(abs(r[2]) for r in valid),metadata=metadata,simulated_battery=simulated_battery)
 
 
 class Controller(QObject):

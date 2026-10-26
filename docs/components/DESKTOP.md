@@ -62,7 +62,7 @@ Windows returns; that existing worker limitation is not a handshake success.
 |---|---|
 | Dashboard | Configuration card, one sensor-availability card with live details, exact firmware preflight blockers and arm/disarm, compact pyro check card above servo preparation |
 | Configuration | Four pyro/four servo settings, local rule/condition/output dialogs, expandable rules, Valida/Applica/Scarta footer |
-| Test and simulation | Onboard Hoppino sensor replay (47.164 s, no profile selector), unchecked-by-default Uscite fisiche, opt-in recording, acknowledged start/stop and phase/output events |
+| Test and simulation | Onboard Hoppino sensor replay (32.995 s, no profile selector), unchecked-by-default Uscite fisiche, opt-in recording, acknowledged start/stop and phase/output events |
 | Recorded flights | Explicit recover/list, CSV/JSON download through the existing exporter, offline CSV opening, altitude plot and saved rule/output-start inspection |
 | Console | Manual shared-protocol commands and bounded request/reply log |
 
@@ -178,8 +178,37 @@ CSV plots are decimated to about 1200 points; original CSVs remain intact. Exist
 files are never silently overwritten; interrupted downloads may leave partial CSV data.
 Recorded flights show five plots: altitude; vertical velocity and acceleration with separate
 m/s and m/s² axes and aligned zero ticks; gyroscope X/Y/Z in °/s; roll/pitch/yaw in degrees;
-battery voltage in V from `battery_v`. Files without that field have no battery curve.
+battery voltage in V from `battery_v`. Files without that field have no measured battery curve. The battery plot is labelled `Tensione batteria` in both modes. For simulated recordings
+(`sensor_mode=1`) it displays only an illustrative 2S profile from 8.4 to 8.2 V;
+real recordings (`sensor_mode=0`) display the measured voltage. The display-only simulated
+profile does not estimate charge or endurance and does not modify CSV telemetry.
+The final details include `Tipo di volo`: `Simulato`, `Reale`, or `Non disponibile` when
+metadata is missing. The persisted sensor mode determines the type, independently of
+physical/virtual outputs; unknown types never receive a synthetic battery curve.
 Recorded CSV gyro values stay in rad/s and are converted to °/s only for preview/hover.
+These are BODY angular-velocity components, not derivatives of the displayed Euler angles.
+The original Hoppino logger stores gyro rad/s multiplied by 1000 and exports them divided by
+1000; the display applies only `180/pi`. In the current excerpt, peak absolute X/Y/Z rates
+are 24.672/22.873/11.383 rad/s, or 1413.6/1310.5/652.2 degrees/s. These peaks already exist
+in the source recording; unit consistency does not establish sensor accuracy. Live sensor
+details intentionally retain rad/s, explicitly labelled.
+
+`orientation.py` converts the stored Z-up Euler degrees into an X-up reference for the
+orientation plot. With the standard active BODY-to-reference convention,
+`R = Rz(yaw) Ry(pitch) Rx(roll)` and `R_display = Ry(+90 degrees) R`.
+This maps NAV +Z to display +X, NAV +Y to display +Y and NAV +X to display -Z.
+ZYX Euler angles are extracted again from the composed matrix: adding 90 degrees to pitch
+alone is incorrect for general orientations. The upright reference `R=Ry(-90 degrees)`
+displays zero roll/pitch/yaw. Rotations around the upright BODY X appear as roll.
+Zero includes a chosen transverse orientation; vertical alignment alone cannot determine
+absolute heading. This is a fixed reference conversion, not first-sample zeroing.
+At the new pitch +/-90-degree singularity, roll is set to zero and yaw retains the observable
+combined rotation. Missing any input Euler component leaves all three display angles missing.
+The conversion precedes decimation; CSVs, firmware navigation and BODY gyro axes remain unchanged.
+It does not itself initialize the estimator. Physical arming now initializes attitude from
+the averaged gravity vector collected alongside gyro bias; logged replay retains its original
+startup behavior.
+
 All share recorded timestamps. `flight_plot.py`
 owns these curves; missing values break them rather than inserting zeroes. Two independent
 checkboxes show actuator start markers and flight-state background bands, enabled initially.

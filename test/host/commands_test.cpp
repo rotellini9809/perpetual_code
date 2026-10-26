@@ -619,10 +619,10 @@ void run() {
   for (uint32_t t=0;t<=sensors::SimulatedSensorSource::durationMs();++t) { elapsedUs=simOrigin+t*1000; asyncSim.poll(); }
   assert(!asyncSim.active() && asyncSim.status().recordingBusy && asyncSim.status().savedSamples==0);
   while (queued.busy()) assert(queued.poll());
-  assert(asyncSim.status().samples==3600 && asyncSim.status().savedSamples==64 && !asyncSim.status().recordingBusy);
+  assert(asyncSim.status().samples==6600 && asyncSim.status().savedSamples==64 && !asyncSim.status().recordingBusy);
   send(usb,"hil begin 0 200 logged_body record 4096");
   // Starting a different HIL recording must not replace the previous simulation's final report.
-  assert(asyncSim.status().samples==3600 && asyncSim.status().savedSamples==64 && !asyncSim.status().recordingBusy);
+  assert(asyncSim.status().samples==6600 && asyncSim.status().savedSamples==64 && !asyncSim.status().recordingBusy);
   send(usb,"hil stop"); while (queued.busy()) queued.poll();
   // A damaged interrupted flight is visible without blocking healthy history.
   assert(recorder.begin(fixture(),limits,4096,storage::SensorMode::Simulation,storage::OutputMode::Virtual,

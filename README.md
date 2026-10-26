@@ -12,6 +12,20 @@ Recorded Flights and Console. During development, launch it from source using
 
 ## Build and start
 
+Start Perpetual App from the repository root in PowerShell:
+
+```powershell
+.\.pio\perpetual_app_venv\Scripts\python.exe perpetual_app/main.py
+```
+
+This uses the app environment directly: no `Activate.ps1` or PowerShell execution-policy
+change is needed. On a fresh checkout, create the environment and install dependencies once:
+
+```powershell
+python -m venv .pio/perpetual_app_venv
+.\.pio\perpetual_app_venv\Scripts\python.exe -m pip install -r perpetual_app/requirements.txt
+```
+
 Firmware dependencies are pinned in [platformio.ini](platformio.ini): exact Git commits
 for the RP2350 platform and Bosch/ST drivers, and NeoPixel 1.15.5. The pinned platform
 also selects a fixed Arduino-Pico framework commit and versioned toolchain archives.

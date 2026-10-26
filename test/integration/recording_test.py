@@ -84,18 +84,18 @@ def check_recording_usb():
                         final = replay.run(client, prepared, folder / 'live.csv', record_bytes=1048576, measure_timing=True, realtime=queued)
                 finally:
                     replay.ReplayPacer = pacer_class
-                assert final['saved_samples'] == 3600 and final['dropped_samples'] == 0 and final['recording_error'] == 'None', final
+                assert final['saved_samples'] == 6600 and final['dropped_samples'] == 0 and final['recording_error'] == 'None', final
                 assert final['recording_sequence'] == '1' and not final['recording_active']
                 assert final['recording_async'] == queued and final['pending_samples'] == 0
                 timings = json.loads((folder / 'live.timing.json').read_text())
                 assert timings['sequence'] == '1' and not timings['hil']['timing_valid'] and not timings['flash']['timing_valid']
-                assert timings['hil']['compute'] == timings['hil']['storage'] == timings['hil']['step'] == [3600, 0, 0]
+                assert timings['hil']['compute'] == timings['hil']['storage'] == timings['hil']['step'] == [6600, 0, 0]
                 assert timings['hil']['over_budget'] == 0 and timings['flash']['failures'] == [0, 0, 0]
                 assert timings['flash']['program'][0] > 328*4 and timings['flash']['erase'][0] == 257
                 if queued:
                     assert 0 < timings['flash']['queue_peak'] <= 64 and timings['flash']['queue_capacity'] == 64
-                    assert timings['flash']['worker'][0] >= 3600
-                    assert timings['pacing']['samples'] == 3600 and timings['pacing']['sends_late_by_period'] == 0
+                    assert timings['flash']['worker'][0] >= 6600
+                    assert timings['pacing']['samples'] == 6600 and timings['pacing']['sends_late_by_period'] == 0
                     assert abs(timings['pacing']['elapsed_ms']-timings['pacing']['recorded_duration_ms']) < 1e-5
                 # Applied settings may change later; downloaded history must retain its frozen snapshot.
                 for command in ('config begin', 'rule rename 10 "Changed after flight"', 'config apply'):
@@ -104,14 +104,14 @@ def check_recording_usb():
                     metadata = export.download(client, '1', folder / 'stored.csv')
                 assert metadata['configuration']['rules'][0]['name'] == 'Example apogee'
                 timestamps=[stamp-prepared[1][0][0] for stamp,_ in prepared[1]]
-                expected=[next(t for t in timestamps if t>=start+delay) for start,delay in zip((8553,8553,14500),(75,200,325))]
+                expected=[next(t for t in timestamps if t>=start+delay) for start,delay in zip((12553,12553,18491),(75,200,325))]
                 assert [s['t_ms'] for s in metadata['output_starts']] == expected
                 assert [a['delay_ms'] for r in metadata['configuration']['rules'] for a in r['outputs']]==[75,200,325]
                 assert all(s['state'] == 'recorded' for s in metadata['output_starts'])
                 assert metadata['sensor_mode'] == 1 and metadata['output_mode'] == 1
                 summary = metadata['recording_summary']
                 assert summary['state'] == 'Valid' and summary['version'] == 1 and summary['reason'] == 'Completed'
-                assert summary['saved_samples'] == 3600 and summary['dropped_samples'] == 0
+                assert summary['saved_samples'] == 6600 and summary['dropped_samples'] == 0
                 assert summary['queue_capacity'] == (64 if queued else 0)
                 assert client.request('flights list 0')['sequence'] == '1'
                 assert not client.request('flights list 1')['available']
@@ -119,7 +119,7 @@ def check_recording_usb():
                     live = list(csv.DictReader(source))
                 with (folder / 'stored.csv').open(newline='') as source:
                     stored = list(csv.DictReader(source))
-                assert len(live) == len(stored) == 3600
+                assert len(live) == len(stored) == 6600
                 assert all(float(row['battery_v'])==8.402 for row in stored)
                 old_rows = prepared[0]
                 for a, b, old, reference in zip(live, stored, old_rows, navigation_reference):
@@ -208,7 +208,7 @@ def check_recording_usb():
 
     for queued in (False, True):
         check(queued)
-    print('Synchronous/queued USB recording/download passed: all 3600 samples, temperature, frozen configuration, three starts and paced-client path.')
+    print('Synchronous/queued USB recording/download passed: all 6600 samples, temperature, frozen configuration, three starts and paced-client path.')
 
 if __name__ == "__main__":
     check_recording_usb()

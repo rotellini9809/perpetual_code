@@ -193,14 +193,19 @@ class MainWindow(QMainWindow):
         frame,body=card('Velocità e accelerazione verticali')
         self.flight_motion=FlightPlot([(2,'Velocità','m/s','#3c70b8',0),(3,'Accelerazione','m/s²','#c47539',1)])
         body.addWidget(self.flight_motion); box.addWidget(frame)
-        frame,body=card('Velocità angolari')
+        frame,body=card('Velocità angolari BODY · °/s')
         self.flight_rates=FlightPlot([(7,'X','°/s','#3c70b8',0),(8,'Y','°/s','#1d8b7e',0),(9,'Z','°/s','#a36db1',0)])
         body.addWidget(self.flight_rates); box.addWidget(frame)
-        frame,body=card('Orientamento')
+        frame,body=card('Orientamento Euler · riferimento X verso l’alto')
         self.flight_orientation=FlightPlot([(4,'Roll','°','#3c70b8',0),(5,'Pitch','°','#1d8b7e',0),(6,'Yaw','°','#a36db1',0)],angular=True)
-        body.addWidget(self.flight_orientation); box.addWidget(frame)
+        self.flight_orientation.setToolTip('Euler ZYX in un riferimento con +X verticale. Zero: muso +X verso l’alto con orientamento trasversale di riferimento. Non è un azzeramento sul primo campione.')
+        self.flight_rates.setToolTip('Componenti del giroscopio attorno agli assi BODY X/Y/Z, convertite da rad/s a °/s. Non sono le derivate degli angoli Euler.')
+        body.addWidget(self.flight_orientation)
+        orientation_note=label('Angoli Euler ZYX convertiti nel riferimento con +X verso l’alto. Lo zero corrisponde al muso verticale con orientamento trasversale di riferimento.','hint')
+        orientation_note.setWordWrap(True); orientation_note.setStyleSheet('color: #929da8; font-size: 12px;')
+        body.addWidget(orientation_note); box.addWidget(frame)
         frame,body=card('Tensione batteria')
-        self.flight_battery=FlightPlot([(10,'Batteria','V','#b58a26',0)])
+        self.flight_battery=FlightPlot([(10,'Tensione batteria','V','#b58a26',0)],include_zero=False)
         body.addWidget(self.flight_battery); box.addWidget(frame)
         self.flight_plots=(self.flight_plot,self.flight_motion,self.flight_rates,self.flight_orientation,self.flight_battery)
         self.flight_details=QTreeWidget(); self.flight_details.setHeaderLabels(['DATI DEL VOLO','VALORE']); self.flight_details.setMinimumHeight(270); self.flight_details.header().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
@@ -416,6 +421,9 @@ class MainWindow(QMainWindow):
         if not data or self._flight_path==data['path']: return
         self._flight_path=data['path']; self.flight_duration.set(f'{data["duration"]:.2f} s'); self.flight_peak.set(f'{data["max_altitude"]:.1f} m'); self.flight_count.set(str(data['samples']))
         meta=data['metadata']; markers=[(e['t_ms']/1000,f'{e["kind"].upper()} {e["channel"]}') for e in meta.get('output_starts',[]) if e.get('state')=='recorded']
+        self.flight_battery.curves=[(10,'Tensione batteria','V','#b58a26',0)]
+        if data.get('simulated_battery'):
+            self.flight_battery.curves=[(11,'Tensione batteria','V','#8b67bc',0)]
         for plot in self.flight_plots:
             plot.set_data(data['rows'],markers,data['phases'])
         self.flight_file.setText(data['path'])
@@ -424,6 +432,7 @@ class MainWindow(QMainWindow):
         summary_states={'Valid':'Verificato','Missing':'Non disponibile','Incomplete':'Incompleto','Corrupt':'Corrotto','Unsupported':'Formato non supportato'}
         for key,value,hint in [
             ('ID volo',meta.get('sequence','—'),'Identificativo originale assegnato dalla scheda.'),
+            ('Tipo di volo',{0:'Reale',1:'Simulato'}.get(meta.get('sensor_mode'),'Non disponibile'),'Tipo salvato dalla scheda: una simulazione resta tale anche con uscite fisiche abilitate.'),
             ('Riepilogo registrazione',summary_states.get(summary.get('state'),'—'),'Controllo di integrità del riepilogo della registrazione.'),
             ('Picco velocità verticale',f'{data["max_speed"]:.1f} m/s','Massimo valore assoluto della velocità verticale, considerando salita e discesa.'),
             ('Campioni non salvati',summary.get('dropped_samples','—'),'Campioni scartati dal registratore.')]:
