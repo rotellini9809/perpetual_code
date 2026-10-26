@@ -22,12 +22,12 @@ void sensorToBody(UpAxis up, const float (&sensor)[3], float (&body)[3]) {
     body[i]=(axis<0 ? -1.0f : 1.0f)*sensor[j];
   }
 }
-bool SensorPipeline::begin(sensors::SensorSource &source, const SensorCalibration &calibration, float reference, float hz) {
+bool SensorPipeline::begin(sensors::SensorSource &source, const SensorCalibration &calibration, float reference, float hz, const recovery::StateMachineSettings &settings) {
   if (active()) return false;
   if (source.convention() == sensors::FrameConvention::SensorAxes) {
     if (!validCalibration(calibration)) return false;
   } else if (source.convention() != sensors::FrameConvention::LoggedCalibratedBody) return false;
-  if (!navigation_.begin(reference, hz, calibration.initialQuaternion)) return false;
+  if (!navigation_.begin(reference,hz,calibration.initialQuaternion,settings)) return false;
   calibration_ = calibration; convention_ = source.convention(); source_ = &source; return true;
 }
 bool SensorPipeline::poll(NavigationOutput &out) {

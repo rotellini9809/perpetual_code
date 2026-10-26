@@ -23,7 +23,7 @@ void run() {
   using namespace replay_test;
   MemoryFlash flash; storage::ConfigurationStore store(flash);
   assert(store.save(fixture(), limits, true));
-  ConfigurationService config(store, limits); config.boot(true);
+  ConfigurationService config(store, limits); config.boot(true); assert(!config.setOrientation(0));
   RunController run;
   assert(!config.beginDraft()); assert(config.hasDraft());
   assert(strcmp(run.begin(RunMode::Estimates, config), "DRAFT_ACTIVE") == 0);
@@ -89,11 +89,12 @@ struct Capture : storage::RecordingSink {
   storage::SensorMode mode = storage::SensorMode::Simulation;
   storage::OutputMode outputs = storage::OutputMode::Physical;
   sensors::FrameConvention frame = sensors::FrameConvention::LoggedCalibratedBody;
+  storage::FlightCalibration calibrationSnapshot;
   std::vector<storage::FlightSample> samples;
   unsigned starts = 0;
   bool begin(const recovery::Configuration &, const recovery::ValidationLimits &, uint32_t,
-             storage::SensorMode m, storage::OutputMode o, sensors::FrameConvention f) override {
-    mode = m; outputs = o; frame = f; running = true; entry.sequence = 1; return true;
+             storage::SensorMode m, storage::OutputMode o, sensors::FrameConvention f, const storage::FlightCalibration &calibration) override {
+    calibrationSnapshot=calibration; mode = m; outputs = o; frame = f; running = true; entry.sequence = 1; return true;
   }
   bool append(const storage::FlightSample &s) override { if (failAppend) return false; samples.push_back(s); return true; }
   bool recordStart(recovery::RuleId, recovery::OutputKind, uint32_t, uint32_t) override { ++starts; return true; }
@@ -114,7 +115,7 @@ void run() {
   plan.rules[0].conditions[0].kind = recovery::ConditionKind::Phase;
   plan.rules[0].conditions[0].phases = recovery::BoostMask;
   assert(store.save(plan, limits, true));
-  ConfigurationService config(store, limits), referenceConfig(store, limits); config.boot(true); referenceConfig.boot(true);
+  ConfigurationService config(store, limits), referenceConfig(store, limits); config.boot(true); assert(!config.setOrientation(0)); referenceConfig.boot(true);
   flight::RunController run, referenceRun;
   Capture capture;
   flight::FlightRuntime runtime(config, run, nullptr, &capture), other(config, run);
@@ -139,6 +140,9 @@ void run() {
   assert(!runtime.begin(hardware, 0, 200, calibration, 4096, storage::SensorMode::Hardware));
   assert(capture.mode == storage::SensorMode::Hardware && capture.outputs == storage::OutputMode::Virtual);
   assert(capture.frame == sensors::FrameConvention::SensorAxes);
+  assert(capture.calibrationSnapshot.available && capture.calibrationSnapshot.gyroCalibrated);
+  assert(capture.calibrationSnapshot.upAxis==uint8_t(navigation::UpAxis::NegativeZ));
+  assert(capture.calibrationSnapshot.gyroBias[2]==.5f && capture.calibrationSnapshot.accelBias[1]==-.5f);
   assert(!reference.begin(0, 200)); // Simulation requires no gyro acquisition/calibration stage.
   flight::FrameResult a, b;
   auto polled = runtime.poll(a); assert(!polled.processed && !polled.error && runtime.status().samples == 0);
@@ -232,7 +236,7 @@ void acquire(FakeSensorDevice &device, unsigned n) {
 }
 void run() {
   MemoryFlash flash; storage::ConfigurationStore store(flash); assert(store.save(fixture(),limits,true));
-  ConfigurationService config(store,limits); config.boot(true);
+  ConfigurationService config(store,limits); config.boot(true); assert(!config.setOrientation(0));
   Nor recordingFlash; storage::FlightRecorder recorder(recordingFlash); assert(recorder.initializeBlank());
   flight::RunController run;
   FakeSensorDevice device; device.imu=false;
@@ -252,7 +256,18 @@ void run() {
   } noSuspend;
   PowerManager power(noSuspend); router.setPower(power);
   CommandService usb; usb.setExtension(&router);
-  const auto writes=recordingFlash.writes, configWrites=flash.mutations;
+  // Factory reset must require an explicit mounting choice, even after rules are restored.
+  assert(!config.factoryReset()); assert(store.save(fixture(),limits,true)); config.boot(true);
+  assert(!config.orientationReady()); checks.healthy(); gpio.connected=15;
+  assert(!physical.prepareServos());
+  auto missingOrientation=physical.preflight(flight::FlightMode::Physical,true,&checks);
+  assert(missingOrientation.has(flight::ArmBlocker::OrientationNotReady) && !missingOrientation.ready());
+  assert(!strcmp(physical.arm(hardware,flight::FlightMode::Physical,0,120,{},4096,&checks),"ORIENTATION_NOT_READY"));
+  assert(!physical.active() && !config.runLocked());
+  assert(!physical.preflight(flight::FlightMode::Simulation,false,nullptr,storage::OutputMode::Physical).has(flight::ArmBlocker::OrientationNotReady));
+  assert(!physical.releaseServos()); assert(!config.setOrientation(0));
+  checks.readiness.imuReady=false; gpio.connected=0;
+  const auto writes=recordingFlash.writes; auto configWrites=flash.mutations;
   auto p=physical.preflight(flight::FlightMode::Physical,true,&checks);
   assert(p.has(flight::ArmBlocker::ImuUnavailable) && !p.has(flight::ArmBlocker::BarometerUnavailable));
   assert(p.failedPyros==3 && p.unpreparedServos==1 && gpio.checkedMask==3);
@@ -303,7 +318,8 @@ void run() {
   has(send(usb,"servo arm 1"),"\"prepared_servo_mask\":1");
   has(send(usb,"servo preview 1 1800"),"\"pwm\":1800");
   assert(!outputs.preparedServos(*config.applied())); // Trying Final invalidates the held Initial.
-  send(usb,"disarm"); assert(!gpio.positions[0] && !outputs.hasPreparation());
+  send(usb,"disarm"); assert(gpio.positions[0] && outputs.hasPreparation());
+  has(send(usb,"servo release"),"\"released\":true"); assert(!gpio.positions[0] && !outputs.hasPreparation());
   gpio.failServo=true; has(send(usb,"servo preview 1 1500"),"OUTPUT_ERROR");
   gpio.failServo=false; assert(!outputs.hasPreparation());
   has(send(usb,"servo arm 9"),"INVALID_ARGUMENT");
@@ -312,11 +328,29 @@ void run() {
   gpio.checkedMask=0; has(send(usb,"pyro continuity"),"DRAFT_ACTIVE"); assert(!gpio.checkedMask);
   has(send(usb,"servo arm 1"),"DRAFT_ACTIVE"); send(usb,"config discard");
   has(send(usb,"@3 servo arm 1"),"\"prepared_servo_mask\":1");
-  const auto preparedCommands=gpio.servoCommands.size();
+  auto preparedCommands=gpio.servoCommands.size();
   send(usb,"@3 servo arm 1"); assert(gpio.servoCommands.size()==preparedCommands);
-  has(send(usb,"sim begin"),"PHYSICAL_SERVOS_PREPARED");
-  has(send(usb,"hil begin 0 200 logged_body"),"PHYSICAL_SERVOS_PREPARED");
-  has(send(usb,"replay begin"),"PHYSICAL_SERVOS_PREPARED");
+  // Invalid requests and failed physical checks preserve manual preparation.
+  has(send(usb,"sim begin garbage"),"INVALID_ARGUMENT"); assert(outputs.hasPreparation());
+  gpio.connected=0; has(send(usb,"sim begin physical"),"CONTINUITY_FAULT"); assert(outputs.hasPreparation());
+  gpio.connected=3;
+  has(send(usb,"sim begin physical"),"\"output_mode\":\"PHYSICAL\"");
+  assert(sim.active() && gpio.servoCommands.size()==preparedCommands); // Adopt valid PWM without commanding again.
+  send(usb,"sim stop"); assert(!outputs.hasPreparation());
+  send(usb,"servo arm 1"); assert(outputs.hasPreparation());
+  const auto virtualCommands=gpio.servoCommands.size();
+  has(send(usb,"sim begin"),"\"output_mode\":\"VIRTUAL\"");
+  assert(sim.active() && !outputs.hasPreparation() && !gpio.positions[0] && !gpio.enabled && !gpio.mask);
+  assert(gpio.servoCommands.size()==virtualCommands); // Release only; virtual simulation never moves hardware.
+  send(usb,"sim stop"); send(usb,"servo arm 1");
+  preparedCommands=gpio.servoCommands.size();
+  has(send(usb,"hil begin 0 200 logged_body"),"\"ok\":true");
+  assert(outputs.hasPreparation() && gpio.positions[0]); send(usb,"hil stop");
+  has(send(usb,"replay begin"),"\"ok\":true");
+  assert(outputs.hasPreparation() && gpio.positions[0]); send(usb,"replay stop");
+  has(send(usb,"config orientation -X"),"\"verified\":true");
+  assert(outputs.hasPreparation() && gpio.positions[0]);
+  has(send(usb,"config orientation +X"),"\"verified\":true"); configWrites=flash.mutations;
   checks.readiness.imuReady=false;
   has(send(usb,"arm"),"IMU_UNAVAILABLE"); assert(outputs.hasPreparation());
   router.disconnect(); assert(outputs.hasPreparation()); // A rejected arm/link loss preserves held preparation.
@@ -343,6 +377,10 @@ void run() {
   }
   nowUs=4990000; acquire(device,499); physical.poll(result);
   assert(physical.armed() && physical.calibrationSamples()==500 && recorder.active());
+  const auto &savedCalibration=recorder.metadata()->calibration;
+  assert(savedCalibration.available && savedCalibration.gyroCalibrated && savedCalibration.sensorAxes);
+  assert(savedCalibration.gyroBias[0]==.03125f && savedCalibration.gyroBias[1]==-.0625f && savedCalibration.gyroBias[2]==.125f);
+  assert(savedCalibration.accelBias[0]==.25f && std::fabs(savedCalibration.referenceAltitude)<.001f);
   assert(gpio.servoCommands.size()==preparedCommands); // Live arm adopts PWM without a new position command.
   assert(!config.disarmed());
   assert(recorder.metadata()->sensorMode==storage::SensorMode::Hardware && recorder.metadata()->outputMode==storage::OutputMode::Physical);
@@ -372,7 +410,8 @@ void run() {
   assert(!physical.active() && !config.runLocked() && !strcmp(physical.error(),"CONTINUITY_FAULT"));
   assert(recordingFlash.writes==afterClose && recorder.directory().retainedCount()==retained);
   gpio.connected=15; assert(outputs.hasPreparation());
-  has(send(usb,"ds"),"\"arming_state\":\"disarmed\""); assert(!outputs.hasPreparation());
+  has(send(usb,"ds"),"\"arming_state\":\"disarmed\""); assert(outputs.hasPreparation());
+  has(send(usb,"servo release"),"\"released\":true"); assert(!outputs.hasPreparation());
   // Ordinary disarm uses the shared phase gate; virtual debug stop remains available.
   has(send(usb,"sim begin"),"\"active\":true"); const auto origin=nowUs;
   for (unsigned n=0;n<=sensors::SimulatedSensorSource::durationMs() && sim.navigation().phase!=recovery::FlightPhase::Boost;++n) { nowUs=origin+n*1000; sim.poll(); }
@@ -384,7 +423,7 @@ void run() {
   has(send(usb,"replay stop"),"\"active\":false");
   // An unfinished servo setup is persistable, but even healthy hardware cannot arm it.
   auto unsetServo=fixture(); unsetServo.servos[0]={};
-  assert(store.save(unsetServo,limits,true)); config.boot(true);
+  assert(store.save(unsetServo,limits,true)); config.boot(true); assert(!config.setOrientation(0));
   assert(config.configValid() && !config.applied()->servos[0].calibrated);
   checks.healthy(); const auto beforeRejectedArm=recordingFlash.writes;
   p=physical.preflight(flight::FlightMode::Physical,true,&checks);
@@ -398,7 +437,7 @@ void run() {
   assert(physical.preflight(flight::FlightMode::Physical,true).has(flight::ArmBlocker::ServosNotConfigured));
   assert(physical.preflight(flight::FlightMode::Simulation,false).ready());
   has(send(usb,"sim begin"),"\"active\":true"); has(send(usb,"sim stop"),"\"active\":false");
-  assert(!config.beginDraft()); assert(!config.setServo(1,1100,1900)); assert(!config.apply()); config.boot(true);
+  assert(!config.beginDraft()); assert(!config.setServo(1,1100,1900)); assert(!config.apply()); config.boot(true); assert(!config.setOrientation(0));
   assert(!physical.prepareServos());
   assert(config.configValid() && physical.preflight(flight::FlightMode::Physical,true,&checks).ready());
   assert(!physical.arm(hardware,flight::FlightMode::Physical,0,120,calibration,4096,&checks));
@@ -410,7 +449,8 @@ void run() {
   assert(!physical.active() && !config.runLocked() && outputs.hasPreparation() && gpio.mask==0);
   assert(std::strcmp(physical.error(),"None")); // Failed recording preparation never enables an armed run.
   recordingFlash.fail=false;
-  assert(!physical.disarm() && !outputs.hasPreparation());
+  assert(!physical.disarm() && outputs.hasPreparation());
+  assert(!physical.releaseServos() && !outputs.hasPreparation());
   puts("Arming controller/USB passed: physical rejection, shared immediate simulation, fresh calibration, locking, cancellation and phase restrictions.");
 }
 } // namespace test_arming_controller
@@ -434,7 +474,7 @@ struct Nor : FlashDevice {
 };
 void run() {
   MemoryFlash configFlash; ConfigurationStore store(configFlash); assert(store.save(fixture(),limits,true));
-  ConfigurationService config(store,limits); config.boot(true);
+  ConfigurationService config(store,limits); config.boot(true); assert(!config.setOrientation(0));
   Nor flash; FlightRecorder writer(flash); assert(writer.initializeBlank());
   QueuedRecorder queued(writer); queued.workerStarted();
   flight::RunController run;
@@ -503,7 +543,7 @@ void run() {
   nowUs=0;
   auto plan=fixture(); plan.rules[0].delayMs=23500; plan.rules[1].delayMs=60000;
   MemoryFlash configFlash; storage::ConfigurationStore store(configFlash); assert(store.save(plan,limits,true));
-  ConfigurationService config(store,limits); config.boot(true);
+  ConfigurationService config(store,limits); config.boot(true); assert(!config.setOrientation(0));
   Nor flash; storage::FlightRecorder writer(flash); assert(writer.initializeBlank());
   storage::QueuedRecorder queued(writer); queued.workerStarted();
   FakeOutputs gpio; flight::OutputExecutor outputs(gpio,clockUs);

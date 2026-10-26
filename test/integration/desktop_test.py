@@ -16,7 +16,7 @@ import time
 os.environ['QT_QPA_PLATFORM']='offscreen'
 ROOT=Path(__file__).resolve().parents[2]
 sys.path[:0]=[str(ROOT),str(ROOT/'tools'),str(ROOT/'tools/replay')]
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication,QMessageBox
 from PySide6.QtGui import QFontDatabase
 from device_client import Client,CommandError,ConnectionLost
 from perpetual_app.configuration import Plan,read_plan,stage_plan,removal_order,plan_commands,next_rule_id,condition_text,rule_label
@@ -86,6 +86,17 @@ def check_flight_plots(window,controller,app):
         assert group.child(0).text(0)=='Regola salvata' and group.child(0).childCount()==5
         assert [group.child(0).child(i).text(1) for i in range(3)]==['Apogeo rilevato','Fase: DESCENT','Da regola «Riferimento salvato»: 250 ms']
         assert group.child(1).child(0).text(1)=='Quota >= 80 m'
+        def detail_values(): return {details.topLevelItem(i).text(0):details.topLevelItem(i).text(1) for i in range(details.topLevelItemCount())}
+        values=detail_values(); assert values['Bias giroscopio']=='Non disponibile' and values['Orientamento scheda']=='Non disponibile'
+        data['metadata'].update(sensor_mode=0,output_mode=0,calibration=dict(gyro_calibrated=True,sensor_axes=True,
+            reference_altitude_m=123.25,up_axis='-Z',gyro_bias_radps=[.03125,-.0625,.125],accel_bias_mps2=[.25,0,-.5]))
+        window._flight_path=None; window._render_flights(controller.state)
+        values=detail_values()
+        assert values['Bias giroscopio']=='X: 0.03125  /  Y: -0.0625  /  Z: 0.125 rad/s'
+        assert values['Riferimento barometrico']=='123.250 m' and values['Orientamento scheda']=='-Z'
+        assert 'X: 0.25' in values['Bias accelerometro']
+        assert values['Modalit'+chr(224)]=='Volo reale '+chr(183)+' uscite fisiche'
+        group=next(details.topLevelItem(i) for i in range(details.topLevelItemCount()) if details.topLevelItem(i).text(0)=='Regole del volo')
         assert [(group.child(0).child(i).text(0),group.child(0).child(i).text(1)) for i in (3,4)]==[('Uscita · PYRO 1','Ritardo canale 75 ms'),('Uscita · SERVO 1','Ritardo canale 200 ms')]
         assert group.child(1).child(1).text(1)=='Ritardo canale 0 ms'
         count=next(details.topLevelItem(i) for i in range(details.topLevelItemCount()) if details.topLevelItem(i).text(0)=='Regole azionate')
@@ -147,6 +158,7 @@ def check_flight_plots(window,controller,app):
         assert not hardware['simulated_battery'] and len(hardware['rows'][0])==11
         window._flight_path=None; controller.state.flight=hardware; window._render_flights(controller.state)
         assert flight_kind()=='Reale' and [c[0] for c in window.flight_battery.curves]==[10]
+        data['metadata'].pop('sensor_mode') # Restore missing metadata after the calibration-details check.
         controller.state.flight=data; window._render_flights(controller.state)
         assert len(window.flight_battery.curves)==1 and flight_kind()=='Non disponibile'
         app.processEvents(); controller.state.flight=original; window._render_flights(controller.state)
@@ -322,6 +334,7 @@ class Native:
         self.client=Client(self); self.state='disconnected'; self.active=False; self.commands=[]; self.threads=[]; self.gates={}
         self.output_mode='VIRTUAL'; self.reject_physical=False; self.ready_to_arm=False; self.prepared_mask=0
         self.sensor_time=0; self.transport='usb'; self.failed_pyros=0; self.power_mode='active'
+        self.client.request('config orientation +X')
     def write(self,data): self.process.stdin.write(data); self.process.stdin.flush(); return len(data)
     def read(self,count): return self.process.stdout.read(count)
     def connect(self):
@@ -333,7 +346,11 @@ class Native:
         if self.state=='disconnected': raise ConnectionLost('Fixture closed')
         if command in ('preflight','sensors'): self.power_mode='active'
         if command=='arm': raise CommandError(command,dict(code='IMU_UNAVAILABLE',reasons=['IMU_UNAVAILABLE'],ready=False,prepared_servo_mask=self.prepared_mask,ok=False))
-        if command=='preflight': return dict(ready=self.ready_to_arm and not self.failed_pyros,reasons=([] if self.ready_to_arm else ['IMU_UNAVAILABLE'])+(['CONTINUITY_FAULT'] if self.failed_pyros else []),failed_pyro_mask=self.failed_pyros,unprepared_servo_mask=1 & ~self.prepared_mask,prepared_servo_mask=self.prepared_mask,requested_mode='physical')
+        if command=='preflight':
+            orientation_ready=self.client.request('config orientation')['orientation_ready']
+            return dict(ready=self.ready_to_arm and not self.failed_pyros and orientation_ready,
+                        reasons=([] if self.ready_to_arm else ['IMU_UNAVAILABLE'])+(['CONTINUITY_FAULT'] if self.failed_pyros else [])+([] if orientation_ready else ['ORIENTATION_NOT_READY']),
+                        failed_pyro_mask=self.failed_pyros,unprepared_servo_mask=1 & ~self.prepared_mask,prepared_servo_mask=self.prepared_mask,requested_mode='physical')
         if command=='preflight simulation': return dict(ready=True,reasons=[],requested_mode='simulation')
         if command=='pyro continuity': return dict(configured_pyro_mask=3,connected_pyro_mask=3 & ~self.failed_pyros,failed_pyro_mask=self.failed_pyros & 3,all_connected=not (self.failed_pyros & 3))
         if command=='sensors':
@@ -341,9 +358,13 @@ class Native:
             return dict(imu_ready=False,baro_ready=False,baro_sample_valid=False,uptime_ms=self.sensor_time)
         if command.startswith('servo arm'):
             self.prepared_mask|=1; return dict(initial_position_commanded=True,prepared_servo_mask=self.prepared_mask)
+        if command=='servo release':
+            self.prepared_mask=0; return dict(released=True,prepared_servo_mask=0)
         if command in ('disarm','ds'):
             self.prepared_mask=0; self.active=False; return dict(arming_state='disarmed')
         if command.startswith('sim begin'):
+            if 'physical' not in command and self.prepared_mask:
+                raise CommandError(command,dict(code='PHYSICAL_SERVOS_PREPARED',ok=False))
             if 'physical' in command and self.reject_physical:
                 raise CommandError(command,dict(code='CONTINUITY_FAULT',reasons=['CONTINUITY_FAULT'],failed_pyro_mask=1,ok=False))
             self.active=True; self.prepared_mask=0; self.output_mode='PHYSICAL' if 'physical' in command else 'VIRTUAL'
@@ -540,26 +561,59 @@ def run():
     main_thread=threading.get_ident()
     try:
         assert not window.arm_button.isEnabled() and not window.sim_start.isEnabled()
+        assert not window.bistage_enabled.isChecked() and not window.bistage_min_speed.isEnabled()
+        assert window.flight_state_sequence.text()==(' '+chr(8594)+' ').join(('PAD','BOOST','COAST','DESCENT','LANDED'))
+
         controller.connect_port('PC_FIXTURE')
         wait(lambda:controller.state.local is not None and not controller.state.foreground)
         backend=backends[-1]
+        window.bistage_enabled.setChecked(True); assert window.bistage_min_speed.isEnabled()
+        assert 'BOOST 2' in window.flight_state_sequence.text() and 'COAST 2' in window.flight_state_sequence.text()
+        assert 'ABORT' in window.flight_state_sequence.text() and chr(8595) in window.flight_state_sequence.text()
+        window.bistage_min_speed.setValue(42.5)
+        assert window.bistage_min_speed.value()==42.5 and not window.bistage_min_speed.suffix()
+        window.bistage_enabled.setChecked(False); assert not window.bistage_min_speed.isEnabled()
+        assert window.bistage_min_speed.value()==42.5
+        window.bistage_enabled.setChecked(True); assert window.machine_save.isEnabled()
+        window.machine_save.click(); wait(lambda:not controller.state.foreground)
+        assert not controller.state.error and controller.state.machine['bistage']
+        assert controller.state.machine['minimum_coast_velocity']==42.5
+        assert not window.machine_save.isEnabled()
+        window.bistage_enabled.setChecked(False); window.machine_save.click(); wait(lambda:not controller.state.foreground)
+        assert not controller.state.machine['bistage']
+
         assert window.configuration_page.channels_table.rowCount()==8 and window.configuration_page.rules_tree.topLevelItemCount()==2
         for i,r in enumerate(controller.state.local.rules):
             assert window.configuration_page.rules_tree.topLevelItem(i).text(0)==r['name']
         assert not window.arm_button.isEnabled() and window.arm_button.property('blocked') and window.sim_start.isEnabled()
-        assert window.arm_button.text()=='Arm'
+        assert window.arm_button.text()=='ARM' and window.arm_button.objectName()=='armFlight'
         assert not hasattr(window,'phase_metric') and not hasattr(window,'sensor_metric')
         assert [not check.isHidden() for check in window.servo_selection]==[True,False,False,False]
-        assert window.check_pyros_button.isEnabled() and 'da verificare' in window.pyro_status.text()
+        assert window.check_pyros_button.isEnabled() and 'da verificare' in window.pyro_states[0].text()
+        # Older firmware may lack orientation; its valid plan must still load on initial sync.
+        old_request=backend.request
+        for code in ('NO_DRAFT','INVALID_ARGUMENT','UNKNOWN_COMMAND'):
+            def unsupported_orientation(command,timeout=5,code=code):
+                if command=='config orientation': raise CommandError(command,dict(ok=False,code=code))
+                return old_request(command,timeout)
+            controller.state.base=None; controller.state.local=None
+            with patch.object(backend,'request',side_effect=unsupported_orientation):
+                controller.refresh(); wait(lambda:not controller.state.foreground)
+            assert not controller.state.error and controller.state.base is not None
+            assert controller.state.orientation==dict(supported=False)
+            assert not window.servo_selection[0].isHidden() and window.check_pyros_button.isEnabled()
+            assert 'Aggiorna il firmware' in window.orientation_panel.saved.text() and not window.orientation_panel.save.isEnabled()
+        controller.refresh(); wait(lambda:not controller.state.foreground)
+        assert controller.state.orientation['supported'] and controller.state.orientation['up_axis']=='+X'
         backend.failed_pyros=1
         preflight=deepcopy(controller.state.preflight); before=backend.commands.count('preflight')
         window.check_pyros_button.click(); wait(lambda:not controller.state.foreground)
         assert backend.commands.count('preflight')==before and 'pyro continuity' in backend.commands
-        assert window.pyro_status.text()=='Continuità assente: PYRO 1' and controller.state.preflight==preflight
+        assert window.pyro_states[0].property('preparation')=='unprepared' and controller.state.preflight==preflight
         window.preflight_button.click(); wait(lambda:not controller.state.foreground)
         assert 'CONTINUITY_FAULT' in controller.state.preflight['reasons'] # Preflight still checks independently.
         backend.failed_pyros=0; window.check_pyros_button.click(); wait(lambda:not controller.state.foreground)
-        assert window.pyro_status.text()=='Continuità presente: PYRO 1, PYRO 2'
+        assert all(state.property('preparation')=='prepared' for state in window.pyro_states[:2]) and window.pyro_rows[2].isHidden()
         assert 'CONTINUITY_FAULT' in controller.state.preflight['reasons'] # A manual pass does not approve arming.
         window.preflight_button.click(); wait(lambda:not controller.state.foreground)
         applied=controller.state.base
@@ -684,10 +738,62 @@ def run():
         window.servo_selection[0].setChecked(True)
         assert window.prepare_servos_button.isEnabled()
         window.prepare_servos_button.click(); wait(lambda:not controller.state.foreground)
-        assert 'servo arm 1' in backend.commands and 'preparato' in window.servo_selection[0].text()
-        assert window.disarm_button.isEnabled() and not window.arm_button.isEnabled() # IMU readiness still comes from the board.
-        window.disarm_button.click(); wait(lambda:not controller.state.foreground)
-        assert not backend.prepared_mask and 'preparato' not in window.servo_selection[0].text()
+        assert 'servo arm 1' in backend.commands and window.servo_states[0].text()=='preparato'
+        assert not window.prepare_servos_button.isEnabled() and window.prepare_servos_button.objectName()=='primary'
+        assert window.release_servos_button.isEnabled() and window.release_servos_button.objectName()=='releaseServo'
+        before=len(backend.commands); window.prepare_servos_button.click(); assert len(backend.commands)==before
+        assert window.release_servos_button.isEnabled() and not window.arm_button.isEnabled() # IMU readiness still comes from the board.
+        # Status can report held PWM before a fresh preflight mask is available.
+        controller.state.preflight={}; window.render()
+        assert controller.state.status['arming_state']=='disarmed' and controller.state.status['outputs_active']
+        assert window.release_servos_button.isEnabled() and window.arm_button.text()=='ARM'
+        window.release_servos_button.click(); wait(lambda:not controller.state.foreground)
+        assert not window.release_servos_button.isEnabled()
+        assert window.prepare_servos_button.isEnabled()
+        assert not backend.prepared_mask and window.servo_states[0].text()=='non preparato' and window.servo_states[0].property('preparation')=='unprepared'
+        window.prepare_servos_button.click(); wait(lambda:not controller.state.foreground)
+        # Held servo PWM is not an armed run: all idle settings stay available.
+        assert window.factory_reset_button.isEnabled() and window.format_memory_button.isEnabled()
+        assert window.configuration_page.add_rule_button.isEnabled() and window.check_pyros_button.isEnabled()
+        window.orientation_panel.axis.setCurrentIndex(window.orientation_panel.axis.findData('-X')); window.render()
+        assert window.orientation_panel.axis.isEnabled() and window.orientation_panel.save.isEnabled()
+        assert backend.prepared_mask
+        window.orientation_panel.axis.setCurrentIndex(window.orientation_panel.axis.findData('+X'))
+        # A rejected run is not a configuration draft and must not latch Start disabled.
+        controller._complete(controller._epoch,997,'Avvio simulazione',None,CommandError('sim begin',dict(code='CONFIG_INVALID',ok=False)))
+        assert not controller.state.staged
+        for physical in (True,False):
+            window.sim_physical.setChecked(physical); window.render()
+            assert backend.prepared_mask and controller.state.status['outputs_active']
+            assert not controller.simulation_blocker() and window.sim_start.isEnabled()
+        controller.state.staged=True; window.render()
+        assert not window.sim_start.isEnabled() and 'bozza' in window.sim_blocker.text()
+        controller.state.staged=False; window.render()
+        # Prepared outputs no longer block virtual simulation; acknowledge the firmware release in Dashboard.
+        assert backend.prepared_mask and window.sim_start.isEnabled()
+        window.sim_physical.setChecked(False)
+        original_request=backend.request
+        def unsupported_release(command,timeout=5):
+            if command=='servo release': raise CommandError(command,dict(code='INVALID_ARGUMENT',ok=False))
+            return original_request(command,timeout)
+        marker=len(backend.commands)
+        with patch.object(backend,'request',side_effect=unsupported_release):
+            window.sim_start.click(); wait(lambda:not controller.state.foreground)
+        assert 'Aggiorna il firmware' in controller.state.error and backend.prepared_mask
+        assert not any(command.startswith('sim begin') for command in backend.commands[marker:])
+        marker=len(backend.commands)
+        window.sim_record.setChecked(True)
+        def recovered_storage(command,timeout=5):
+            if command=='flights recover': backend.commands.append(command); return dict(ready=True)
+            return original_request(command,timeout)
+        with patch.object(backend,'request',side_effect=recovered_storage):
+            window.sim_start.click(); wait(lambda:not controller.state.foreground)
+        sequence=backend.commands[marker:]
+        assert sequence.index('servo release')<sequence.index('flights recover')<sequence.index('sim begin record')
+        assert controller.state.sim['active'] and controller.state.sim['output_mode']=='VIRTUAL'
+        assert not backend.prepared_mask and window.servo_states[0].text()=='non preparato'
+        window.sim_stop.click(); wait(lambda:not controller.state.foreground)
+        window.sim_record.setChecked(False)
         window.prepare_servos_button.click(); wait(lambda:not controller.state.foreground)
         backend.ready_to_arm=True; window.preflight_button.click(); wait(lambda:not controller.state.foreground)
         assert window.arm_button.isEnabled() and not window.arm_button.property('blocked')
@@ -712,7 +818,10 @@ def run():
         gate.set(); wait(lambda:controller.state.sim.get('active') and not controller.state.foreground)
         assert controller.state.sim['output_mode']=='PHYSICAL' and window.arming_state.text()=='ARMED'
         assert window.sim_physical.isChecked() and not window.sim_physical.isEnabled()
-        window.sim_stop.click(); wait(lambda:not controller.state.foreground)
+        assert window.arm_button.text()=='DISARM' and window.arm_button.isEnabled()
+        assert not window.release_servos_button.isEnabled()
+        window.arm_button.click(); wait(lambda:not controller.state.foreground)
+        assert 'disarm' in backend.commands and window.arm_button.text()=='ARM'
         assert not controller.state.sim['active'] and window.sim_physical.isEnabled()
         window.sim_physical.setChecked(False)
         # Local edit -> firmware RAM validation -> save/readback -> new applied baseline.
@@ -781,7 +890,7 @@ def run():
             assert backend.request('flights info 1')['samples']==22 # Reply drained; remote recording and connection are intact.
             controller.download('1',cancelled); wait(lambda:not controller.state.foreground)
             assert controller.state.download['state']=='completed' and cancelled.with_suffix('.json').exists()
-            for page in range(5):
+            for page in range(6):
                 window.navigate(page); app.processEvents(); assert window.grab().width()>=1120
             check_flight_plots(window,controller,app)
             controller.download('1',target); wait(lambda:not controller.state.foreground) # Existing files are rejected.
@@ -803,6 +912,56 @@ def run():
             with patch.object(controller,'download') as download, patch('perpetual_app.window.QFileDialog.getSaveFileName',return_value=(str(target),'CSV (*.csv)')):
                 window.download_selected()
                 download.assert_called_once_with('1',str(target))
+        # Maintenance uses real firmware storage and preserves the opposite partition.
+        assert window.nav[4].text()=='Impostazioni' and window.nav[5].text()=='Console'
+        panel=window.orientation_panel
+        panel.axis.setCurrentIndex(panel.axis.findData('-X')); app.processEvents()
+        assert panel.caption.text()=='USB in alto' and panel.save.isEnabled()
+        panel.save.click(); wait(lambda:not controller.state.foreground)
+        assert not controller.state.error and controller.state.orientation['up_axis']=='-X'
+        assert not panel.save.isEnabled() and '-X' in panel.saved.text()
+        panel.axis.setCurrentIndex(panel.axis.findData('+Y')); app.processEvents()
+        assert panel.caption.text()=='USB a sinistra' and panel.image.pixmap().width()>panel.image.pixmap().height()
+        left=panel.image.pixmap().toImage()
+        panel.axis.setCurrentIndex(panel.axis.findData('-Y')); app.processEvents()
+        assert panel.caption.text()=='USB a destra' and panel.image.pixmap().width()>panel.image.pixmap().height()
+        assert panel.image.pixmap().toImage()!=left
+        panel.axis.setCurrentIndex(panel.axis.findData('+Z')); app.processEvents()
+        assert panel.caption.text()=='Immagine di riferimento +X'
+        saved=controller.state.base.clone()
+        with patch('perpetual_app.window.QMessageBox.question',return_value=QMessageBox.No):
+            before=len(backend.commands); window.confirm_maintenance(False)
+            assert len(backend.commands)==before
+        controller.save_machine(True,50); wait(lambda:not controller.state.foreground)
+        assert controller.state.machine['bistage']
+        controller.maintenance(); wait(lambda:not controller.state.foreground)
+        assert not controller.state.error and controller.state.base is None and not controller.state.local.rules
+        assert controller.state.orientation['up_axis'] is None and panel.axis.currentData() is None
+        assert panel.axis.currentText()==chr(8212) and not panel.save.isEnabled()
+        assert not controller.state.machine['bistage'] and not window.bistage_enabled.isChecked()
+        assert not backend.request('config show')['available']
+        assert backend.request('flights info 1')['samples']==22
+        controller.edit_plan(saved); controller.validate(apply=True); wait(lambda:not controller.state.foreground)
+        assert not controller.state.error and controller.state.base==saved
+        assert 'ORIENTATION_NOT_READY' in controller.state.preflight['reasons'] and not window.arm_button.isEnabled()
+        assert any('Orientamento' in window.readiness_table.item(i,0).text() for i in range(window.readiness_table.rowCount()))
+        panel.axis.setCurrentIndex(panel.axis.findData('+X')); assert panel.save.isEnabled()
+        panel.save.click(); wait(lambda:not controller.state.foreground)
+        assert controller.state.orientation['orientation_ready'] and controller.state.orientation['up_axis']=='+X'
+        assert 'ORIENTATION_NOT_READY' not in controller.state.preflight['reasons']
+        backend.request('hil begin 0 200 logged_body')
+        try:
+            for command in ('config reset','flights format','config orientation -Z'):
+                try: backend.request(command)
+                except CommandError as error: assert error.code=='BUSY'
+                else: raise AssertionError('Maintenance accepted during active run')
+        finally: backend.request('hil stop completed')
+        controller.maintenance(True); wait(lambda:not controller.state.foreground)
+        assert not controller.state.error and controller.state.flights==[] and controller.state.flight=={}
+        assert not backend.request('flights list 0')['available']
+        assert controller.state.base==saved and read_plan(backend)[0]==saved
+        backend.request('config begin')
+        backend.request('config discard')
         # Source loss invalidates controls while retaining a local unsaved draft.
         local=controller.state.local.clone(); local.rules[0]['name']='Unsaved local'
         controller.edit_plan(local)

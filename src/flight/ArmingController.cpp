@@ -17,6 +17,7 @@ const char *blockerName(ArmBlocker b) {
     case ArmBlocker::ContinuityFault: return "CONTINUITY_FAULT";
     case ArmBlocker::ServosNotPrepared: return "SERVOS_NOT_PREPARED";
     case ArmBlocker::ServosNotConfigured: return "SERVOS_NOT_CONFIGURED";
+    case ArmBlocker::OrientationNotReady: return "ORIENTATION_NOT_READY";
     case ArmBlocker::PhysicalServosPrepared: return "PHYSICAL_SERVOS_PREPARED";
     case ArmBlocker::HardwareChecksUnavailable: return "HARDWARE_CHECKS_UNAVAILABLE";
     case ArmBlocker::Count: break;
@@ -64,10 +65,10 @@ Preflight ArmingController::preflight(FlightMode mode, bool record, PhysicalChec
   }
   if (config_.hasDraft()) p.block(ArmBlocker::DraftActive);
   if (!config_.configValid()) p.block(ArmBlocker::ConfigInvalid);
+  if (mode==FlightMode::Physical && !config_.orientationReady()) p.block(ArmBlocker::OrientationNotReady);
   if (!config_.disarmed()) p.block(ArmBlocker::NotDisarmed);
   if ((record || mode == FlightMode::Physical) && (!recorder_ || !recorder_->initialized())) p.block(ArmBlocker::StorageNotReady);
   if (mode == FlightMode::Simulation && outputMode == storage::OutputMode::Virtual) {
-    if (outputs_ && outputs_->hasPreparation()) p.block(ArmBlocker::PhysicalServosPrepared);
     return p;
   }
   if (!clock_) p.block(ArmBlocker::TimingUnavailable);
@@ -172,13 +173,27 @@ unsigned ArmingController::stop(storage::RecordingEnd reason) {
 }
 const char *ArmingController::disarmError() const {
   if (runtime_.blockedByOtherRun()) return "BUSY";
-  if (armed() && navigation_.phase != recovery::FlightPhase::Pad && navigation_.phase != recovery::FlightPhase::Landed)
+  if (armed() && navigation_.phase != recovery::FlightPhase::Pad && navigation_.phase != recovery::FlightPhase::Landed && navigation_.phase!=recovery::FlightPhase::Abort)
     return "DISARM_PROHIBITED_IN_FLIGHT";
   return nullptr;
 }
 const char *ArmingController::disarm() {
   if (const auto error = disarmError()) return error;
-  stop(); if (outputs_) outputs_->releasePrepared(); return nullptr;
+  stop(); return nullptr;
+}
+const char *ArmingController::releaseServos() {
+  if (state()!=ArmingState::Disarmed || config_.runLocked() || runtime_.blockedByOtherRun() ||
+      (recorder_ && recorder_->busy()) || (outputs_ && outputs_->owner())) return "BUSY";
+  if (!config_.disarmed()) return "ARMED";
+  if (!outputs_) return "HARDWARE_CHECKS_UNAVAILABLE";
+  outputs_->releasePrepared(); return nullptr;
+}
+const char *ArmingController::releaseForVirtualSimulation(bool record) {
+  lastPreflight_=preflight(FlightMode::Simulation,record,nullptr,storage::OutputMode::Virtual);
+  if (outputs_ && outputs_->owner()) lastPreflight_.block(ArmBlocker::Busy);
+  if (const auto error=lastPreflight_.error()) return error;
+  if (outputs_ && outputs_->hasPreparation()) outputs_->releasePrepared();
+  return nullptr;
 }
 const char *ArmingController::prepareServos(uint32_t channel) {
   if (state()!=ArmingState::Disarmed || config_.runLocked() || runtime_.blockedByOtherRun() || (recorder_ && recorder_->busy())) return "BUSY";

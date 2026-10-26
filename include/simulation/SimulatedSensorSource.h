@@ -12,6 +12,11 @@ public:
   static float nominalHz();
   static float referenceAltitude();
   explicit SimulatedSensorSource(timing::Clock clock) : clock_(clock) {}
+  bool selectBistage(bool enabled) { if (running_) return false; bistage_=enabled; return true; }
+  bool bistage() const { return bistage_; }
+  uint32_t activeDurationMs() const { return bistage_ ? 25000 : durationMs(); }
+  uint32_t activeSampleCount() const { return bistage_ ? 5001 : sampleCount(); }
+  float activeReferenceAltitude() const { return bistage_ ? 0 : referenceAltitude(); }
   void start() override;
   void stop() override { running_ = false; }
   bool poll(Reading &reading) override;
@@ -21,6 +26,7 @@ public:
   uint32_t maxLatenessUs() const { return maxLate_; }
 private:
   timing::Clock clock_;
+  bool bistage_ = false;
   bool running_ = false, finished_ = false;
   uint32_t origin_ = 0, next_ = 0, missed_ = 0, maxLate_ = 0, baroSequence_ = 0;
 };

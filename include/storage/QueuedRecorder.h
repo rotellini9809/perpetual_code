@@ -17,7 +17,7 @@ public:
   bool busy() const override;
   bool poll(); // Consumer/core 1 only; may block on flash. False means no work.
   bool begin(const recovery::Configuration &, const recovery::ValidationLimits &, uint32_t,
-             SensorMode, OutputMode, sensors::FrameConvention) override;
+             SensorMode, OutputMode, sensors::FrameConvention, const FlightCalibration & = FlightCalibration{}) override;
   bool append(const FlightSample &) override;
   bool recordStart(recovery::RuleId, recovery::OutputKind, uint32_t, uint32_t) override;
   bool service() override; // Producer/core 0: health check only; never touches flash.

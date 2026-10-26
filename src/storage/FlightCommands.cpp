@@ -9,7 +9,7 @@ bool FlightCommands::select(uint64_t sequence) {
   if (!recorder_.inspect(sequence, selected_)) return false;
   const auto &header = *recorder_.metadata();
   if (!storage::ConfigurationStore::encode(header.configuration, configuration_, sizeof(configuration_), configBytes_)) return false;
-  headerLayout_ = header.layout; starts_ = header.starts;
+  calibration_=header.calibration; headerLayout_ = header.layout; starts_ = header.starts;
   sensorMode_ = header.sensorMode; outputMode_ = header.outputMode; frame_ = header.frame;
   selectedValid_ = true; return true;
 }
@@ -57,6 +57,12 @@ bool FlightCommands::dispatch(const char *command, const char *arguments, bool h
   }
   if (run_.active() || config_.runLocked() || recorder_.active()) { error = "BUSY"; return finish(); }
   if (!config_.disarmed()) { error = "ARMED"; return finish(); }
+  if (t.count==1 && t.is(0,"format")) {
+    selectedValid_=blockValid_=false;
+    if (!recorder_.format()) error=FlightRecorder::errorName(recorder_.error());
+    else data.add(",\"formatted\":true,\"ready\":true");
+    return finish();
+  }
   if (t.count == 2 && t.is(0, "timing") && t.is(1, "reset")) {
     if (!profile_) { error = "TIMING_UNAVAILABLE"; return finish(); }
     profile_->resetTiming(); data.add(",\"reset\":true"); return finish();
@@ -91,15 +97,36 @@ bool FlightCommands::dispatch(const char *command, const char *arguments, bool h
   }
   if (t.count >= 2 && protocol::unsignedNumber64(t[1], sequence)) {
     const bool info = t.count == 2 && t.is(0, "info");
+    const bool calibration = t.count == 2 && t.is(0, "calibration");
     const bool summary = t.count == 2 && t.is(0, "summary");
     const bool config = t.count == 3 && t.is(0, "config") && protocol::unsignedNumber(t[2], offset);
     const bool read = t.count == 4 && t.is(0, "read") && protocol::unsignedNumber(t[2], index) && protocol::unsignedNumber(t[3], offset);
-    if (!info && !summary && !config && !read) { error = "INVALID_ARGUMENT"; return finish(); }
+    if (!info && !calibration && !summary && !config && !read) { error = "INVALID_ARGUMENT"; return finish(); }
     if (!select(sequence)) {
       error = recorder_.error() == RecorderError::None ? "Corrupt" : FlightRecorder::errorName(recorder_.error());
       return finish();
     }
     data.add(",\"sequence\":\"%llu\"", static_cast<unsigned long long>(sequence));
+    if (calibration) {
+      data.add(",\"calibration\":");
+      if (!calibration_.available) data.add("null");
+      else {
+        const auto &c=calibration_;
+        data.add("{\"gyro_calibrated\":%s,\"sensor_axes\":%s",c.gyroCalibrated ? "true" : "false",c.sensorAxes ? "true" : "false");
+        data.number("reference_altitude_m",c.referenceAltitude);
+        data.add(",\"bistage\":%s",c.machine.bistage ? "true" : "false"); data.number("minimum_coast_velocity",c.machine.minimumCoastVelocity);
+        data.add(",\"up_axis\":");
+        if (c.sensorAxes) { static const char *axes[]={"+X","-X","+Y","-Y","+Z","-Z"}; data.quoted(axes[c.upAxis]); }
+        else data.add("null");
+        for (unsigned vector=0;vector<2;++vector) {
+          data.add(",\"%s\":",vector ? "accel_bias_mps2" : "gyro_bias_radps");
+          if (!c.sensorAxes) data.add("null");
+          else { const auto *values=vector ? c.accelBias : c.gyroBias; data.add("[%.9g,%.9g,%.9g]",double(values[0]),double(values[1]),double(values[2])); }
+        }
+        data.add("}");
+      }
+      return finish();
+    }
     if (summary) { protocol::appendRecordingSummary(data,selected_.summaryState,selected_.summary); return finish(); }
     const auto blocks = (selected_.entry.committedBytes - selected_.headerBytes) / FlightSampleStore::BlockBytes;
     if (info) {
@@ -111,7 +138,8 @@ bool FlightCommands::dispatch(const char *command, const char *arguments, bool h
         if (s.state == StartState::Recorded) data.add("%lu", static_cast<unsigned long>(s.timeMs)); else data.add("null");
         data.add("]");
       }
-      data.add("]"); return finish();
+      data.add("]");
+      return finish();
     }
     if (config) {
       if (offset >= configBytes_) { error = "Bounds"; return finish(); }
@@ -135,8 +163,9 @@ bool FlightCommands::dispatch(const char *command, const char *arguments, bool h
       const auto &sample = block_.samples[offset+i]; data.add("%s[%lu", i ? "," : "", static_cast<unsigned long>(sample.timeMs));
       for (auto value : sample.values) { data.add(","); data.value(value); }
       data.add(",%u,", unsigned(sample.phase));
-      if (sample.batteryMv==UINT16_MAX) data.add("null]");
-      else data.add("%.3f]",double(sample.batteryMv)/1000.0);
+      if (sample.batteryMv==UINT16_MAX) data.add("null");
+      else data.add("%.3f",double(sample.batteryMv)/1000.0);
+      data.add(",%u]",unsigned(sample.abortReason));
     }
     data.add("]"); return finish();
   }

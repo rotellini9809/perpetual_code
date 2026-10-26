@@ -22,6 +22,11 @@ bool ArmingCommands::dispatch(const char *command, const char *arguments, bool h
   protocol::Tokens t(arguments); protocol::Json data; const char *error = nullptr;
   const bool prepare=!std::strcmp(command,"servo") && t.is(0,"arm");
   const bool continuity=!std::strcmp(command,"pyro") && t.is(0,"continuity");
+  if (!std::strcmp(command,"servo") && t.valid && t.count==1 && t.is(0,"release")) {
+    error=physical_.releaseServos();
+    if (!error) data.add(",\"released\":true,\"prepared_servo_mask\":0");
+    return protocol::finish(command,data,error,hasId,id,out,capacity,true);
+  }
   if (!std::strcmp(command,"servo") && (t.is(0,"preview") || t.is(0,"release"))) {
     uint32_t channel=0, pwm=0; const bool release=t.is(0,"release");
     if (!t.valid || t.count!=(release ? 2u : 3u) || !protocol::unsignedNumber(t[1],channel) ||
@@ -56,7 +61,9 @@ bool ArmingCommands::dispatch(const char *command, const char *arguments, bool h
     protocol::appendPreflight(data, physical_.preflight(mode, mode == flight::FlightMode::Physical, &checks_));
     data.add(",\"requested_mode\":\"%s\"", flight::flightModeName(mode));
   } else if (arm) {
-    error = physical_.arm(source_, flight::FlightMode::Physical, 0, 120, navigation::SensorCalibration{}, 1048576, &checks_);
+    navigation::SensorCalibration device;
+    device.upAxis=static_cast<navigation::UpAxis>(physical_.deviceUpAxis());
+    error = physical_.arm(source_, flight::FlightMode::Physical, 0, 120, device, 1048576, &checks_);
     protocol::appendPreflight(data, physical_.lastPreflight());
   } else if (simulation_ && (simulation_->active() || simulation_->controller().state() == flight::ArmingState::Closing)) { owner = &simulation_->controller(); error = simulation_->disarm(); }
   else if (hil_ && (hil_->active() || hil_->controller().state() == flight::ArmingState::Closing)) { owner = &hil_->controller(); error = hil_->disarm(); }

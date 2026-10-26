@@ -59,14 +59,15 @@ Evaluation RuleEngine::evaluate(uint64_t now, const FlightSnapshot &s) {
   lastMs_ = now;
   const bool newSnapshot = !havePrevious_ || s.sequence > previous_.sequence;
   const bool phaseOk = newSnapshot && s.phaseValid && fresh(now, s.phaseMeasuredMs) &&
-      static_cast<uint8_t>(s.phase) <= static_cast<uint8_t>(FlightPhase::Landed) &&
+      static_cast<uint8_t>(s.phase) <= static_cast<uint8_t>(FlightPhase::Abort) &&
       (!havePrevious_ || s.phaseMeasuredMs >= previous_.phaseMeasuredMs);
   const bool altitudeFresh = newSnapshot && s.altitude.valid && std::isfinite(s.altitude.value) && fresh(now, s.altitude.measuredMs) &&
       (!havePrevious_ || (s.altitude.sequence > previous_.altitude.sequence && s.altitude.measuredMs >= previous_.altitude.measuredMs));
   const bool velocityFresh = newSnapshot && s.verticalVelocity.valid && std::isfinite(s.verticalVelocity.value) && fresh(now, s.verticalVelocity.measuredMs) &&
       (!havePrevious_ || (s.verticalVelocity.sequence > previous_.verticalVelocity.sequence && s.verticalVelocity.measuredMs >= previous_.verticalVelocity.measuredMs));
+  if (phaseOk && s.phase==FlightPhase::Abort) closeStarts();
   if (phaseOk) {
-    if (!launched_ && (s.phase == FlightPhase::Boost || s.phase == FlightPhase::Coast || s.phase == FlightPhase::Descent)) {
+    if (!launched_ && airbornePhase(s.phase)) {
       launched_ = true; launchMs_ = s.phaseMeasuredMs;
     }
     if (launched_ && !apogee_ && s.phase == FlightPhase::Descent) {
@@ -75,12 +76,12 @@ Evaluation RuleEngine::evaluate(uint64_t now, const FlightSnapshot &s) {
     if (s.phase == FlightPhase::Landed) landed_ = true;
   }
   const bool airborne = phaseOk && launched_ && !landed_ &&
-      (s.phase == FlightPhase::Boost || s.phase == FlightPhase::Coast || s.phase == FlightPhase::Descent);
+      airbornePhase(s.phase);
   std::array<bool, MaxRules> trigger{};
   for (std::size_t i = 0; i < config_.ruleCount; ++i) {
     auto &state = runtime_[i];
     if (state.triggered) continue;
-    bool satisfied = airborne && !startsClosed_;
+    bool satisfied = airborne && !startsClosed_ && s.startsAllowed;
     const auto &r = config_.rules[i];
     for (std::size_t j = 0; satisfied && j < r.conditionCount; ++j)
       satisfied = conditionTrue(r.conditions[j], now, s, altitudeFresh, velocityFresh);
@@ -96,7 +97,7 @@ Evaluation RuleEngine::evaluate(uint64_t now, const FlightSnapshot &s) {
   // Once triggered, rule + channel delays run independently of later inputs.
   // Actions and assignments are built in the same order in begin().
   std::size_t action = 0;
-  for (std::size_t i = 0; i < config_.ruleCount && !startsClosed_; ++i) {
+  for (std::size_t i = 0; i < config_.ruleCount && !startsClosed_ && s.startsAllowed; ++i) {
     const auto &rule = config_.rules[i];
     for (std::size_t j = 0; j < rule.assignmentCount; ++j) {
       auto &a = actions_[action++];
@@ -110,9 +111,9 @@ Evaluation RuleEngine::evaluate(uint64_t now, const FlightSnapshot &s) {
   if (newSnapshot) { previous_ = s; havePrevious_ = true; }
   return result;
 }
-void RuleEngine::closeStarts() {
-  startsClosed_ = true;
-  for (auto &a : actions_) if (a.state == ActionState::Pending) a.state = ActionState::Cancelled;
+void RuleEngine::cancelPending() {
+  for (auto &a:actions_) if (a.state==ActionState::Pending) a.state=ActionState::Cancelled;
 }
+void RuleEngine::closeStarts() { startsClosed_=true; cancelPending(); }
 void RuleEngine::end() { closeStarts(); active_ = false; }
 } // namespace recovery

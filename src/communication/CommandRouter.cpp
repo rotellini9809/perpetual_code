@@ -43,9 +43,9 @@ bool CommandRouter::dispatchFrom(Source source, const char *command, const char 
   const bool operational=configGroup || flights || (runGroup && !runRead) || !strcmp(command,"sensors") ||
       !strcmp(command,"preflight") || !strcmp(command,"arm") || !strcmp(command,"disarm") || !strcmp(command,"ds");
   if (power_ && (operational || powerCommand)) power_->activity();
-  const bool mutation = (configGroup && !(t.is(0,"show") || t.is(0,"list") || (!strcmp(command,"config") && t.is(0,"draft")) || (!strcmp(command,"pyro") && t.is(0,"continuity")))) ||
+  const bool mutation = (configGroup && !(t.is(0,"show") || t.is(0,"list") || (!strcmp(command,"config") && (t.is(0,"draft") || ((t.is(0,"orientation") || t.is(0,"machine")) && t.count==1))) || (!strcmp(command,"pyro") && t.is(0,"continuity")))) ||
       (runGroup && !(t.is(0,"status") || t.is(0,"events") || t.is(0,"timing"))) ||
-      (flights && (t.is(0,"init") || t.is(0,"recover") || t.is(0,"delete") || (t.is(0,"timing") && t.is(1,"reset")))) ||
+      (flights && (t.is(0,"format") || t.is(0,"init") || t.is(0,"recover") || t.is(0,"delete") || (t.is(0,"timing") && t.is(1,"reset")))) ||
       !strcmp(command,"arm") || !strcmp(command,"disarm") || !strcmp(command,"ds") || powerCommand;
   if (!occupied()) owner_ = Source::None;
   if (!strcmp(command,"control")) {
@@ -86,13 +86,16 @@ bool CommandRouter::dispatchCommand(const char *command, const char *arguments, 
       strcmp(command, "condition") == 0 || strcmp(command, "output") == 0 ||
       strcmp(command, "pyro") == 0 || strcmp(command, "servo") == 0;
   const bool read = tokens.is(0, "show") || tokens.is(0, "list") ||
-      (strcmp(command, "config") == 0 && tokens.is(0, "draft")) ||
+      (strcmp(command, "config") == 0 && (tokens.is(0, "draft") || ((tokens.is(0,"orientation") || tokens.is(0,"machine")) && tokens.count==1))) ||
       (strcmp(command, "pyro") == 0 && tokens.is(0, "continuity"));
   const bool simActive = simulation_ && simulation_->active();
   const bool physicalActive = arming_ && arming_->active();
   const bool otherRun = (strcmp(command, "replay") == 0 && (hil_.active() || simActive)) ||
       (strcmp(command, "hil") == 0 && (estimates_.active() || simActive)) ||
       (physicalActive && (!strcmp(command,"replay") || !strcmp(command,"hil") || !strcmp(command,"sim")));
+  const bool maintenance=(!strcmp(command,"config") && (tokens.is(0,"reset") || ((tokens.is(0,"orientation") || tokens.is(0,"machine")) && tokens.count>1))) || (!strcmp(command,"flights") && tokens.is(0,"format"));
+  if (maintenance && (simActive || physicalActive || (arming_ && arming_->hasServoPreview())))
+    return protocol::finish(command,protocol::Json{},"BUSY",hasId,id,output,capacity);
   const bool beginRun = !strcmp(command,"arm") || (tokens.is(0,"begin") &&
       (strcmp(command,"replay")==0 || strcmp(command,"hil")==0 || strcmp(command,"sim")==0));
   if (((run_.active() || settings_.runLocked()) && ((group && !read) || otherRun)) ||
@@ -100,9 +103,6 @@ bool CommandRouter::dispatchCommand(const char *command, const char *arguments, 
     const protocol::Json data;
     return protocol::finish(command, data, "BUSY", hasId, id, output, capacity);
   }
-  if (beginRun && strcmp(command,"arm") && arming_ && arming_->hasPreparedServos() &&
-      !(strcmp(command,"sim")==0 && tokens.is(1,"physical")))
-    return protocol::finish(command,protocol::Json{},"PHYSICAL_SERVOS_PREPARED",hasId,id,output,capacity);
   // Freeze the previous simulation's completed storage progress before a new
   // run can reuse the shared recorder counters. The busy guard above owns handoff.
   if (beginRun && simulation_) simulation_->refreshRecording();

@@ -40,7 +40,18 @@ def main():
         import os
         os.environ['QT_QPA_PLATFORM']='offscreen'
     app=QApplication(sys.argv); app.setApplicationName('Perpetual'); app.setOrganizationName('Perpetual'); app.setStyle('Fusion')
-    from PySide6.QtGui import QIcon
+    from PySide6.QtGui import QIcon,QPalette,QColor
+    palette=QPalette()
+    for role,color in ((QPalette.Window,'#f4f6f8'),(QPalette.WindowText,'#213044'),
+            (QPalette.Base,'#ffffff'),(QPalette.AlternateBase,'#f4f6f8'),(QPalette.Text,'#213044'),
+            (QPalette.Button,'#ffffff'),(QPalette.ButtonText,'#213044'),(QPalette.Highlight,'#167c76'),
+            (QPalette.HighlightedText,'#ffffff'),(QPalette.ToolTipBase,'#ffffff'),(QPalette.ToolTipText,'#213044'),
+            (QPalette.Light,'#ffffff'),(QPalette.Midlight,'#e7ecf0'),(QPalette.Mid,'#b7c6d4'),
+            (QPalette.Dark,'#758699'),(QPalette.Shadow,'#213044'),(QPalette.PlaceholderText,'#7b8998')):
+        palette.setColor(role,QColor(color))
+    for role in (QPalette.WindowText,QPalette.Text,QPalette.ButtonText):
+        palette.setColor(QPalette.Disabled,role,QColor('#a3aeb9'))
+    app.setPalette(palette)
     app.setWindowIcon(QIcon(str(ASSETS/'perpetual.ico')))
     if app.platformName()=='offscreen':
         import os
@@ -70,10 +81,10 @@ def main():
                 if time.monotonic()>smoke_deadline: raise TimeoutError('Desktop handshake/sync did not finish')
                 QTimer.singleShot(100,smoke); return
             args.smoke_test.mkdir(parents=True,exist_ok=True)
-            for i,name in enumerate(('dashboard','configuration','simulation','flights','console')):
+            for i,name in enumerate(('dashboard','configuration','simulation','flights','additional-settings','console')):
                 window.navigate(i); app.processEvents()
                 if not window.grab().save(str(args.smoke_test/(name+'.png'))): raise OSError('Screenshot non salvato')
-            (args.smoke_test/'result.json').write_text(json.dumps(dict(ok=True,pages=5,frozen=bool(getattr(sys,'frozen',False)),
+            (args.smoke_test/'result.json').write_text(json.dumps(dict(ok=True,pages=6,frozen=bool(getattr(sys,'frozen',False)),
                 connected=window.controller.state.connected,transport=window.controller.state.connection.get('transport'))),encoding='utf-8')
             window._closing=True; window.controller.disconnect(); window.close_timer.start()
         QTimer.singleShot(700,smoke)

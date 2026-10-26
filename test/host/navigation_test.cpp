@@ -234,7 +234,42 @@ void run() {
 }
 } // namespace test_hardware_sensor_source
 
+void test_bistage_detector() {
+  using namespace navigation;
+  recovery::StateMachineSettings machine; machine.bistage=true; machine.minimumCoastVelocity=20;
+  FlightDetector detector;
+  auto coast=[&]() { detector.reset(machine); detector.update(.01f,40,40,0,0,0,0); assert(detector.phase()==Phase::Boost); detector.update(.01f,0,0,0,0,25,0); assert(detector.phase()==Phase::Coast && !detector.startsAllowed()); };
+  coast(); detector.confirmCoastVelocity(std::numeric_limits<float>::quiet_NaN());
+  const float values[]={-100,24,25,26,27,28,29,1000};
+  for (unsigned i=0;i<8;++i) { detector.confirmCoastVelocity(values[i]); assert(detector.startsAllowed()==(i==7)); }
+  assert(detector.velocityMedian()==26.5f); detector.confirmCoastVelocity(-1000); assert(detector.phase()==Phase::Coast);
+  detector.update(.01f,40,40,100,0,25,0); assert(detector.phase()==Phase::Boost2); // No angular-rate abort.
+  detector.update(.01f,0,0,0,0,25,0); assert(detector.phase()==Phase::Coast2);
+  detector.update(.01f,0,0,0,0,-1,0); assert(detector.phase()==Phase::Descent);
+  coast(); for (unsigned i=0;i<8;++i) detector.confirmCoastVelocity(20);
+  assert(detector.phase()==Phase::Abort && detector.abortReason()==recovery::AbortReason::Velocity);
+  detector.update(.01f,100,100,0,0,100,0); assert(detector.phase()==Phase::Abort && !detector.startsAllowed());
+  coast(); detector.update(.01f,0,0,0,0,25,40.0f*.017453292519943295f);
+  assert(detector.phase()==Phase::Abort && detector.abortReason()==recovery::AbortReason::Tilt);
+  coast(); for (unsigned i=0;i<8;++i) detector.confirmCoastVelocity(25);
+  detector.update(.01f,0,0,0,0,-1,0); assert(detector.phase()==Phase::Descent); // No second ignition is not ABORT.
+  machine.minimumCoastVelocity=0; Navigation nav; assert(nav.begin(0,100,{{1,0,0,0}},machine));
+  SensorFrame frame; frame.imuValid=true;
+  auto step=[&](float axial,float spin,float tumble,uint64_t elapsed) {
+    frame.timeUs+=elapsed; ++frame.imuSequence; frame.accel[0]=axial; frame.gyro[0]=spin; frame.gyro[2]=tumble;
+    return nav.step(frame);
+  };
+  auto state=step(9.80665f,0,0,10000); assert(state.valid && state.tiltRadians<.001f);
+  for (unsigned i=0;i<10;++i) state=step(40,0,0,10000);
+  for (unsigned i=0;i<8;++i) state=step(0,20,0,10000);
+  assert(state.phase==Phase::Coast && state.startsAllowed && state.tiltRadians<.001f); // Axial spin alone is allowed.
+  state=step(0,0,20,50000);
+  assert(state.phase==Phase::Abort && state.abortReason==recovery::AbortReason::Tilt && !state.startsAllowed);
+
+}
+
 int main() {
+  test_bistage_detector();
   std::puts("  navigation"); std::fflush(stdout);
   test_navigation::run();
   std::puts("  arming_calibration"); std::fflush(stdout);

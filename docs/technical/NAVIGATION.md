@@ -10,8 +10,9 @@ allocation or matrix-library dependency.
 `Navigation::begin(referenceAltitude, nominalImuHz, quaternion)` resets navigation. Reference
 altitude is absolute pressure altitude in metres from arming; the first IMU step uses nominal
 dt, subsequent steps use actual timestamp deltas. Direct callers retain the identity quaternion
-default. Physical arming instead supplies a gravity-derived initial quaternion through the
-per-run `SensorCalibration` snapshot.
+default. Physical arming supplies a gravity-derived initial quaternion through the per-run
+`SensorCalibration` snapshot. Bistage mode additionally aligns from the first valid PAD
+acceleration near 1 g before flight processing; invalid PAD data is not substituted.
 
 The mounting selector below defines sensor-to-BODY coordinates, not the initial BODY-to-NAV
 attitude. Physical calibration applies this same mounting transform to averaged acceleration
@@ -39,7 +40,9 @@ estimates predicted from a fresh IMU frame are fresh estimates even between baro
 invalid flags on rejected input. It does not execute rules or outputs. No live hardware sampling
 rates have been changed or tuned by this port.
 
-## Preserved estimator/detector behavior
+## Preserved estimator behavior
+
+Flight-phase transitions and their thresholds are specified in [state machines](state_macines.md#2-macchina-di-volo-normale--implementata).
 
 | Parameter/operation | Baseline retained |
 |---|---|
@@ -53,17 +56,16 @@ rates have been changed or tuned by this port.
 | Gravity compensation | 9.80665 m/s^2 |
 | AHRS correction gate | abs(accel magnitude - 9.81) < 0.2 |
 | AHRS beta | PAD .3, BOOST .1, COAST .5, DESCENT .3, LANDED .05 |
-| Launch | accel magnitude > 3*9.81 |
-| Burnout | BODY X specific force <= 0 |
-| Apogee/descent | previous estimated signed vz <= -0.5 |
-| Landing | near 1g within 2 m/s^2, gyro norm < .5 rad/s, baro range <1 m, 2 s stability |
 | PAD baseline | 3 s stationary gate, 10 s low-pass time constant |
 
-Execution order remains AHRS, vertical projection, baseline, phase detection, Kalman predict,
+Execution order is AHRS, vertical projection, baseline, phase detection, Kalman predict,
 PAD velocity constraint and fresh barometer correction. Baro variance follows velocity after
 prediction. Detector reads the previous cycle's velocity as in the baseline. PAD/LANDED pin
 vertical acceleration/velocity; LANDED does not accept new altitude corrections. Covariance
 still uses legacy (I-KH)P; no Joseph-form/noise redesign is introduced silently.
+In bistage mode the velocity-median window takes the freshly predicted/corrected velocity
+after the phase step; tilt and phase-ABORT decisions precede rule/output evaluation. See
+[state machines](state_macines.md) for priority and exact transitions.
 
 ## Deliberate adaptations and known inherited limits
 
@@ -117,8 +119,10 @@ Pressure must be finite/positive and no older than 100 ms. These collection gate
 qualification with the repaired physical IMU; no estimator/detector parameters changed. There
 is no automatic calibration timeout: progress remains visible and `disarm` cancels collection.
 An averaged acceleration magnitude below 8.80665 m/s^2 restarts the window as well, rejecting
-strongly cancelling gravity directions. No calibration samples, gyro biases or initial
-quaternion are written to flash.
+strongly cancelling gravity directions. Raw calibration samples and the initial quaternion are
+not persisted. The resulting biases, reference and mounting are frozen into each physical
+flight header; see [the snapshot format](STORAGE_FORMAT.md#per-flight-calibration-snapshot-header-v4).
+The recorded gyro bias is never reused for the next arming session.
 
 A separate pre-arm tilt-consistency/convergence gate is not implemented yet. Its future policy
 must tolerate normal wind-driven motion of a rocket on rail buttons: compare estimated gravity
@@ -141,12 +145,12 @@ subtracted before mounting transformation. The snapshot is copied at begin and c
 Missing accelerometer calibration therefore needs no special pipeline mode.
 
 Mounting is one `upAxis` field identifying the signed sensor axis pointing toward the nose
-(up on an upright launch pad). It defaults to `PositiveX`; the six options fix the following
+(up on an upright launch pad). The orientation must be explicitly saved before physical arming; the six options fix the following
 right-handed BODY convention for both corrected vectors:
 
 | Noseward sensor axis | BODY X | BODY Y | BODY Z |
 |---|---|---|---|
-| +X (default) | x | y | z |
+| +X | x | y | z |
 | -X | -x | y | -z |
 | +Y | y | -x | z |
 | -Y | -y | x | z |
@@ -157,7 +161,7 @@ No arbitrary rotation matrix is exposed. This supports axis-aligned installation
 installation needs a later extension. Rotation around the rocket's length is a chosen coordinate
 convention, sufficient for current vertical navigation and phase detection, not a measured
 physical roll reference for future directional control. Mounting is a device setting separate
-from bias calibration; its persistence/interface is also deferred.
+from bias calibration; it is persisted separately from deployment rules via `config orientation [+X|-X|+Y|-Y|+Z|-Z]` and selected in the desktop Impostazioni page. Normal physical arming passes this saved axis into the calibration/pipeline snapshot; simulation and logged BODY replays retain their source convention.
 
 ### Recovery System reference and current integration
 
@@ -173,12 +177,13 @@ converted to Pa. Pre-arming calibration samples and the exact historical launch-
 reference aren't in this recording. Replay uses the initial one-second pressure-altitude mean as
 an offline approximation, not a newly implemented arming-calibration procedure.
 
-MAIN runs this code through the shared SensorPipeline with USB HIL or autonomous
-synthetic sensors. See [architecture](ARCHITECTURE.md) and [simulation](../testing/SIMULATION.md).
+MAIN runs this code through the shared SensorPipeline with USB HIL or the onboard
+Hoppino replay source. See [architecture](ARCHITECTURE.md) and [simulation](../testing/SIMULATION.md).
 `HardwareSensorSource` now adapts fresh driver readings to the same runtime. MAIN uses it for
-idle diagnostics while physical arming is blocked by IMU soldering and missing activation
-integrations. The collector/controller are host-tested; acquisition qualification and persistent
-accelerometer storage remain future work. Current executable runs are virtual-only.
+idle diagnostics and real physical arming/flight. The current board's IMU solder fault still
+blocks physical readiness. Physical output integration exists and opt-in physical simulation
+uses it; repaired-sensor acquisition qualification and persistent accelerometer storage remain
+future work.
 
 ## Verification
 

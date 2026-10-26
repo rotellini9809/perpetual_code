@@ -1,7 +1,8 @@
 # Recording, download and timing
 
-MAIN records sensor HIL or autonomous simulation on W25Q128JV and exports sample CSV plus frozen
-metadata JSON. Current outputs remain virtual. Normal HIL without `--record` performs no
+MAIN records normal physical flight, sensor HIL and autonomous simulation on W25Q128JV,
+exporting sample CSV plus frozen metadata JSON. HIL is virtual; simulation defaults to virtual
+and explicitly supports physical outputs. Normal HIL without `--record` performs no
 flight-storage writes. Valid saved settings and no draft are required; close Serial Monitor
 before Python opens COM9.
 
@@ -24,6 +25,13 @@ metadata with only a RAM backup. See [diagnostic regions](README.md#manual-firmw
 Corrupt flights are retained/flagged and their space remains reserved; clients warn after
 recovery and `--list` labels CORRUPT. Healthy history stays accessible and new runs can use
 other free space. Ordinary incomplete tails recover as Interrupted.
+
+## Explicit flight-memory format
+
+`flights format` intentionally removes all recorded flights and makes their space reusable,
+including when old/unsupported headers prevent recovery. It preserves configuration,
+orientation and the accelerometer-calibration reservation. Run it only while disarmed/idle.
+This is a logical format, not secure erasure; see [storage behavior](../technical/STORAGE.md#explicit-deletion-and-inspection).
 
 ## Record
 
@@ -68,10 +76,11 @@ destinations to be unused/non-overlapping. Incomplete transfers keep partial CSV
 publish complete metadata. A Corrupt flight cannot be exported as healthy; another healthy
 flight still can.
 
-CSV columns are defined once in [Storage formats](../components/STORAGE_FORMAT.md#samples-and-blocks-v1).
+CSV columns are defined once in [Storage formats](../technical/STORAGE_FORMAT.md#samples-and-blocks-v2).
 The metadata contains sequence/status/sample count, sensor/output/frame modes, frozen
 configuration with rule names and codec hex, output-start states/timestamps, and
-recording_summary or its unavailable state. Historical names/actions come from that flight, even
+recording_summary or its unavailable state, and the frozen `calibration` snapshot retrieved with
+`flights calibration <sequence>`. Its schema is [defined once in Storage formats](../technical/STORAGE_FORMAT.md#per-flight-calibration-snapshot-header-v4). Historical names/actions come from that flight, even
 if applied settings change. Null numeric values decode as NaN. An empty/invalid output slot is
 not proof the physical output never operated.
 
@@ -79,7 +88,7 @@ Deletion is deliberate, idle/disarmed and permanent at the directory level. It d
 invalidates before reuse; physical data erasure happens on later allocation.
 Settings/calibration/other retained flights remain protected. There is no automatic deletion or
 new user UI; the existing technical command also
-handles Corrupt entries. See [storage lifecycle](../components/STORAGE.md).
+handles Corrupt entries. See [storage lifecycle](../technical/STORAGE.md).
 
 ## Current USB commands
 
@@ -87,11 +96,13 @@ handles Corrupt entries. See [storage lifecycle](../components/STORAGE.md).
 flights status
 flights init
 flights recover
+flights format
 flights list <zero_based_retained_index>
 flights info <uint64_sequence>
 flights config <uint64_sequence> <byte_offset>
 flights read <uint64_sequence> <block_index> <sample_offset>
 flights summary <uint64_sequence>
+flights calibration <uint64_sequence>
 flights failure
 flights delete <uint64_sequence>
 flights timing
@@ -100,7 +111,7 @@ flights timing reset
 
 Sequences are decimal JSON strings to preserve uint64 precision. Configuration chunks carry at
 most 128 bytes as hex; sample chunks at most two rows. Numeric
-modes/start states/status values are in [the format specification](../components/STORAGE_FORMAT.md).
+modes/start states/status values are in [the format specification](../technical/STORAGE_FORMAT.md).
 Idle status/recovery expose `corrupt_flights`, and list entries include `corrupt`. `hil
 status/stop` expose requested/active/busy recording, sequence, durable saved/ dropped samples,
 pending/queue capacity, fullness and independent storage error. Saved counts lag buffered

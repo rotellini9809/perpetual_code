@@ -201,6 +201,7 @@ void run() {
   for (uint32_t t = 0; t <= source.durationMs(); ++t) { nowUs = recordOrigin+t*1000; sim.poll(); }
   assert(sim.status().savedSamples == 6600 && sim.status().droppedSamples == 0);
   assert(recorder.current()->status == storage::FlightStatus::Completed);
+  assert(!config.setStateMachine(recovery::StateMachineSettings{}));
   storage::RecordingInfo info; assert(recorder.inspect(1,info));
   assert(info.samples == 6600);
   assert(!sim.begin()); assert(sim.poll()); nowUs += 17000; assert(sim.poll());
@@ -303,6 +304,53 @@ void run() {
   outputs.reconcile(&prepared); assert(!outputs.hasPreparation() && !hardware.positions[0]);
   puts("Standalone simulation passed: clock rollover, skipped deadlines, sensor-derived phases, shared rules, recording, isolation and USB lifecycle.");
 }
+void bistage() {
+  MemoryFlash settingsFlash; storage::ConfigurationStore store(settingsFlash); assert(store.save(fixture(),limits,true));
+  ConfigurationService config(store,limits); config.boot(true);
+  recovery::StateMachineSettings machine; machine.bistage=true; machine.minimumCoastVelocity=5;
+  assert(!config.setStateMachine(machine));
+  flight::RunController run; simulation::SimulationSession session(config,run,clockUs);
+  nowUs=0; assert(!session.begin());
+  assert(session.bistage() && session.durationMs()==25000 && session.totalSamples()==5001);
+  for (unsigned t=0;t<=25000;++t) { nowUs=t*1000; session.poll(); }
+  const recovery::FlightPhase expected[]={recovery::FlightPhase::Pad,recovery::FlightPhase::Boost,recovery::FlightPhase::Coast,recovery::FlightPhase::Boost2,recovery::FlightPhase::Coast2,recovery::FlightPhase::Descent,recovery::FlightPhase::Landed};
+  assert(!session.active() && session.phaseCount()==7);
+  for (unsigned i=0;i<7;++i) { if (session.phases()[i].phase!=expected[i]) { std::cerr<<"bistage phase "<<i<<" got "<<unsigned(session.phases()[i].phase)<<'\n'; assert(false); } }
+  assert(!strcmp(session.error(),"None"));
+  assert(!config.setStateMachine(recovery::StateMachineSettings{}));
+  assert(!session.begin()); assert(!session.bistage() && session.durationMs()==sensors::SimulatedSensorSource::durationMs());
+  session.stop(); assert(!config.setStateMachine(machine));
+
+  // A physical ABORT cancels future starts but lets an already-high pulse complete.
+  auto plan=fixture(); plan.rules[0].conditions[0].kind=recovery::ConditionKind::Phase;
+  plan.rules[0].conditions[0].phases=recovery::BoostMask; plan.rules[0].delayMs=960;
+  plan.rules[1].conditions[0].kind=recovery::ConditionKind::Phase; plan.rules[1].conditions[0].phases=recovery::CoastMask;
+  assert(store.save(plan,limits,true)); config.boot(true); machine.minimumCoastVelocity=1000; assert(!config.setStateMachine(machine));
+  Device flash; storage::FlightRecorder recorder(flash); assert(recorder.initializeBlank());
+  Outputs hardware; flight::OutputExecutor outputs(hardware,clockUs); flight::RunController physicalRun;
+  simulation::SimulationSession aborted(config,physicalRun,clockUs,&recorder,&outputs);
+  nowUs=0; assert(!aborted.begin(true,true)); bool sawAbort=false,sawHigh=false,sawEnd=false;
+  for (unsigned t=0;t<=25000;++t) {
+    nowUs=t*1000; aborted.poll();
+    if (t==100) assert(!strcmp(config.setStateMachine(recovery::StateMachineSettings{}),"BUSY"));
+    if (aborted.navigation().phase==recovery::FlightPhase::Abort) {
+      sawAbort=true; assert(aborted.status().abortReason==recovery::AbortReason::Velocity);
+      assert(!(hardware.mask&2)); if (hardware.mask&1) sawHigh=true;
+      if (sawHigh && !hardware.mask) sawEnd=true;
+    }
+  }
+  assert(sawAbort && sawHigh && sawEnd && aborted.startCount()==2);
+  assert(!aborted.active() && !hardware.enabled && !hardware.mask && !hardware.positions[0]);
+  assert(!config.setStateMachine(recovery::StateMachineSettings{}));
+  storage::RecordingInfo info; assert(recorder.inspect(1,info));
+  assert(recorder.metadata()->calibration.machine.bistage && recorder.metadata()->calibration.machine.minimumCoastVelocity==1000);
+  storage::SampleBlock block; bool savedAbort=false;
+  for (uint32_t index=0;index<(info.entry.committedBytes-info.headerBytes)/storage::FlightSampleStore::BlockBytes;++index) {
+    assert(recorder.readBlock(1,index,block));
+    for (unsigned i=0;i<block.count;++i) if (block.samples[i].abortReason==recovery::AbortReason::Velocity) savedAbort=true;
+  }
+  assert(savedAbort);
+}
 } // namespace test_simulation
 
 int main() {
@@ -310,4 +358,5 @@ int main() {
   test_hil_session::run();
   std::puts("  simulation"); std::fflush(stdout);
   test_simulation::run();
+  test_simulation::bistage();
 }

@@ -18,11 +18,12 @@ public:
   explicit FlightRecorder(FlashDevice &flash)
       : flash_(flash), directory_(flash), header_(flash), samples_(flash), summary_(flash) {}
   static const char *errorName(RecorderError error);
+  bool format(); // Explicit logical format; preserves settings and calibration.
   bool initializeBlank(); // Explicit request; refuses any non-erased/unknown directory.
   void abort(); // Drop RAM, preserve Recording metadata for recovery; no flash writes.
   bool initialize(); // Mount; reconcile Recording into Interrupted/Corrupt, never resume.
   bool begin(const recovery::Configuration &config, const recovery::ValidationLimits &limits, uint32_t sampleBytes,
-             SensorMode sensorMode, OutputMode outputMode, sensors::FrameConvention frame);
+             SensorMode sensorMode, OutputMode outputMode, sensors::FrameConvention frame, const FlightCalibration &calibration = FlightCalibration{});
   bool append(const FlightSample &sample); // RAM only; no flush or directory writes.
   bool recordStart(recovery::RuleId rule, recovery::OutputKind kind, uint32_t channel, uint32_t timeMs); // RAM only.
   bool service(); // Worker: pending starts first, then a full sample buffer.

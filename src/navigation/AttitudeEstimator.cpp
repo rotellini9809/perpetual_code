@@ -30,8 +30,8 @@ bool AttitudeEstimator::step(const float (&a)[3], const float (&g)[3], float dt,
       0.5f * (q0*g[1] - q1*g[2] + q3*g[0]),
       0.5f * (q0*g[2] + q1*g[1] - q2*g[0])};
   float beta = 0.3f;
-  if (phase == Phase::Boost) beta = 0.1f;
-  else if (phase == Phase::Coast) beta = 0.5f;
+  if (recovery::boostPhase(phase)) beta = 0.1f;
+  else if (recovery::coastPhase(phase)) beta = 0.5f;
   else if (phase == Phase::Landed) beta = 0.05f;
   const float magnitude = std::sqrt(a[0]*a[0] + a[1]*a[1] + a[2]*a[2]);
   if (std::fabs(magnitude - 9.81f) < 0.2f) {

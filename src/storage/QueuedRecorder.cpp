@@ -27,11 +27,11 @@ void QueuedRecorder::publish() {
   ready_.store(writer_.initialized(), std::memory_order_relaxed);
 }
 bool QueuedRecorder::begin(const recovery::Configuration &config, const recovery::ValidationLimits &limits, uint32_t bytes,
-                           SensorMode sensorMode, OutputMode outputMode, sensors::FrameConvention frame) {
+                           SensorMode sensorMode, OutputMode outputMode, sensors::FrameConvention frame, const FlightCalibration &calibration) {
   if (busy()) return fail(RecorderError::Busy);
   if (!online()) return fail(RecorderError::NotInitialized);
   workerError_.store(RecorderError::None);
-  if (!writer_.begin(config, limits, bytes, sensorMode, outputMode, frame)) return fail(writer_.error());
+  if (!writer_.begin(config, limits, bytes, sensorMode, outputMode, frame, calibration)) return fail(writer_.error());
   samples_.reset(); starts_.reset(); peak_ = 0; dropped_.store(0); workerTiming_ = {};
   current_ = *writer_.current(); directoryCount_ = writer_.directory().count();
   assignments_ = writer_.metadata()->starts; assignmentCount_ = writer_.metadata()->layout.slotCount;

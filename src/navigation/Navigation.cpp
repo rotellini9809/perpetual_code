@@ -7,10 +7,10 @@ float Navigation::pressureAltitude(float pressurePa) {
   if (!std::isfinite(pressurePa) || pressurePa <= 0) return std::numeric_limits<float>::quiet_NaN();
   return 44330.0f * (1.0f - std::pow(pressurePa / 101325.0f, 0.1903f));
 }
-bool Navigation::begin(float reference, float hz, const std::array<float, 4> &q) {
+bool Navigation::begin(float reference, float hz, const std::array<float, 4> &q, const recovery::StateMachineSettings &settings) {
   initialized_ = false;
-  if (!std::isfinite(reference) || !std::isfinite(hz) || hz < 10 || !attitude_.reset(q)) return false;
-  filter_.reset(); detector_.reset(); reference_ = reference; firstDt_ = 1.0f / hz;
+  if (!std::isfinite(reference) || !std::isfinite(hz) || hz < 10 || !std::isfinite(settings.minimumCoastVelocity) || settings.minimumCoastVelocity<0 || !attitude_.reset(q)) return false;
+  filter_.reset(); detector_.reset(settings); attitudeAligned_=!settings.bistage; reference_ = reference; firstDt_ = 1.0f / hz;
   baseline_ = padGate_ = 0; haveImu_ = haveBaro_ = false;
   lastTime_ = lastImuSequence_ = lastBaroSequence_ = 0;
   initialized_ = true; return true;
@@ -18,6 +18,8 @@ bool Navigation::begin(float reference, float hz, const std::array<float, 4> &q)
 NavigationOutput Navigation::output(const SensorFrame &f) const {
   NavigationOutput out;
   out.timeUs = f.timeUs; out.sequence = f.imuSequence; out.phase = detector_.phase();
+  out.startsAllowed=detector_.startsAllowed(); out.abortReason=detector_.abortReason(); out.coastVelocityMedian=detector_.velocityMedian();
+  out.tiltRadians=std::acos(std::fmax(-1.0f,std::fmin(1.0f,attitude_.verticalInBody()[0])));
   out.altitude = filter_.altitude(); out.verticalVelocity = filter_.velocity();
   out.accelerationBias = filter_.bias(); out.eulerRadians = attitude_.eulerRadians(); out.padBaseline = baseline_;
   return out;
@@ -35,6 +37,14 @@ NavigationOutput Navigation::step(const SensorFrame &f) {
     a2 += f.accel[i]*f.accel[i]; g2 += f.gyro[i]*f.gyro[i];
   }
   if (!std::isfinite(a2) || !std::isfinite(g2)) return out;
+  if (!attitudeAligned_) {
+    const float magnitude=std::sqrt(a2);
+    if (std::fabs(magnitude-9.80665f)>1.0f) return out;
+    const float ax=f.accel[0]/magnitude, ay=f.accel[1]/magnitude, az=f.accel[2]/magnitude;
+    const std::array<float,4> aligned=az<-.9999f ? std::array<float,4>{{0,1,0,0}} : std::array<float,4>{{1+az,ay,-ax,0}};
+    if (!attitude_.reset(aligned)) return out;
+    attitudeAligned_=true;
+  }
   if (!attitude_.step(f.accel, f.gyro, dt, detector_.phase())) return out;
   const auto vertical = attitude_.verticalInBody();
   const float force = vertical[0]*f.accel[0] + vertical[1]*f.accel[1] + vertical[2]*f.accel[2];
@@ -56,17 +66,19 @@ NavigationOutput Navigation::step(const SensorFrame &f) {
     }
     baro -= baseline_;
   }
-  detector_.update(dt, magnitude, f.accel[0], std::sqrt(g2), baro, filter_.velocity());
+  detector_.update(dt, magnitude, f.accel[0], std::sqrt(g2), baro, filter_.velocity(),std::acos(std::fmax(-1.0f,std::fmin(1.0f,vertical[0]))));
   if (!filter_.predict(dt, force, detector_.phase())) return output(f);
   filter_.constrainPadVelocity(detector_.phase());
   bool corrected = false;
   if (std::isfinite(baro)) corrected = filter_.correctAltitude(baro, detector_.phase());
+  if (std::isfinite(filter_.altitude()) && std::isfinite(filter_.velocity()) && std::isfinite(filter_.bias())) detector_.confirmCoastVelocity(filter_.velocity());
   out = output(f); out.valid = std::isfinite(out.altitude) && std::isfinite(out.verticalVelocity) && std::isfinite(out.accelerationBias);
   out.verticalSpecificForce = force; out.verticalAcceleration = filter_.acceleration();
   out.barometerAltitude = baro; out.barometerUpdated = corrected; return out;
 }
 recovery::FlightSnapshot NavigationOutput::ruleSnapshot() const {
   recovery::FlightSnapshot s;
+  s.startsAllowed=startsAllowed;
   s.phase = phase; s.phaseValid = valid; s.phaseMeasuredMs = timeUs / 1000; s.sequence = sequence;
   s.altitude.value = altitude; s.altitude.valid = valid;
   s.altitude.measuredMs = timeUs / 1000; s.altitude.sequence = sequence;

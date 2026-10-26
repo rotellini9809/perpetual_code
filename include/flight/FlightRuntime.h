@@ -18,6 +18,9 @@ struct RuntimeStatus {
   bool outputsActive = false;
   uint32_t samples = 0, timeMs = 0, maxComputeUs = 0;
   bool recordingRequested = false, recordingActive = false, samplesFull = false;
+  bool bistage = false;
+  recovery::AbortReason abortReason = recovery::AbortReason::None;
+  float coastVelocityMedian = 0, tiltRadians = 0;
   bool boostReached = false, recordingDiscarded = false;
   uint64_t recordingSequence = 0;
   uint32_t savedSamples = 0, droppedSamples = 0;
@@ -83,5 +86,8 @@ private:
   uint32_t landingClockUs_ = 0;
   uint32_t maxComputeUs_ = 0;
   RuntimeTiming timing_;
+  recovery::StateMachineSettings machine_;
+  recovery::AbortReason abortReason_ = recovery::AbortReason::None;
+  float velocityMedian_ = 0, tilt_ = 0;
 };
 }

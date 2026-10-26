@@ -106,8 +106,8 @@ bool CommandService::dispatch(const Status &s, char *out, std::size_t cap) {
   }
   const char *state = !std::strcmp(s.armingState,"armed") ? "Armed" : !std::strcmp(s.armingState,"arming") ? "Arming" : !std::strcmp(s.armingState,"closing") ? "Closing" : "Disarmed";
   char phase[8] = "null";
-  const char *phaseNames[] = {"PAD","BOOST","COAST","DESCENT","LANDED"};
-  const bool validPhase = s.phase >= 0 && s.phase <= 4;
+  const char *phaseNames[] = {"PAD","BOOST","COAST","DESCENT","LANDED","BOOST 2","COAST 2","ABORT"};
+  const bool validPhase = s.phase >= 0 && s.phase <= 7;
   if (validPhase) std::snprintf(phase,sizeof(phase),"%d",s.phase);
   const bool gyroSkipped = !std::strcmp(s.flightMode,"simulation");
   char battery[24]="null";
@@ -118,7 +118,7 @@ bool CommandService::dispatch(const Status &s, char *out, std::size_t cap) {
   if (!identified) {
     if (std::strcmp(command, "ping") == 0) std::snprintf(out, cap, "PONG\n");
     else if (std::strcmp(command, "help") == 0) std::snprintf(out, cap,
-        "Commands: ping, info, status, sensors, help; sleep, wake; bluetooth status; control status; preflight [physical|simulation], arm, disarm (ds); capabilities; config show/begin/draft/validate/apply/discard; rule, condition, output, pyro, servo (servo arm [channel] prepares outputs); replay begin/sample/status/stop (estimates); hil begin/sample/status/stop/timing (sensors); sim begin [physical] [record]/status/stop/timing/events; flights status/init/recover/list/info/summary/config/read/delete/timing/failure; flights timing reset. LF/CRLF; @<uint32> for JSON.\n");
+        "Commands: ping, info, status, sensors, help; sleep, wake; bluetooth status; control status; preflight [physical|simulation], arm, disarm (ds); capabilities; config machine [normal|bistage <m/s>]; config show/begin/draft/validate/apply/discard/reset/orientation [+X|-X|+Y|-Y|+Z|-Z]; rule, condition, output, pyro, servo (servo arm [channel] prepares outputs; servo release releases held PWM); replay begin/sample/status/stop (estimates); hil begin/sample/status/stop/timing (sensors); sim begin [physical] [record]/status/stop/timing/events; flights status/init/recover/format/list/info/summary/calibration/config/read/delete/timing/failure; flights timing reset. LF/CRLF; @<uint32> for JSON.\n");
     else if (std::strcmp(command, "info") == 0) std::snprintf(out, cap,
         "Perpetual | RP2350 | USB/Bluetooth command service v1 | Readiness: use preflight\n");
     else if (std::strcmp(command, "sensors") == 0) std::snprintf(out, cap,

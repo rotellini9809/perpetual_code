@@ -77,6 +77,9 @@ const char *phaseName(FlightPhase p) {
     case FlightPhase::Coast: return "COAST";
     case FlightPhase::Descent: return "DESCENT";
     case FlightPhase::Landed: return "LANDED";
+    case FlightPhase::Boost2: return "BOOST 2";
+    case FlightPhase::Coast2: return "COAST 2";
+    case FlightPhase::Abort: return "ABORT";
   }
   return "UNKNOWN";
 }
