@@ -147,6 +147,8 @@ without treating its region as free.
 
 ## Explicit deletion and inspection
 
+`flights format` explicitly formats both flight directory banks while disarmed and idle. All flights become inaccessible and their storage is reusable; this is a logical format, not secure data erasure. Configuration and calibration regions are preserved. It also works when the directory cannot be mounted.
+
 User deletion is explicit, disarmed and inactive; the lifecycle also discards unflown hardware
 recordings during orderly closure. Commit Invalidated before space becomes
 allocatable. It does not erase flight sectors; later allocation reserves the new owner before
@@ -176,3 +178,4 @@ summary was committed. Counters/timing/failure snapshots are otherwise RAM-only.
 format versions are detailed in the linked
 format/recording guides. [Validation](../testing/VALIDATION.md) separates host
 fault-model evidence from measured hardware behavior and unresolved electrical tests.
+

@@ -81,8 +81,8 @@ void run() {
   for (auto byte : flash.bytes) fingerprint = (fingerprint ^ byte) * UINT64_C(0x100000001B3);
   // Fixed image with zero channel delays, directory, header,
   // summary reservation, historical start timestamps and sample blocks.
-  if (fingerprint != UINT64_C(0xb94a27eca6844a2c)) std::cerr << "Storage image fingerprint: 0x" << std::hex << fingerprint << std::dec << '\n';
-  assert(fingerprint == UINT64_C(0xb94a27eca6844a2c));
+  if (fingerprint != UINT64_C(0x3000346afdd6427f)) std::cerr << "Storage image fingerprint: 0x" << std::hex << fingerprint << std::dec << '\n';
+  assert(fingerprint == UINT64_C(0x3000346afdd6427f));
   std::cout << "Storage encoding tests passed: known CRC vector, incremental CRC, endian widths and unchanged full storage image.\n";
 }
 } // namespace test_storage_encoding
@@ -253,7 +253,7 @@ void run() {
   assert(block.samples[0].values[FlightSample::AltitudeM] == 12000.5f);
   assert(block.samples[0].batteryMv==UINT16_MAX && block.samples[1].batteryMv==8240);
   assert(flash.bytes[0x15000+32+64+61]==0x30 && flash.bytes[0x15000+32+64+62]==0x20); // 8240 mV, little endian.
-  assert(flash.bytes[0x15000+32+64+63]==255 && FlightSampleStore::RecordBytes==64);
+  assert(flash.bytes[0x15000+32+64+63]==0 && FlightSampleStore::RecordBytes==64);
   // Golden little-endian layout and float encoding, independent of round-trip decoding.
   assert(flash.bytes[0x15000] == 'P' && flash.bytes[0x15001] == 'S');
   assert(flash.bytes[0x15008] == 7 && flash.bytes[0x15014] == 11);

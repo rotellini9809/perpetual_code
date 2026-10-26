@@ -35,7 +35,7 @@ must not overwrite a file. Fixtures are test settings, not flight recommendation
 The same commands/runners also work over the outgoing Bluetooth SPP port (`--port COM11` on
 this PC). The JDY-34 UART is currently 9600 baud: full recorded HIL/download is much slower
 there, so USB is preferred for bulk traffic. Onboard simulation sends only control/status,
-making it a useful Bluetooth test. See [shared transport ownership](../components/USB.md#control-ownership-and-connection-checks).
+making it a useful Bluetooth test. See [shared transport ownership](../technical/USB.md#control-ownership-and-connection-checks).
 
 ## PC references
 
@@ -115,8 +115,8 @@ times represent servo command/pulse-high timing, not proof of motion or ignition
 immediately disables pyros, releases assigned servo PWM and cancels pending starts before flash
 finalization. Client disconnect leaves an accepted autonomous run running. The Python replay
 script above intentionally remains virtual-only. Normal physical flight always selects real outputs,
-regardless of this simulation setting, and requires explicit servo preparation. Virtual runs reject
-physically prepared servos until Disarm releases them.
+regardless of this simulation setting, and requires explicit servo preparation. Virtual onboard simulation releases held servo preparation before starting; physical
+simulation reuses valid preparation. Idle preparation does not block HIL/estimate replay.
 
 The board reads the official Hoppino sensor log from a const table in program flash, one
 sample at a time without a RAM dataset copy or external recording-flash allocation. The
@@ -183,7 +183,7 @@ Host-fed runs end when their owning USB/Bluetooth connection disconnects. Autono
 inspect/stop. The client sends one command per reply and never automatically retries timed-out
 samples. Failures attempt stop and retain a partial CSV; if stop is not acknowledged, disconnect
 the owning HIL connection. A new connection resets its own
-ID caching, not a cross-reboot exactly-once guarantee. See [USB](../components/USB.md).
+ID caching, not a cross-reboot exactly-once guarantee. See [USB](../technical/USB.md).
 
 `compute_us` covers source consumption/preprocessing/navigation/rules, excluding
 USB/parsing/formatting/storage. `--realtime` uses PC absolute recorded deadlines, records host
@@ -192,3 +192,16 @@ real-time replay omits throttling so overflow remains visible. Neither USB timin
 profile proves worst-case live deadlines.
 Use [Recording](RECORDING.md#timing) for full timing scopes and
 [Validation](VALIDATION.md) for actual observed phases and measurements.
+
+## Bistage simulation
+
+Save `config machine bistage <minimum_velocity_mps>` or use Settings, then start the same
+`sim begin [physical] [record]` command. The board automatically chooses a 25-second synthetic
+BODY sensor source at 200 Hz: PAD to 5 s, first burn 5..6 s, coast 6..7 s, second burn 7..8 s,
+then ballistic coast/descent/landing. Source readings, not preassigned phases, feed shared
+navigation. `sim status` reports source `bistage_synthetic`, actual duration/sample count,
+bistage, abort reason, current median and tilt. Thresholds above the first burnout speed
+exercise velocity ABORT. Save `config machine normal` to restore the unchanged Hoppino replay.
+Host tests check all seven successful phases, latched velocity/tilt ABORT, frozen settings,
+physical pulse completion and cancellation of future starts. These are synthetic/host tests,
+not physical flight qualification.

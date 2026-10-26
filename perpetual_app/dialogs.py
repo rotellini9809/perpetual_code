@@ -15,9 +15,12 @@ def spin(value=0,maximum=3600000,minimum=0,suffix=''):
     return widget
 
 
-def time_field(widget):
-    container=QWidget(); layout=row(widget,label('ms','hint'),None); layout.setContentsMargins(0,0,0,0)
+def unit_field(widget,unit):
+    container=QWidget(); layout=row(widget,unit,None); layout.setContentsMargins(0,0,0,0)
     container.setLayout(layout); return container
+
+
+def time_field(widget): return unit_field(widget,label('ms','hint'))
 
 
 def buttons(dialog,layout,accept=None):
@@ -36,17 +39,19 @@ class ConditionDialog(QDialog):
                'Tempo dal lancio','Tempo dall’apogeo','Tempo da una regola']
         for name,kind in zip(names,CONDITION_TYPES): self.kind.addItem(name,kind)
         self.phase=QComboBox()
-        for name,mask in [('BOOST / COAST','6'),('DESCENT','8'),('Tutte le fasi in volo','14'),('BOOST','2'),('COAST','4')]: self.phase.addItem(name,mask)
+        for name,mask in [('BOOST 1 / COAST 1 (o normale)','6'),('DESCENT','8'),('Tutte le fasi in volo','110'),('BOOST 1 (o normale)','2'),('COAST 1 (o normale)','4'),('BOOST 2','32'),('COAST 2','64'),('BOOST: entrambi gli stadi','34'),('COAST: entrambi gli stadi','68'),('Primo stadio e discesa','14')]: self.phase.addItem(name,mask)
         self.compare=QComboBox(); self.compare.addItems(['<','>'])
         self.value=QDoubleSpinBox(); self.upper=QDoubleSpinBox()
         for widget in (self.value,self.upper): widget.setRange(-1000000,1000000); widget.setDecimals(3)
+        self.value_unit=label('m','hint'); self.upper_unit=label('m','hint')
+        self.value_row=unit_field(self.value,self.value_unit); self.upper_row=unit_field(self.upper,self.upper_unit)
         self.elapsed=spin(suffix=' ms'); self.reference=QComboBox()
         self.elapsed_row=time_field(self.elapsed)
         self.reference.addItem('Seleziona una regola',None)
         for rule in rules:
             if rule['id']!=exclude_id: self.reference.addItem(rule_label(rules,rule['id']),rule['id'])
         form.addRow('Tipo',self.kind); form.addRow('Fase',self.phase); form.addRow('Confronto',self.compare)
-        form.addRow('Valore / minimo',self.value); form.addRow('Massimo',self.upper); form.addRow('Tempo minimo',self.elapsed_row); form.addRow('Regola di riferimento',self.reference)
+        form.addRow('Valore / minimo',self.value_row); form.addRow('Massimo',self.upper_row); form.addRow('Tempo minimo',self.elapsed_row); form.addRow('Regola di riferimento',self.reference)
         self.form=form; layout.addLayout(form)
         hint=label('Le condizioni della stessa regola devono essere tutte vere.','hint'); hint.setWordWrap(True); layout.addWidget(hint)
         self.kind.currentIndexChanged.connect(self.update_fields)
@@ -75,10 +80,10 @@ class ConditionDialog(QDialog):
         kind=self.kind.currentData()
         self.compare.clear(); self.compare.addItems(['<=','>='] if kind=='speed' else ['<','>'])
         for widget,visible in ((self.phase,kind=='phase'),(self.compare,kind in ('speed','altitude')),
-                (self.value,kind in ('altitude','speed','altitude_range','speed_range')),
-                (self.upper,kind in ('altitude_range','speed_range')),(self.elapsed_row,kind.startswith('since_')),(self.reference,kind=='since_rule_ms')):
+                (self.value_row,kind in ('altitude','speed','altitude_range','speed_range')),
+                (self.upper_row,kind in ('altitude_range','speed_range')),(self.elapsed_row,kind.startswith('since_')),(self.reference,kind=='since_rule_ms')):
             widget.setVisible(visible); self.form.labelForField(widget).setVisible(visible)
-        for widget in (self.value,self.upper): widget.setSuffix(' m/s' if 'speed' in kind else ' m')
+        for unit in (self.value_unit,self.upper_unit): unit.setText('m/s' if 'speed' in kind else 'm')
 
     def result_value(self):
         kind=self.kind.currentData(); c=dict(type=kind)
@@ -118,11 +123,12 @@ class RuleDialog(QDialog):
         form=QFormLayout()
         self.name=QLineEdit(rule['name']); self.name.setMaxLength(47); self.delay=spin(rule['delay_ms'],suffix=' ms')
         self.delay.setToolTip('Attesa dopo che tutte le condizioni sono soddisfatte. Ogni uscita aggiunge poi il proprio ritardo.')
-        form.addRow('Nome',self.name); form.addRow('Ritardo della regola',time_field(self.delay))
+        form.addRow('Nome',self.name)
         layout.addLayout(form)
         layout.addLayout(row(label('CONDIZIONI · AND','eyebrow'),None,button('+ Condizione',self.add_condition)))
         self.conditions=table(['Condizione','Parametro']); self.conditions.setMinimumHeight(140); self.conditions.itemDoubleClicked.connect(lambda _:self.edit_condition())
         layout.addWidget(self.conditions); layout.addLayout(row(button('Modifica',self.edit_condition),button('Rimuovi',self.remove_condition),None))
+        delay_form=QFormLayout(); delay_form.addRow('Ritardo della regola',time_field(self.delay)); layout.addLayout(delay_form)
         layout.addLayout(row(label('USCITE','eyebrow'),None,button('+ Uscita',self.add_output)))
         self.outputs=table(['Canale','Ritardo del canale']); self.outputs.setMinimumHeight(125); self.outputs.itemDoubleClicked.connect(lambda _:self.edit_output())
         layout.addWidget(self.outputs); layout.addLayout(row(button('Modifica',self.edit_output),button('Rimuovi',self.remove_output),None))

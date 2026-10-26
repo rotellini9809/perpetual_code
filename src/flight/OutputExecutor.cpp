@@ -116,14 +116,17 @@ bool OutputExecutor::submit(const recovery::VirtualStart &start) {
   requestedPyros_ |= bit; pendingPyros_ |= bit; pyroStarts_[i]=start;
   return true;
 }
-void OutputExecutor::poll() {
+void OutputExecutor::inhibit(uint64_t owner) {
+  if (owner_==owner) { pendingPyros_=0; allowedPyros_=0; }
+}
+void OutputExecutor::poll(bool allowNewStarts) {
   if (!owner_) return;
   const auto now=clock_();
   for (unsigned i=0;i<recovery::ChannelCount;++i)
     if ((highPyros_ & (1u<<i)) && uint32_t(now-pulseUs_[i])>=recovery::PyroPulseMs*1000)
       highPyros_ &= uint8_t(~(1u<<i));
-  if (pendingPyros_ && !enabled_) { enabled_=true; enableUs_=now; }
-  if (enabled_ && uint32_t(now-enableUs_)>=recovery::PyroEnableSettleMs*1000) {
+  if (allowNewStarts && pendingPyros_ && !enabled_) { enabled_=true; enableUs_=now; }
+  if (allowNewStarts && enabled_ && uint32_t(now-enableUs_)>=recovery::PyroEnableSettleMs*1000) {
     for (unsigned i=0;i<recovery::ChannelCount;++i) {
       const uint8_t bit=uint8_t(1u<<i);
       if (!(pendingPyros_ & bit)) continue;

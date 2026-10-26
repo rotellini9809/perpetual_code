@@ -16,7 +16,7 @@ struct SensorCalibration {
 class SensorPipeline {
 public:
   bool begin(sensors::SensorSource &source, const SensorCalibration &calibration,
-             float referenceAltitude, float nominalHz);
+             float referenceAltitude, float nominalHz, const recovery::StateMachineSettings &settings = recovery::StateMachineSettings{});
   bool poll(NavigationOutput &output);
   // Same preprocessing/navigation step when the runtime has already polled the source.
   bool process(const sensors::Reading &reading, NavigationOutput &output);

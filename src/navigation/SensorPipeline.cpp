@@ -15,12 +15,12 @@ bool validCalibration(const SensorCalibration &c) {
   return true;
 }
 }
-bool SensorPipeline::begin(sensors::SensorSource &source, const SensorCalibration &calibration, float reference, float hz) {
+bool SensorPipeline::begin(sensors::SensorSource &source, const SensorCalibration &calibration, float reference, float hz, const recovery::StateMachineSettings &settings) {
   if (active()) return false;
   if (source.convention() == sensors::FrameConvention::SensorAxes) {
     if (!validCalibration(calibration)) return false;
   } else if (source.convention() != sensors::FrameConvention::LoggedCalibratedBody) return false;
-  if (!navigation_.begin(reference, hz)) return false;
+  if (!navigation_.begin(reference,hz,{{1,0,0,0}},settings)) return false;
   calibration_ = calibration; convention_ = source.convention(); source_ = &source; return true;
 }
 bool SensorPipeline::poll(NavigationOutput &out) {

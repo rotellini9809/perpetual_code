@@ -21,7 +21,7 @@ bool parseCondition(const Tokens &t, unsigned at, recovery::Condition &c) {
   if (t.is(at, "apogee") && n == 1) { c.kind = ConditionKind::ApogeeDetected; return true; }
   if (t.is(at, "phase") && n == 2) {
     c.kind = ConditionKind::Phase;
-    if (t.is(at + 1, "ascent")) c.phases = BoostMask | CoastMask;
+    if (t.is(at + 1, "ascent")) c.phases = BoostMask | CoastMask | Boost2Mask | Coast2Mask;
     else if (t.is(at + 1, "descent")) c.phases = DescentMask;
     else if (t.is(at + 1, "airborne")) c.phases = AirborneMask;
     else { uint32_t mask; if (!unsignedNumber(t[at + 1], mask) || mask > 255) return false; c.phases = uint8_t(mask); }
@@ -84,6 +84,30 @@ bool ConfigurationCommands::dispatch(const char *command, const char *arguments,
     data.add(",\"output_delays\":true");
     data.add(",\"pyro_pulse_ms\":%lu,\"pyro_enable_settle_ms\":%lu,\"rule_timing\":\"delay\"",
         (unsigned long)recovery::PyroPulseMs, (unsigned long)recovery::PyroEnableSettleMs);
+    return finish();
+  }
+  if (config && t.is(0,"machine")) {
+    recovery::StateMachineSettings requested;
+    if (t.count==2 && t.is(1,"normal")) error=service_.setStateMachine(requested);
+    else if (t.count==3 && t.is(1,"bistage") && finiteNumber(t[2],requested.minimumCoastVelocity)) {
+      requested.bistage=true; error=service_.setStateMachine(requested);
+    } else if (t.count!=1) error="INVALID_ARGUMENT";
+    if (!error && t.count>1) data.add(",\"persisted\":true,\"verified\":true");
+    const auto &machine=service_.stateMachine();
+    data.add(",\"machine_ready\":%s",service_.machineReady() ? "true" : "false");
+    data.add(",\"bistage\":%s",machine.bistage ? "true" : "false"); data.number("minimum_coast_velocity",machine.minimumCoastVelocity);
+    return finish();
+  }
+  if (config && t.is(0,"orientation")) {
+    static const char *axes[]={"+X","-X","+Y","-Y","+Z","-Z"};
+    if (t.count==2) {
+      uint8_t axis=0; while (axis<6 && !t.is(1,axes[axis])) ++axis;
+      error=service_.setOrientation(axis);
+      if (!error) data.add(",\"persisted\":true,\"verified\":true");
+    } else if (t.count!=1) error="INVALID_ARGUMENT";
+    data.add(",\"up_axis\":");
+    if (service_.orientationReady()) data.quoted(axes[service_.upAxis()]); else data.add("null");
+    data.add(",\"orientation_ready\":%s",service_.orientationReady() ? "true" : "false");
     return finish();
   }
   if (config && t.count == 1 && (t.is(0, "show") || t.is(0, "draft"))) {
@@ -155,6 +179,11 @@ bool ConfigurationCommands::dispatch(const char *command, const char *arguments,
   }
   if (config && t.count == 1 && t.is(0, "discard")) {
     error = service_.discardDraft(); if (!error) data.add(",\"draft_active\":false"); return finish();
+  }
+  if (config && t.count==1 && t.is(0,"reset")) {
+    error=service_.factoryReset();
+    if (!error) data.add(",\"reset\":true,\"persisted\":true,\"verified\":true");
+    return finish();
   }
   if (!drafting_) { error = "NO_DRAFT"; return finish(); }
   if (config && t.count == 1 && (t.is(0, "validate") || t.is(0, "apply"))) {

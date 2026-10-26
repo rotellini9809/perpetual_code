@@ -109,6 +109,10 @@ def check_recording_usb():
                 assert [a['delay_ms'] for r in metadata['configuration']['rules'] for a in r['outputs']]==[75,200,325]
                 assert all(s['state'] == 'recorded' for s in metadata['output_starts'])
                 assert metadata['sensor_mode'] == 1 and metadata['output_mode'] == 1
+                calibration=metadata['calibration']
+                assert not calibration['gyro_calibrated'] and not calibration['sensor_axes']
+                assert calibration['gyro_bias_radps'] is None and calibration['accel_bias_mps2'] is None and calibration['up_axis'] is None
+                assert math.isfinite(calibration['reference_altitude_m'])
                 summary = metadata['recording_summary']
                 assert summary['state'] == 'Valid' and summary['version'] == 1 and summary['reason'] == 'Completed'
                 assert summary['saved_samples'] == 3600 and summary['dropped_samples'] == 0

@@ -2,7 +2,7 @@
 #include <cstdint>
 
 // First five modes follow FlightPhase. All animation is clock-driven, without delays.
-enum class LedMode : uint8_t { Pad, Boost, Coast, Descent, Landed, Disarmed, Calibrating, PowerSaving };
+enum class LedMode : uint8_t { Pad, Boost, Coast, Descent, Landed, Disarmed, Calibrating, PowerSaving, Abort };
 class StatusLed {
 public:
   using Writer = void (*)(uint8_t, uint8_t, uint8_t);
@@ -15,7 +15,7 @@ public:
     uint32_t color=0;
     switch (mode) {
       case LedMode::Pad: color=0xFFA500; break;
-      case LedMode::Boost: color=0xFF0000; break;
+      case LedMode::Boost: case LedMode::Abort: color=0xFF0000; break;
       case LedMode::Coast: color=0xFF00FF; break;
       case LedMode::Descent: color=0x00FFFF; break;
       case LedMode::Landed: color=0x00FF00; break;

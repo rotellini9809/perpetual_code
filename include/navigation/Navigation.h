@@ -24,6 +24,9 @@ struct NavigationOutput {
   float verticalSpecificForce = std::numeric_limits<float>::quiet_NaN();
   float barometerAltitude = std::numeric_limits<float>::quiet_NaN();
   float padBaseline = 0;
+  bool startsAllowed = true;
+  recovery::AbortReason abortReason = recovery::AbortReason::None;
+  float coastVelocityMedian = 0, tiltRadians = 0;
   std::array<float, 3> eulerRadians{};
   recovery::FlightSnapshot ruleSnapshot() const;
 };
@@ -32,7 +35,8 @@ public:
   // Reference is absolute pressure altitude in metres from arming calibration.
   // Default quaternion matches legacy; no assumption about the new mounting map.
   bool begin(float referenceAltitude, float nominalImuHz = 120,
-             const std::array<float, 4> &initialQuaternion = {{1, 0, 0, 0}});
+             const std::array<float, 4> &initialQuaternion = {{1, 0, 0, 0}},
+             const recovery::StateMachineSettings &settings = recovery::StateMachineSettings{});
   NavigationOutput step(const SensorFrame &frame);
   static float pressureAltitude(float pressurePa);
   const VerticalKalman &filter() const { return filter_; }
@@ -43,6 +47,7 @@ private:
   FlightDetector detector_;
   float reference_ = 0, firstDt_ = 0, baseline_ = 0, padGate_ = 0;
   uint64_t lastTime_ = 0, lastImuSequence_ = 0, lastBaroSequence_ = 0;
+  bool attitudeAligned_ = false;
   bool initialized_ = false, haveImu_ = false, haveBaro_ = false;
 };
 }

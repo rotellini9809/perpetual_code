@@ -12,6 +12,7 @@ struct FlightHeaderLayout {
 struct FlightHeader {
   FlightHeaderLayout layout;
   recovery::Configuration configuration;
+  FlightCalibration calibration;
   SensorMode sensorMode = SensorMode::Simulation;
   OutputMode outputMode = OutputMode::Virtual;
   sensors::FrameConvention frame = sensors::FrameConvention::LoggedCalibratedBody;
@@ -29,7 +30,7 @@ public:
   explicit FlightHeaderStore(FlashDevice &flash) : flash_(flash) {}
   bool plan(const recovery::Configuration &config, const recovery::ValidationLimits &limits, FlightHeaderLayout &layout);
   bool create(uint32_t address, const recovery::Configuration &config, const recovery::ValidationLimits &limits,
-              SensorMode sensorMode, OutputMode outputMode, sensors::FrameConvention frame);
+              SensorMode sensorMode, OutputMode outputMode, sensors::FrameConvention frame, const FlightCalibration &calibration = FlightCalibration{});
   bool load(uint32_t address); // Read-only; never enables start notifications after reboot.
   bool recordStart(recovery::RuleId rule, recovery::OutputKind kind, uint32_t channel, uint32_t timeMs); // RAM only.
   bool flushStarts(); // Storage worker only: each slot page is programmed once.

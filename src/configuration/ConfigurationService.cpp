@@ -5,8 +5,46 @@
 void ConfigurationService::boot(bool storageReady) {
   if (runLocked_) return;
   storageReady_ = storageReady; drafting_ = false; appliedValid_ = false;
+  upAxis_=0; orientationReady_=false; machine_={}; machineReady_=false;
   if (!storageReady) { loadError_ = storage::ConfigError::Io; return; }
   appliedValid_ = store_.load(applied_, limits_); loadError_ = store_.error();
+  orientationReady_=store_.loadOrientation(upAxis_);
+  machineReady_=store_.loadStateMachine(machine_);
+}
+
+const char *ConfigurationService::factoryReset() {
+  if (runLocked_) return "BUSY";
+  if (!disarmed_) return "ARMED";
+  if (!storageReady_) return "STORAGE_ERROR";
+  appliedValid_=false; drafting_=false; orientationReady_=false; machineReady_=false;
+  if (!store_.clear(disarmed_)) { loadError_=store_.error(); storageReady_=false; return "STORAGE_ERROR"; }
+  upAxis_=0; orientationReady_=false;
+  machine_={}; machineReady_=true;
+  applied_={}; draft_={}; loadError_=storage::ConfigError::Missing;
+  return nullptr;
+}
+
+const char *ConfigurationService::setStateMachine(const recovery::StateMachineSettings &settings) {
+  if (runLocked_) return "BUSY";
+  if (!disarmed_) return "ARMED";
+  if (drafting_) return "DRAFT_ACTIVE";
+  if (!std::isfinite(settings.minimumCoastVelocity) || settings.minimumCoastVelocity<0 || settings.minimumCoastVelocity>100000) return "INVALID_ARGUMENT";
+  if (!storageReady_) return "STORAGE_ERROR";
+  machineReady_=false; recovery::StateMachineSettings verified;
+  if (!store_.saveStateMachine(settings,disarmed_) || !store_.loadStateMachine(verified) ||
+      verified.bistage!=settings.bistage || verified.minimumCoastVelocity!=settings.minimumCoastVelocity) return "STORAGE_ERROR";
+  machine_=verified; machineReady_=true; return nullptr;
+}
+const char *ConfigurationService::setOrientation(uint8_t axis) {
+  if (runLocked_) return "BUSY";
+  if (!disarmed_) return "ARMED";
+  if (drafting_) return "DRAFT_ACTIVE";
+  if (axis>=6) return "INVALID_ARGUMENT";
+  if (!storageReady_) return "STORAGE_ERROR";
+  orientationReady_=false;
+  uint8_t verified=255;
+  if (!store_.saveOrientation(axis,disarmed_) || !store_.loadOrientation(verified) || verified!=axis) return "STORAGE_ERROR";
+  upAxis_=axis; orientationReady_=true; return nullptr;
 }
 
 const char *ConfigurationService::beginDraft() {

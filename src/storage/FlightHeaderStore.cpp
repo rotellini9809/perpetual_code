@@ -3,6 +3,7 @@
 #include "storage/VerifiedPage.h"
 #include <cstring>
 #include <limits>
+#include <cmath>
 
 namespace storage {
 namespace {
@@ -13,9 +14,23 @@ using binary::extendCrc;
 using binary::CrcInitial;
 constexpr uint32_t Magic = 0x52444850, HeaderCommit = 0x43444850, StartMagic = 0x54534850, StartCommit = 0x43534850;
 constexpr uint32_t ConfigOffset = 512, Page = FlashLayout::PageBytes;
-constexpr uint16_t HeaderVersion = 2, StartVersion = 1;
+constexpr uint16_t HeaderVersion = 4, StartVersion = 1;
 static_assert(recovery::MaxAssignments >= 2 * recovery::ChannelCount, "Header must hold every physical output");
 static_assert(64 + recovery::MaxAssignments * 8 <= 252, "Mapping table exceeds descriptor page");
+constexpr uint32_t CalibrationOffset=160, CalibrationEnd=192;
+static_assert(64+recovery::MaxAssignments*8<=CalibrationOffset,"Mapping overlaps calibration");
+void putFloat(uint8_t *p,float value) { uint32_t bits; memcpy(&bits,&value,4); put(p,bits,4); }
+float getFloat(const uint8_t *p) { uint32_t bits=get32(p,4); float value; memcpy(&value,&bits,4); return value; }
+bool validCalibration(const FlightCalibration &c) {
+  if (!c.available) return !c.sensorAxes && !c.gyroCalibrated;
+  if (!std::isfinite(c.machine.minimumCoastVelocity) || c.machine.minimumCoastVelocity<0 || c.machine.minimumCoastVelocity>100000) return false;
+  if (!std::isfinite(c.referenceAltitude) || (c.gyroCalibrated && !c.sensorAxes)) return false;
+  if (c.sensorAxes) {
+    if (c.upAxis>=6) return false;
+    for (unsigned i=0;i<3;++i) if (!std::isfinite(c.gyroBias[i]) || !std::isfinite(c.accelBias[i])) return false;
+  }
+  return true;
+}
 uint32_t aligned(uint32_t n, uint32_t a) { return (n + a - 1) / a * a; }
 bool erased(const uint8_t *p, std::size_t n) { for (std::size_t i = 0; i < n; ++i) if (p[i] != 255) return false; return true; }
 void marker(uint8_t *p, uint32_t magic, uint32_t checksum) {
@@ -69,10 +84,11 @@ bool FlightHeaderStore::programPage(uint32_t address, const uint8_t *bytes) {
   return true;
 }
 bool FlightHeaderStore::create(uint32_t address, const recovery::Configuration &config, const recovery::ValidationLimits &limits,
-                               SensorMode sensor, OutputMode output, sensors::FrameConvention frame) {
+                               SensorMode sensor, OutputMode output, sensors::FrameConvention frame, const FlightCalibration &calibration) {
   if (loaded_ && !finished_) return fail(HeaderError::Active);
   loaded_ = accepting_ = false;
-  if (!modes(sensor, output, frame)) return fail(HeaderError::InvalidArgument);
+  if (!modes(sensor, output, frame) || !validCalibration(calibration) ||
+      (calibration.available && calibration.sensorAxes!=(frame==sensors::FrameConvention::SensorAxes))) return fail(HeaderError::InvalidArgument);
   FlightHeaderLayout layout;
   if (!plan(config, limits, layout)) return false;
   if (address % FlashLayout::SectorBytes || !FlashLayout::dataRange(address, layout.headerBytes)) return fail(HeaderError::Bounds);
@@ -86,12 +102,21 @@ bool FlightHeaderStore::create(uint32_t address, const recovery::Configuration &
   memset(page_, 255, Page); put(page_, Magic, 4); put(page_ + 4, HeaderVersion, 2); put(page_ + 6, Page, 2);
   put(page_ + 8, layout.headerBytes, 4); put(page_ + 12, ConfigOffset, 4); put(page_ + 16, layout.configBytes, 4);
   put(page_ + 20, ConfigurationStore::FormatVersion, 2); page_[22] = uint8_t(sensor); page_[23] = uint8_t(output); page_[24] = uint8_t(frame);
-  page_[25] = 1; page_[26] = layout.slotCount;
+  page_[25] = 2; page_[26] = layout.slotCount;
   put(page_ + 28, layout.tableOffset, 4); put(page_ + 32, SlotBytes, 2); put(page_ + 36, address, 4); put(page_ + 40, layout.headerBytes, 4);
   put(page_ + 44, layout.summaryOffset, 4);
   for (unsigned i = 0; i < layout.slotCount; ++i) {
     auto *p = page_ + 64 + i*8; const auto &s = header_.starts[i];
     put(p, s.rule, 4); p[4] = uint8_t(s.kind); p[5] = s.channel;
+  }
+  page_[CalibrationOffset]=calibration.available ? uint8_t(1 | (calibration.sensorAxes ? 2 : 0) | (calibration.gyroCalibrated ? 4 : 0)) : 0;
+  if (calibration.available) {
+    page_[192]=calibration.machine.bistage; putFloat(page_+196,calibration.machine.minimumCoastVelocity);
+    putFloat(page_+164,calibration.referenceAltitude);
+    if (calibration.sensorAxes) {
+      page_[161]=calibration.upAxis;
+      for (unsigned i=0;i<3;++i) { putFloat(page_+168+4*i,calibration.gyroBias[i]); putFloat(page_+180+4*i,calibration.accelBias[i]); }
+    }
   }
   const auto checksum = extendCrc(extendCrc(CrcInitial, page_, 252), payload_, aligned(layout.configBytes, Page)) ^ CrcInitial;
   put(page_ + 252, checksum, 4);
@@ -114,7 +139,8 @@ bool FlightHeaderStore::load(uint32_t address) {
   const auto checksum = get32(page_ + 252, 4);
   if (!committed(check_, HeaderCommit, checksum)) return fail(HeaderError::Incomplete);
   if (get32(page_, 4) != Magic || get32(page_ + 6, 2) != Page) return fail(HeaderError::Corrupt);
-  if (get32(page_ + 4, 2) != HeaderVersion || get32(page_ + 20, 2) != ConfigurationStore::FormatVersion || page_[25] != 1) return fail(HeaderError::UnsupportedVersion);
+  const auto version=get32(page_+4,2);
+  if (version != HeaderVersion || get32(page_ + 20, 2) != ConfigurationStore::FormatVersion || page_[25] != 2) return fail(HeaderError::UnsupportedVersion);
   FlightHeaderLayout layout;
   layout.headerBytes = get32(page_ + 8, 4); layout.configBytes = get32(page_ + 16, 4);
   layout.tableOffset = get32(page_ + 28, 4); layout.slotCount = page_[26];
@@ -128,8 +154,26 @@ bool FlightHeaderStore::load(uint32_t address) {
   if (!flash_.read(address + ConfigOffset, payload_, aligned(layout.configBytes, Page))) return fail(HeaderError::Io);
   if ((extendCrc(extendCrc(CrcInitial, page_, 252), payload_, aligned(layout.configBytes, Page)) ^ CrcInitial) != checksum ||
       !erased(payload_ + layout.configBytes, aligned(layout.configBytes, Page) - layout.configBytes) || page_[27] != 255 ||
-      !erased(page_ + 34, 2) || !erased(page_ + 48, 16) || !erased(page_ + 64 + layout.slotCount*8, 252 - 64 - layout.slotCount*8))
+      !erased(page_ + 34, 2) || !erased(page_ + 48, 16) || !erased(page_ + 64 + layout.slotCount*8, CalibrationOffset - 64 - layout.slotCount*8))
     return fail(HeaderError::Corrupt);
+  header_.calibration={};
+  {
+    auto &c=header_.calibration; const auto flags=page_[160];
+    if (flags!=0 && flags!=1 && flags!=3 && flags!=7) return fail(HeaderError::Corrupt);
+    c.available=flags&1; c.sensorAxes=flags&2; c.gyroCalibrated=flags&4;
+    if (!erased(page_+200,52) || !erased(page_+193,3) || !erased(page_+162,2)) return fail(HeaderError::Corrupt);
+    if (!c.available) { if (!erased(page_+161,CalibrationEnd-161) || !erased(page_+192,8)) return fail(HeaderError::Corrupt); }
+    else {
+      if (page_[192]>1) return fail(HeaderError::Corrupt);
+      c.machine.bistage=page_[192]; c.machine.minimumCoastVelocity=getFloat(page_+196);
+      c.referenceAltitude=getFloat(page_+164);
+      if (c.sensorAxes) {
+        c.upAxis=page_[161];
+        for (unsigned i=0;i<3;++i) { c.gyroBias[i]=getFloat(page_+168+4*i); c.accelBias[i]=getFloat(page_+180+4*i); }
+      } else if (page_[161]!=255 || !erased(page_+168,24)) return fail(HeaderError::Corrupt);
+    }
+    if (!validCalibration(c) || (c.available && c.sensorAxes!=(page_[24]==uint8_t(sensors::FrameConvention::SensorAxes)))) return fail(HeaderError::Corrupt);
+  }
   const recovery::ValidationLimits historical{1, 65535, UINT32_MAX, UINT32_MAX};
   if (!ConfigurationStore::decode(payload_, layout.configBytes, header_.configuration) || !recovery::validate(header_.configuration, historical).ok())
     return fail(HeaderError::Corrupt);

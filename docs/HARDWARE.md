@@ -22,7 +22,7 @@ and the final-sector read/write/restore test passed after solder rework; EF7018 
 by the driver. Legacy ID EF17 is a different command's identity byte pair, not a JEDEC capacity.
 Pin/communication failures
 alone do not prove a defective chip. See [diagnostics](testing/README.md).
-The [fixed region map](components/STORAGE_FORMAT.md#fixed-memory-map) is the only
+The [fixed region map](technical/STORAGE_FORMAT.md#fixed-memory-map) is the only
 supported product layout. No magnetometer CS is assigned or required.
 
 ## Driver boundaries
@@ -39,7 +39,7 @@ problem remains unresolved; fresh barometer pressure/temperature were verified o
 19 October 2026. The temporary MAIN bring-up path is commented and does not fake missing IMU
 samples. Physical preflight/arming requests now exist, but actual activation remains blocked by
 the IMU and any reported configuration/continuity/preparation faults. See
-[USB diagnostics](components/USB.md#sensor-diagnostics).
+[USB diagnostics](technical/USB.md#sensor-diagnostics).
 
 `Sensors` currently configures accelerometer +/-32 g and gyro +/-2000 deg/s, both at 120 Hz,
 with a 50 Hz pressure-enabled BMP581 and 4x pressure/temperature oversampling. Returned
@@ -112,7 +112,7 @@ Pyro enable is off and servo PWM is detached; there is no assigned switch for cu
 supply power. USB, JDY-34 and MCU remain operational, including the rainbow. Battery ADC polling
 is paused, but the physical resistor divider remains connected. This is peripheral power
 saving, not MCU deep sleep; current reduction has not been measured. Entry/transfer guards and
-automatic wake behavior are specified in [USB/Bluetooth commands](components/USB.md#power-saving).
+automatic wake behavior are specified in [USB/Bluetooth commands](technical/USB.md#power-saving).
 On 22 October 2026, two USB sleep/wake cycles restored fresh BMP581 samples; configuration,
 retained flight identities and first/last sample-block readbacks were unchanged. Bluetooth
 SPP connected/responded while sleeping and successfully issued wake with USB still usable.
@@ -129,11 +129,11 @@ five seconds plus processing). That is provenance for the future calibration por
 calibration currently reachable on this board: the shared collector is implemented but physical
 readiness blocks entry. Earlier inactivity power saving used five minutes,
 powered down sensors/flash and left Bluetooth available; it did not establish full MCU sleep.
-The new product interval remains an explicit implementation decision.
+The current implementation uses the same five-minute inactivity interval.
 
 The current phase colors retain the Recovery System convention, combining its cyan
 APOGEE/CHUTE_DEPLOYED indications into DESCENT. Old signed-16-bit altitude/velocity
 scaling limited both positive ranges to about 327.67 m / 327.67 m/s; current explicit float32
 samples avoid that packed-log limit. Obsolete single-parachute/magnetometer/whole-chip-erase
-commands are not ported as current commands; the target lifecycle and replacement groups are in
-[Requirements](design/REQUIREMENTS.md).
+commands are not ported as current commands. Current ownership and supported commands are in
+[architecture](technical/ARCHITECTURE.md) and [USB/Bluetooth](technical/USB.md).

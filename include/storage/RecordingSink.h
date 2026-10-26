@@ -9,7 +9,7 @@ class RecordingSink {
 public:
   virtual ~RecordingSink() = default;
   virtual bool begin(const recovery::Configuration &, const recovery::ValidationLimits &, uint32_t,
-                     SensorMode, OutputMode, sensors::FrameConvention) = 0;
+                     SensorMode, OutputMode, sensors::FrameConvention, const FlightCalibration & = FlightCalibration{}) = 0;
   virtual bool append(const FlightSample &) = 0;
   virtual bool recordStart(recovery::RuleId, recovery::OutputKind, uint32_t, uint32_t) = 0;
   virtual bool service() = 0;

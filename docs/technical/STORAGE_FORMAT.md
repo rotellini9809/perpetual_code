@@ -16,7 +16,7 @@ below define the covered bytes; CRC alone does not establish extent ownership.
 | Region | Begin | End inclusive | Size |
 |---|---|---|---|
 | Accelerometer calibration, reserved only | 0x000000 | 0x000FFF | 4 KiB |
-| Single configuration reservation (first sector used) | 0x001000 | 0x004FFF | 16 KiB |
+| Configuration reservation (rules + mounting) | 0x001000 | 0x004FFF | 16 KiB |
 | Directory A | 0x005000 | 0x00CFFF | 32 KiB |
 | Directory B | 0x00D000 | 0x014FFF | 32 KiB |
 | Flight headers and sample extents | 0x015000 | 0xFFFFFF | 0xFEB000 bytes |
@@ -30,8 +30,8 @@ older wrapped metadata is rejected without writes.
 
 The calibration reservation is for three sensor-axis accelerometer biases (m/s^2), defaulting
 to zero when no calibration is available. No record format or reader/writer is implemented yet;
-the future interface will supply calibration. Gyro bias belongs only to the arming session in
-RAM. Mounting uses a signed axis selector, default +X; see
+the future interface will supply calibration. The current gyro bias lives in arming-session RAM; a historical copy is saved in each
+flight header and is not reused for another arming. Mounting uses an explicitly saved signed axis selector; see
 [navigation](NAVIGATION.md#calibration-and-mounting) for its separate device-setting policy.
 
 ## Configuration package
@@ -116,7 +116,7 @@ are nonzero uint64 values; exhaustion fails without wrapping. Each bank has 64 s
 is 48 retained flights.
 The RAM ordering of entries is not their stable identity. See [transactions](STORAGE.md#directory-transactions).
 
-## Recording header v2
+## Recording header v4
 
 `plan(config, limits, layout)` validates the complete plan and computes layout without flash
 access. It reserves exactly one slot per assigned output, ordered by rule order and assignment
@@ -138,7 +138,7 @@ Header regions are:
 |---|---|
 | 0 | 256-byte descriptor |
 | 256 | Separate descriptor/configuration commit page |
-| 512 | Configuration codec-v1 payload, padded to a 256-byte boundary with FF |
+| 512 | Configuration codec-v2 payload, padded to a 256-byte boundary with FF |
 | `tableOffset` | One 512-byte output slot for each assigned channel |
 | after table | Always-reserved 512-byte final summary |
 | after reserved slots | Erased padding through the next 4 KiB boundary |
@@ -149,7 +149,7 @@ Descriptor fields:
 | Offset | Width | Meaning |
 |---|---|---|
 | 0 | 4 | Magic 0x52444850 |
-| 4 | 2 | Header version 2 |
+| 4 | 2 | Header version 4 |
 | 6 | 2 | Descriptor bytes 256 |
 | 8 | 4 | Total header reservation bytes |
 | 12 | 4 | Configuration offset 512 |
@@ -158,7 +158,7 @@ Descriptor fields:
 | 22 | 1 | Sensor mode: 0 hardware, 1 simulation |
 | 23 | 1 | Output mode: 0 physical, 1 virtual |
 | 24 | 1 | Frame: 0 sensor axes, 1 logged calibrated body |
-| 25 | 1 | Sample block format version 1 |
+| 25 | 1 | Sample block format version 2 |
 | 26 | 1 | Assigned-output slot count |
 | 28 | 4 | Output-table offset |
 | 32 | 2 | Slot bytes 512 |
@@ -166,6 +166,7 @@ Descriptor fields:
 | 40 | 4 | Sample-data offset, equal to header reservation bytes |
 | 44 | 4 | Summary offset, exactly after output slots |
 | 64 | count x 8 | Output mappings: uint32 rule, uint8 kind, uint8 channel, FF x 2 |
+| 160 | 40 | Per-flight calibration and state-machine snapshot; [fields below](#per-flight-calibration-snapshot-header-v4) |
 | 252 | 4 | Immutable CRC |
 
 Unspecified bytes are FF. Output kind is 0 pyro or 1 servo; channels are one-based. The
@@ -177,8 +178,8 @@ page is programmed once between erases. Creation is acknowledged only after deco
 normal read path.
 
 The header omits a flight ID, firmware ID, launch pressure, ranges and nominal rate. The
-sequence remains directory/block bookkeeping. Current header v2 always reserves the final
-summary; v1/unknown headers are rejected without migration. Layout equations are:
+sequence remains directory/block bookkeeping. Current header v4 always reserves the final
+summary; v1/v2/unknown headers are rejected without migration. Layout equations are:
 
 ```text
 tableOffset   = 512 + align256(configBytes)
@@ -212,7 +213,7 @@ Slot state is Empty=0, Pending=1 (RAM only), Recorded=2, Invalid=3. Timestamp ze
 UINT32_MAX are valid. Empty/Invalid never prove the actuator did not operate. An individual
 damaged slot does not invalidate other slots or immutable metadata.
 
-## Samples and blocks v1
+## Samples and blocks v2
 
 `FlightSample` preserves the agreed CSV order:
 
@@ -222,13 +223,13 @@ t_ms,accelX,accelY,accelZ,gyroX,gyroY,gyroZ,pressure,temp,z_est,vz_est,roll,pitc
 
 Samples have 64 bytes: uint32 little-endian milliseconds at offset 0, fourteen IEEE-754 binary32
 values at offsets 4..59 in the listed order, phase uint8 at 60, battery uint16 millivolts at
-61..62 and reserved FF at 63. Battery FFFF means unavailable; zero means a measured 0 V.
-This defines two previously reserved bytes without changing record/block sizes or version 1.
-Existing flights have FFFF there and decode as unavailable through the same decoder, without
-migration or flash writes. Readers enforcing the former three-byte FF reservation cannot read
-new battery-bearing records.
-Timestamp zero is valid; accepted timestamps must strictly increase within a recording, without
-uint32 rollover. Phase mapping is 0 PAD, 1 BOOST, 2 COAST, 3 DESCENT, 4 LANDED. Unknown phases
+61..62 and abort reason at 63 (0 none, 1 velocity median, 2 tilt). Battery FFFF means
+unavailable; zero means a measured 0 V. The record remains 64 bytes, but block version 2 and
+recording-header version 4 are required; old recordings are rejected, not migrated.
+Timestamp zero is valid; accepted timestamps strictly increase without uint32 rollover.
+Phase mapping is 0 PAD, 1 BOOST/BOOST 1, 2 COAST/COAST 1, 3 DESCENT, 4 LANDED,
+5 BOOST 2, 6 COAST 2, 7 ABORT. The frozen machine setting disambiguates stage-one labels.
+Unknown phases
 are rejected. All finite float values are preserved, including heights above 327.67 m.
 Missing/nonfinite measurements encode canonical quiet NaN 0x7FC00000, rather than zero or a
 saturated measurement. No precision-reducing quantization is applied. The source convention
@@ -251,6 +252,7 @@ records in samples.
 | roll, pitch, yaw | Degrees |
 | state | Numeric phase |
 | battery_v | Stored as integer millivolts, exported in volts; FFFF exports null/CSV nan |
+| abort_reason | Integer 0 none, 1 velocity, 2 tilt; retained through the terminal ABORT phase |
 
 Battery acquisition is real board telemetry at 5 Hz, independently of the navigation sensor
 source. Samples hold the latest acquisition, including during onboard simulation/HIL; Hoppino
@@ -262,7 +264,7 @@ page is programmed once between erases. Integers are little-endian.
 | Body offset | Width | Meaning |
 |---|---|---|
 | 0 | 4 | Magic 0x4B425350 |
-| 4 | 2 | Block version 1 |
+| 4 | 2 | Block version 2 |
 | 6 | 2 | Sample size 64 |
 | 8 | 8 | Nonzero recording sequence, bound to directory ownership |
 | 16 | 4 | Zero-based block index |
@@ -319,12 +321,57 @@ unclosed directory entry does not turn that entry into Completed after a restart
 
 ## Compatibility
 
-Component versions are independent: configuration and recording header are v2;
-directory/sample/start/summary remain v1. Only configuration codec v2 is read and written;
+Component versions are independent: configuration codec is v2 and recording header is v4;
+sample blocks are v2; directory/start/summary remain v1. Only configuration codec v2 is read and written;
 older packages and snapshots are rejected. There is no conversion or legacy decoder.
 No automatic erase or migration writes occur at boot. `flights info` reports `config_version:2`
 and `flights config` exports that codec.
 Directory status values are Recording=1, Completed=2, Interrupted=3,
 StoppedFull=4, Invalidated=5, Corrupt=6. Firmware that only accepts 1..5 cannot mount a bank
 containing Corrupt and must not autoformat it. The frozen whole-image FNV64 regression value is
-`0xb94a27eca6844a2c` (current fixture uses zero channel delays).
+`0x3000346afdd6427f` (current fixture uses zero channel delays).
+
+## Per-flight calibration snapshot (header v4)
+
+Descriptor bytes 160..199 store the immutable startup calibration, covered by the same
+CRC and commit as the configuration snapshot. Old header versions are unsupported;
+use explicit `flights format` to start with the new format. The rule codec remains v2.
+
+| Descriptor offset | Width | Meaning |
+|---|---|---|
+| 160 | 1 | Flags: bit 0 snapshot available, bit 1 sensor-axis corrections applied, bit 2 gyro calibrated at physical arming |
+| 161 | 1 | Noseward axis enum 0..5, or FF for already calibrated BODY input |
+| 162 | 2 | Reserved FF |
+| 164 | 4 | Barometric reference altitude, float32 metres |
+| 168 | 12 | Gyroscope biases X/Y/Z in sensor coordinates, float32 rad/s |
+| 180 | 12 | Accelerometer biases X/Y/Z in sensor coordinates, float32 m/s^2 |
+| 192 | 1 | Bistage selected: 0 normal, 1 bistage |
+| 193 | 3 | Reserved FF |
+| 196 | 4 | Minimum COAST 1 velocity, float32 m/s |
+
+Unavailable snapshots use flags 0 and FF in all remaining snapshot bytes. When input is
+already calibrated BODY data, axis and bias fields remain FF and export as null, rather
+than inventing a physical calibration. The finite barometric reference is still saved.
+All remaining descriptor padding stays FF. `flights calibration <sequence>` exports this
+snapshot separately to keep replies bounded; the downloader stores it under `calibration`
+in the flight JSON sidecar. No current device settings are consulted when displaying it.
+
+## Board mounting record
+
+The second sector of the configuration reservation (0x002000) contains the orientation,
+independent of the unchanged v2 rule package at 0x001000. Its first 256-byte page stores
+magic 0x544E524F at 0 (u32), version 1 at 4 (u8), signed axis enum at 5 (u8:
++X, -X, +Y, -Y, +Z, -Z = 0..5), and CRC32 of bytes 0..251 at 252 (u32).
+Other bytes remain FF. Saving erases only this sector and programs one verified page.
+An erased page means orientation is unconfigured; missing/invalid records or read errors block physical arm with ORIENTATION_NOT_READY until an explicit orientation is saved.
+Factory reset clears the rule package and erases the orientation sector; formatting flights preserves this sector.
+
+## State-machine device record
+
+The third sector of the configuration reservation (0x003000) stores mode independently
+of rules and orientation. Its first page uses magic 0x4D534650 at offset 0 (u32), version 1
+at 4 (u8), bistage 0/1 at 5, minimum COAST 1 velocity at 8 (float32 m/s), and CRC32 over
+0..251 at 252 (u32). Reserved bytes are FF. Missing/erased record defaults to normal and 0;
+invalid records prevent run readiness until rewritten. Saves erase/program/read back this
+sector. Factory reset erases it; flight-memory format preserves it. No calibration
+reservation or retained flight extent is touched by a mode change.

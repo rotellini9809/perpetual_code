@@ -17,6 +17,11 @@ public:
   // Explicit operation only; caller supplies trusted runtime disarmed state.
   // An interrupted save may destroy the old copy. No fallback or active defaults.
   bool save(const recovery::Configuration &config, const recovery::ValidationLimits &limits, bool disarmed);
+  bool clear(bool disarmed);
+  bool loadStateMachine(recovery::StateMachineSettings &settings);
+  bool saveStateMachine(const recovery::StateMachineSettings &settings, bool disarmed);
+  bool loadOrientation(uint8_t &axis);
+  bool saveOrientation(uint8_t axis, bool disarmed);
   ConfigError error() const { return error_; }
   recovery::ValidationResult validation() const { return validation_; }
   static const char *errorName(ConfigError error);

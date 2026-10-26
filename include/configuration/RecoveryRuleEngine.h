@@ -35,6 +35,7 @@ public:
   Evaluation evaluate(uint64_t nowMs, const FlightSnapshot &snapshot);
   // Call at post-landing expiry or accepted manual disarm: cancel pending starts.
   void closeStarts();
+  void cancelPending();
   void end();
   bool active() const { return active_; }
   const std::array<RuleRuntime, MaxRules> &rules() const { return runtime_; }

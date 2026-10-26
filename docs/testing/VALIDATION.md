@@ -49,7 +49,7 @@ unverified. Artifacts: `.pio/desktop_build.log`, `.pio/desktop_full_tests.log`,
 `.pio/desktop_gui_bluetooth.json`, `.pio/desktop_gui_download.json`,
 `.pio/desktop_simulation_bluetooth.png`, `.pio/desktop_flight_usb.png`,
 `.pio/desktop_packaged_checks.json`, `.pio/desktop_dist/Perpetual/Perpetual.exe` and
-`.pio/desktop_dist/Perpetual-Windows.zip`. The desktop [guide](../components/DESKTOP.md) is the
+`.pio/desktop_dist/Perpetual-Windows.zip`. The desktop [guide](../technical/DESKTOP.md) is the
 canonical workflow/limits reference.
 
 On **20 October 2026**, the PC protocol client moved from the estimate-replay script to
@@ -467,19 +467,21 @@ Key export/verification artifacts:
 
 ## Remaining work and limits
 
-| Item | Current decision / next work |
-|---|---|
-| Real sensors | Fresh barometer-only USB acquisition verified; resolve IMU soldering and qualify pairing/cadence and the host-tested arming gyro/reference collector on board before tuning the existing Kalman |
-| Device calibration | Accelerometer XYZ sector remains reserved, default biases zero; calibration UI/persistence deferred. Gyro collector is implemented in RAM for each physical arming; simulation bypasses it. Signed noseward axis defaults to +X |
-| Live lifecycle/outputs | Shared arming/preflight, continuity inspection, phase-gated disarm and orderly no-BOOST log discard exist. Add servo preparation, configured concurrent output execution, provisional recording preparation/failed-reservation cleanup and bounded landing/failure shutdown before enabling physical activation |
-| Driver timeout | A busy timeout disables driver readiness; recorder recovery alone cannot restore it. Restart/reinitialize is current behavior. In-place recovery deliberately deferred because this case has not been observed |
-| Unsupported interrupted headers | Not evidence of corruption; still fail recovery rather than being silently flagged/reinterpreted. Current-only v2 policy is intentional |
-| Scheduler robustness | Core 0 no longer waits on close/abort, but a stalled worker retains flash ownership. Idle settings/preparation/scans remain synchronous. No live watchdog/degraded-sensor policy is established |
-| Storage expansion | Fixed contiguous budgets and explicit deletion remain; no automatic overwrite, active wrap/growth, erase-ahead, alternate layouts or filesystem requirement |
-| Hardware qualification | Electrical interruption during real program/erase, full-chip integrity, supply/temperature margins, wear/endurance and stack high-water remain unverified |
-| UI/transports | Qt USB/SPP desktop prototype works; hardware preparation/calibration/test flows, BLE, binary export and sleep remain pending |
+Dated observations above retain the firmware/format used at the time. In particular, older
+v2 log and default-mounting observations do not describe current header v4 or the explicit
+orientation requirement. Current implementation is documented in [technical references](../README.md).
 
-Do not interpret normal-profile timing maxima as worst-case guarantees. Host NOR byte cuts model
-the persistence protocol; restarting after a completed recording does not establish behavior
-during a physical write brownout. Keep future work
-grounded in [requirements](../design/REQUIREMENTS.md) and measured hardware needs.
+| Area | Current qualification limit |
+|---|---|
+| Real sensors | Barometer-only acquisition verified; IMU solder fault and repaired-device cadence/pairing/arming collection still need board validation |
+| Calibration and attitude | Per-arming gyro/reference collector and explicit persistent mounting exist; accelerometer calibration persistence/UI and initial-attitude/tilt qualification remain open |
+| Physical outputs | Shared execution, preparation/release and physical simulation are implemented and host-tested; actual electrical/mechanical behavior, interruption and load margins still need bench acceptance |
+| Driver timeout | Timeout disables driver readiness; recorder recovery cannot reinitialize it. Restart/reinitialization remains the current route |
+| Interrupted/old headers | Unsupported versions fail without migration; current recording header is v4 and rule codec is v2. Explicit flight-memory format starts fresh |
+| Scheduler and storage | Worker close is asynchronous, but a stalled worker retains ownership; idle preparation/settings/scans stay synchronous. Worst-case timing, stack high-water, watchdog and physical brownout coverage are not established |
+| Desktop and transports | Six-view USB/SPP app, orientation, reset/format and power management exist. Separate-Windows qualification, BLE and negotiated binary export remain open |
+
+The [documentation map](../README.md#remaining-work-and-documentation-gaps) owns the consolidated
+implementation/design backlog. These rows describe evidence limits, not another requirements list.
+Host NOR byte cuts model persistence protocols; a restart after a completed recording is not a
+physical interruption during program/erase. Normal-profile maxima are not worst-case guarantees.

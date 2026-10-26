@@ -4,6 +4,7 @@
 #include <cassert>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <vector>
 #include "storage/FlightHeaderStore.h"
 #include "storage/FlightSampleStore.h"
@@ -191,7 +192,32 @@ std::vector<uint8_t> encoded(const recovery::Configuration &config) {
   std::vector<uint8_t> bytes(ConfigurationStore::MaxPayload); std::size_t n;
   assert(ConfigurationStore::encode(config, bytes.data(), bytes.size(), n)); bytes.resize(n); return bytes;
 }
+void calibrationRoundtrip() {
+  HeaderFlash flash; FlightHeaderStore header(flash);
+  FlightCalibration c; c.available=c.sensorAxes=c.gyroCalibrated=true; c.upAxis=5;
+  c.referenceAltitude=123.25f;
+  for (unsigned i=0;i<3;++i) { c.gyroBias[i]=(int(i)-1)*.03125f; c.accelBias[i]=(int(i)-1)*.25f; }
+  auto invalid=c; invalid.gyroBias[0]=std::numeric_limits<float>::infinity();
+  assert(!header.create(0x15000,fixture(),limits,SensorMode::Hardware,OutputMode::Physical,sensors::FrameConvention::SensorAxes,invalid) && !flash.writes);
+  assert(header.create(0x15000,fixture(),limits,SensorMode::Hardware,OutputMode::Physical,sensors::FrameConvention::SensorAxes,c));
+  c.gyroBias[0]=999; c.referenceAltitude=999; // Mutating current settings cannot change a recorded flight.
+  FlightHeaderStore reboot(flash); assert(reboot.load(0x15000));
+  const auto &saved=reboot.view()->calibration;
+  assert(saved.available && saved.sensorAxes && saved.gyroCalibrated && saved.upAxis==5);
+  assert(saved.referenceAltitude==123.25f && saved.gyroBias[0]==-.03125f && saved.accelBias[2]==.25f);
+  for (unsigned offset:{160u,161u,162u,164u,168u}) {
+    auto damaged=flash; auto *p=damaged.bytes.data()+0x15000;
+    if (offset==164 || offset==168) binary::put(p+offset,0x7f800000,4);
+    else p[offset]=offset==161 ? 6 : 255;
+    if (offset==162) p[offset]=0;
+    const auto length=(reboot.view()->layout.configBytes+255)/256*256;
+    const auto checksum=binary::extendCrc(binary::extendCrc(binary::CrcInitial,p,252),p+512,length)^binary::CrcInitial;
+    binary::put(p+252,checksum,4); binary::put(p+260,checksum,4); binary::put(p+264,~checksum,4);
+    FlightHeaderStore bad(damaged); assert(!bad.load(0x15000) && bad.error()==HeaderError::Corrupt);
+  }
+}
 void run() {
+  calibrationRoundtrip();
   HeaderFlash flash; FlightHeaderStore header(flash);
   FlightHeaderLayout layout;
   assert(header.plan(fixture(), limits, layout)); assert(layout.slotCount == 3 && layout.headerBytes == 4096);
@@ -218,8 +244,9 @@ void run() {
   assert(header.view()->starts[1].kind == recovery::OutputKind::Servo && header.view()->starts[2].rule == 20);
   const auto initial = flash; const auto writes = flash.writes, reads = flash.reads;
   // A valid CRC/commit cannot enable an old or unknown header format.
-  for (unsigned field : {4u, 20u}) for (unsigned version : {1u, 3u}) {
+  for (unsigned field : {4u, 20u}) for (unsigned version : {1u, 2u, 3u, 5u}) {
     auto wrong = initial; auto *descriptor = wrong.bytes.data() + 0x15000;
+    if (field==20 && version==2) continue;
     storage::binary::put(descriptor + field, version, 2);
     const auto payloadBytes = (layout.configBytes + 255) / 256 * 256;
     const auto checksum = storage::binary::extendCrc(storage::binary::extendCrc(storage::binary::CrcInitial, descriptor, 252), descriptor + 512, payloadBytes) ^ storage::binary::CrcInitial;

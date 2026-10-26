@@ -19,7 +19,7 @@ zero; explicitly populated settings are validated. The empty model is invalid.
 
 Altitude is launch-relative metres; speed means abs(vertical velocity), not total speed.
 Altitude comparisons are strict, speed comparisons inclusive, and ranges include both endpoints
-(equal bounds allowed). Phase masks contain BOOST/COAST/ DESCENT only. Runtime limits are
+(equal bounds allowed). Phase masks contain BOOST/COAST for both stages and DESCENT; PAD, LANDED and ABORT cannot trigger rules. Runtime limits are
 application policy, exposed through capabilities; they are development bounds, not recommended
 flight settings. Validation identifies the first error, field, rule ID and zero-based index.
 Names reject blank/control/ unterminated values; current USB/Bluetooth accepts ASCII rather than full
@@ -75,8 +75,8 @@ policy before assigning output; it never formats or installs defaults. An explic
 Apply validates/encodes in RAM, invalidates prior applied-plan readiness, erases only
 `0x001000..0x001FFF`, writes/verifies pages and commit, then reloads through the boot path.
 Supported payload plus metadata fits one sector; compile-time/runtime bounds enforce that. The
-other three sectors in the unchanged 16 KiB reservation remain untouched, including non-erased
-contents.
+remaining sectors are not touched by rule Apply. Board orientation uses a separate sector
+within that reservation; see [the memory map](STORAGE_FORMAT.md#board-mounting-record).
 
 An interrupted replacement may lose the old copy. On failure the draft remains, but the old RAM
 plan cannot silently reactivate. A storage fault disables further saves until reinitialization
@@ -133,8 +133,8 @@ until reinitialization (currently reboot). Missing/corrupt saved settings block 
 not prevent creating a replacement draft when the driver is healthy.
 
 Disconnect discards the draft, not applied settings. Store errors are visible in status/config
-show. The future lifecycle owner must continue to supply authoritative disarmed state; the
-command layer already rejects mutations while armed in tests.
+show. The lifecycle owner supplies authoritative disarmed state; the router also rejects mutations
+while a run or recording worker owns the device.
 
 ## Editing and inspection
 
@@ -190,10 +190,8 @@ configured flag and initial/final PWM. The executor commands the endpoints direc
 PWM until lifecycle shutdown.
 
 `servo set` records explicitly supplied calibration endpoints only; it does not move or prepare
-a servo and does not prove mechanical calibration. Each endpoint in the servo editor offers **Applica**
-and a **Live** button through `servo preview <channel> <pwm>`. Active Live is green and disables other
-movement buttons; its slider adjusts the centered PWM readout. It sends at most 10 Hz,
-waits for each reply and replaces intermediate values. `servo release <channel>` releases only
+a servo and does not prove mechanical calibration. The [desktop editor](DESKTOP.md#configuration-and-servo-editor) uses `servo preview <channel> <pwm>`
+for explicit positioning. `servo release <channel>` releases only
 that positioning PWM; the editor sends it on closing. Positioning is disarmed/idle only, validates
 PWM against firmware limits, works before endpoints are saved and never writes flash. It invalidates
 preparation for that channel and blocks arming/simulation until released; owner disconnect also
@@ -210,7 +208,7 @@ Condition types:
 | Type | Parameters |
 |---|---|
 | apogee | None |
-| phase | ascent, descent, airborne, or numeric mask (BOOST=2, COAST=4, DESCENT=8) |
+| phase | ascent (102), descent (8), airborne (110), or numeric mask: BOOST 1/normal=2, COAST 1/normal=4, BOOST 2=32, COAST 2=64 |
 | altitude | `<` or `>` then value |
 | altitude_range | Inclusive lower, upper |
 | speed | `<=` or `>=` then nonnegative value |
@@ -234,3 +232,26 @@ must come from capabilities, not independently chosen values.
 
 For numbered requests, use increasing IDs and read `USB.md` for retry/session rules. Commands
 outside the phone subset always reply in JSON, including when manually typed without an ID.
+
+## Device orientation and factory reset
+
+These commands operate on device settings separately from a rule draft:
+
+| Command | Behavior |
+|---|---|
+| `config orientation` | Returns `up_axis` and `orientation_ready`; no saved orientation returns null/false |
+| `config orientation +X` | Saves and verifies an explicit axis; accepts +X, -X, +Y, -Y, +Z, -Z |
+| `config reset` | Clears applied rules, draft, servo endpoints and saved orientation; preserves flight recordings and the reserved accelerometer-calibration region |
+
+Orientation writes require idle/disarmed state, no active draft and exclusive storage ownership.
+Reset also requires idle/disarmed ownership. A rule save never supplies an implicit orientation.
+Physical preflight reports `ORIENTATION_NOT_READY` until an axis is explicitly saved, including +X.
+Reset acknowledges `reset`, `persisted` and `verified` only after erase/readback succeeds.
+The separate state-machine setting is read with `config machine`, saved with
+`config machine normal` or `config machine bistage <minimum_velocity_mps>`, and defaults to
+normal after factory reset. See [state machines](state_macines.md#3-macchina-di-volo-bistadio--implementata).
+
+`servo release` without a channel explicitly releases all held servo PWM while idle/disarmed;
+with a channel it retains the editor-preview meaning described above. Idle `disarm` does not
+release preparation. See [command lifecycle](USB.md#arming-and-readiness).
+

@@ -262,7 +262,8 @@ void loop() {
   commandStatus.gyroTarget = flight::ArmingCalibration::TargetSamples;
   updateHardwareStatus();
   const auto ledMode=power.sleeping() ? LedMode::PowerSaving : physicalFlight.state()==flight::ArmingState::Arming ? LedMode::Calibrating :
-      commandStatus.phase>=0 ? static_cast<LedMode>(commandStatus.phase) : LedMode::Disarmed;
+      commandStatus.phase==5 ? LedMode::Boost : commandStatus.phase==6 ? LedMode::Coast :
+      commandStatus.phase==7 ? LedMode::Abort : commandStatus.phase>=0 ? static_cast<LedMode>(commandStatus.phase) : LedMode::Disarmed;
   statusLed.update(millis(),ledMode);
   pollBluetooth();
   // Both endpoints get a bounded turn every loop; neither waits for TX space.

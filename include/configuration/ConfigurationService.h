@@ -10,15 +10,15 @@ public:
   void disconnect() { drafting_ = false; }
   void setDisarmed(bool value) { disarmed_ = value; }
   bool disarmed() const { return disarmed_; }
-  bool configValid() const { return appliedValid_; }
+  bool configValid() const { return appliedValid_ && machineReady_; }
   bool storageReady() const { return storageReady_; }
   bool hasDraft() const { return drafting_; }
   const recovery::Configuration *applied() const { return appliedValid_ ? &applied_ : nullptr; }
   const recovery::Configuration &view(bool draft) const { return draft ? draft_ : applied_; }
   const recovery::ValidationLimits &limits() const { return limits_; }
-  const char *configError() const { return storage::ConfigurationStore::errorName(loadError_); }
+  const char *configError() const { return storageReady_ && !machineReady_ ? "STATE_MACHINE_INVALID" : storage::ConfigurationStore::errorName(loadError_); }
   bool acquireRun() {
-    if (runLocked_ || drafting_ || !appliedValid_ || !disarmed_) return false;
+    if (runLocked_ || drafting_ || !appliedValid_ || !machineReady_ || !disarmed_) return false;
     runLocked_ = true; return true;
   }
   void releaseRun() { runLocked_ = false; }
@@ -38,6 +38,13 @@ public:
   const char *unassignOutput(recovery::RuleId id, recovery::OutputKind kind, uint32_t channel);
   recovery::ValidationResult validateDraft() const { return recovery::validate(draft_, limits_); }
   const char *apply();
+  const char *factoryReset();
+  const char *setStateMachine(const recovery::StateMachineSettings &settings);
+  bool machineReady() const { return machineReady_; }
+  const recovery::StateMachineSettings &stateMachine() const { return machine_; }
+  const char *setOrientation(uint8_t axis);
+  uint8_t upAxis() const { return upAxis_; }
+  bool orientationReady() const { return orientationReady_; }
 private:
   const char *editError() const;
   recovery::Rule *findRule(recovery::RuleId id);
@@ -46,5 +53,9 @@ private:
   recovery::Configuration applied_{}, draft_{}, verified_{};
   bool appliedValid_ = false, drafting_ = false, storageReady_ = false, disarmed_ = true;
   bool runLocked_ = false;
+  uint8_t upAxis_ = 0;
+  bool orientationReady_ = false;
+  recovery::StateMachineSettings machine_;
+  bool machineReady_ = false;
   storage::ConfigError loadError_ = storage::ConfigError::Missing;
 };

@@ -5,7 +5,7 @@ from PySide6.QtGui import QColor,QPainter,QPainterPath,QPen
 from PySide6.QtWidgets import QWidget,QToolTip
 
 
-PHASE_COLORS={'PAD':'#e7edf3','BOOST':'#fbe5da','COAST':'#e0edf9','DESCENT':'#dcf0e9','LANDED':'#ece7f4'}
+PHASE_COLORS={'PAD':'#e7edf3','BOOST':'#fbe5da','COAST':'#e0edf9','DESCENT':'#dcf0e9','LANDED':'#ece7f4','BOOST 1':'#fbe5da','COAST 1':'#e0edf9','BOOST 2':'#ffd7c4','COAST 2':'#c9dff5','ABORT':'#f6cccc'}
 
 
 def axis_scale(values,angular=False):

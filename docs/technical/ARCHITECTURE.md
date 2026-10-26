@@ -16,7 +16,7 @@ selects real outputs; simulation defaults to virtual. Real sensor faults still b
 | `communication/` | Per-connection framing/retry/reply buffers, bounded JSON and shared command router |
 | `diagnostics/` | Manual test entry points selected by build flag |
 | `include/shared/` | Flight phases, timestamped estimates and timing values |
-| `test/host`, `test/integration`, `test/fixtures` | Ten C++ area suites, four Python groups and shared PC-only fixtures; one stdin command device for real client integration |
+| `test/host`, `test/integration`, `test/fixtures` | C++ area suites, Python integration suites and shared PC-only fixtures; one stdin command device for real client integration |
 | `tools/replay/` | Independent PC references, USB runners and downloader |
 | `tools/device_client.py` | Shared PC protocol, serial ownership, request FIFO/idle heartbeat and CLI monitor |
 | `perpetual_app/` | Qt views, app state/operation controller, pure local configuration model and portable Windows build |
@@ -39,7 +39,7 @@ Sources supply measurements, not estimates, phases or actuator decisions. `Senso
 freezes one source, convention, calibration and launch reference for the run. A mid-run
 convention change stops processing. No simulation branches belong in the Kalman filter or flight
 detector. Raw `SensorAxes` input subtracts accelerometer and gyro biases in sensor coordinates,
-then applies a proper rotation selected by the signed noseward sensor axis (default +X).
+then applies the explicitly saved signed noseward sensor-axis rotation.
 `LoggedCalibratedBody` bypasses both operations for data already processed that way.
 See [navigation](NAVIGATION.md) for units/freshness.
 
@@ -54,8 +54,9 @@ The controller owns FlightRuntime. Simulation mode begins immediately without re
 or gyro calibration. Physical mode checks readiness, reserves the configuration during its
 nonblocking RAM calibration, rechecks readiness, then starts the same runtime. See
 [navigation](NAVIGATION.md#calibration-and-mounting) for collection policy. Temperature is logged
-without affecting navigation. `OutputExecutor` is an optional runtime dependency: virtual runs
-never touch it; physical simulation shares the same rule starts and independently timed outputs.
+without affecting navigation. `OutputExecutor` is an optional runtime dependency: virtual
+evaluation never submits physical starts, though virtual simulation startup releases held PWM.
+Physical simulation shares the same rule starts and independently timed outputs.
 `BoardOutputs` adapts GPIO/PWM, leaving pulse timing in the host-testable executor. Physical start
 records use command/pulse-high timestamps; recording headers retain the selected output mode.
 
@@ -68,37 +69,18 @@ hardware interrupt edges; actual cadence and overruns still need board verificat
 
 ## Shared arming lifecycle
 
-`ArmingController` has Disarmed, Arming, Armed and Closing states. Simulation goes directly from
-Disarmed to Armed after common configuration/optional recording checks. Physical mode requires
-IMU/barometer initialization, initialized recording storage, continuity on configured pyros,
-prepared configured servos and output availability. `PhysicalChecks` supplies real sensor readiness;
-`OutputExecutor` supplies the same continuity/preparation checks used in simulation.
-`servo arm [channel]` commands Initial and holds PWM. Normal flight adopts that preparation without
-detach/reposition, whereas physical simulation prepares automatically. Preparation survives a failed
-arm or disconnect, but Disarm releases it and relevant configuration changes invalidate it.
-Virtual runs reject held physical preparation rather than carrying active PWM into a virtual run.
+`ArmingController` owns the operational lifecycle and coordinates calibration, readiness,
+exclusive runtime ownership and asynchronous close. Its actual transition functions, the
+normal flight detector and the proposed bistage/ABORT behavior have one reference:
+[state machines](state_macines.md).
 
-While collecting physical calibration, the configuration reservation blocks edits, competing
-runs and bulk storage operations. Calibration frames are neither navigated nor recorded. The
-reservation is transferred to RunController without yielding on core 0. Source `start()` resets
-the acquisition epoch after recording preparation so calibration time is excluded from flight
-time; stop clears RAM calibration and cancels future starts. Closing remains visible until the
-queued recording worker acknowledges finalization. Owner disconnect leaves autonomous simulation
-and physical arming/flight running, but stops its injected HIL/estimate replay.
+For physical arming, see [readiness and commands](USB.md#arming-and-readiness);
+for calibration and mounting, see [navigation](NAVIGATION.md#calibration-and-mounting).
+Physical flight and opt-in physical simulation share `OutputExecutor`; virtual simulation
+releases held servo preparation before starting. A prepared servo alone remains DISARMED.
+The physical adapter and shared collector are host-tested with fake GPIO/sensors; repaired-IMU
+acquisition and electrical/mechanical output behavior still require bench qualification.
 
-Ordinary `disarm` is accepted during arming and at PAD/LANDED, and rejected during the airborne
-phases. `sim stop` immediately shuts down selected physical/virtual outputs; `hil stop` remains a virtual
-development cancellation path. After LANDED, physical runs close future starts at the 15-second
-window, finish active bounded pyro pulses, then release PWM and request asynchronous log close.
-Servo holding does not extend that wait. Explicit stop/disarm shuts outputs down immediately.
-Recording is prepared after gyro collection and before adopting outputs; failure never reaches
-Armed and preserves pre-existing preparation. Flash failures use existing recovery diagnostics;
-a separate provisional allocation format remains future work. Orderly physical-mode closure
-now discards a log that never reached BOOST; simulation/HIL retain diagnostic PAD logs. The
-shared runtime tracks launch independently of sample persistence, and the worker commits the
-discard before releasing storage. PC tests exercise sensor-axis acquisition, gyro collection,
-physical output commands, recorded start times and asynchronous close through fake GPIO/sensors.
-Electrical/mechanical qualification still requires repaired hardware.
 
 ## Service ownership
 
@@ -110,8 +92,8 @@ snapshots; deployment names do not become phases.
 `flight::RunController` owns one copied plan/engine, increasing time/sequence checks, event progress, a
 monotonic run identity, the development post-landing cutoff and cancellation. An obsolete
 runtime cannot stop/process a replacement run. USB sensor HIL and autonomous simulation use
-separate runtime instances sharing this exclusive run owner. Generated height only determines
-pressure; navigation and flight phases are always computed by the common runtime. Hardware
+separate runtime instances sharing this exclusive run owner. Source readings supply measured
+or replayed sensor values; navigation and phases are computed by the common runtime. Hardware
 sources use the same runtime API, verified on PC with a fake acquisition device.
 
 `CommandRouter` dispatches configuration, replay, HIL, simulation and flights as sibling

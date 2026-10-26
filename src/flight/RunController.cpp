@@ -5,7 +5,7 @@ namespace flight {
 const char *RunController::begin(RunMode mode, ConfigurationService &config) {
   if (active() || config.runLocked()) return "BUSY";
   if (config.hasDraft()) return "DRAFT_ACTIVE";
-  if ((mode != RunMode::Estimates && mode != RunMode::Sensors) || !config.applied()) return "CONFIG_INVALID";
+  if ((mode != RunMode::Estimates && mode != RunMode::Sensors) || !config.applied() || !config.configValid()) return "CONFIG_INVALID";
   if (identity_ == std::numeric_limits<uint64_t>::max()) return "SESSION_EXHAUSTED";
   if (!engine_.begin(*config.applied(), config.limits(), 100)) return "CONFIG_INVALID";
   if (!config.acquireRun()) { engine_.end(); return "ARMED"; }
@@ -13,7 +13,7 @@ const char *RunController::begin(RunMode mode, ConfigurationService &config) {
   settings_->setDisarmed(false);
   ruleCount_ = config.applied()->ruleCount;
   for (std::size_t i = 0; i < ruleCount_; ++i) ids_[i] = config.applied()->rules[i].id;
-  reported_ = {}; landed_ = false; landedAt_ = 0;
+  reported_ = {}; previousPhase_=recovery::FlightPhase::Pad; landed_ = false; landedAt_ = 0;
   progress_[mode == RunMode::Sensors ? 1 : 0] = {};
   ++identity_; mode_ = mode; return nullptr;
 }
@@ -30,6 +30,8 @@ bool RunController::validTime(RunMode mode, uint32_t time) const {
 }
 RunEvaluation RunController::evaluate(RunMode mode, uint32_t time, const recovery::FlightSnapshot &snapshot) {
   if (!validTime(mode, time)) return {};
+  if (snapshot.phaseValid && settings_->stateMachine().bistage && previousPhase_==recovery::FlightPhase::Coast && snapshot.phase==recovery::FlightPhase::Descent) engine_.cancelPending();
+  if (snapshot.phaseValid) previousPhase_=snapshot.phase;
   if (snapshot.phaseValid && snapshot.phase == recovery::FlightPhase::Landed && !landed_) {
     landed_ = true; landedAt_ = time;
   }

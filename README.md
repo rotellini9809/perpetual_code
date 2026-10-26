@@ -6,9 +6,9 @@ sensor HIL, autonomous simulation with selectable outputs, idle hardware diagnos
 **Real flight and physical simulation share the output executor. Real flight requires explicit
 servo preparation and sensor/continuity/storage readiness; the IMU hardware issue is unresolved.**
 
-The first **Qt desktop prototype** provides Dashboard, Configuration, Test/Simulation,
-Recorded Flights and Console. During development, launch it from source using
-[the desktop guide](docs/components/DESKTOP.md). Portable ZIP packaging is deferred until the app is ready.
+The **Qt desktop prototype** provides Dashboard, Configuration, Test/Simulation,
+Recorded Flights, Settings and Console. During development, launch it from source using
+[the desktop guide](docs/technical/DESKTOP.md). Portable ZIP packaging is deferred until the app is ready.
 
 ## Build and start
 
@@ -42,7 +42,7 @@ MAIN also accepts the same commands through the JDY-34 (hardware UART1, 9600 bau
 USB stays active every loop. `bluetooth status` reports radio startup/link state;
 `control status` identifies the requesting transport and the current edit/run owner.
 Windows' paired-device badge is not the application connection check: open the outgoing SPP
-port, then exchange `info`/`ping`. See the [shared protocol](docs/components/USB.md).
+port, then exchange `info`/`ping`. See the [shared protocol](docs/technical/USB.md).
 
 The shared PC client now owns handshake, command ordering and idle heartbeat. To inspect the
 device and watch actual replies (Ctrl+C closes the connection):
@@ -70,14 +70,14 @@ See the [recording guide](docs/testing/RECORDING.md) before storage diagnostics.
 ## Documentation
 
 - [Documentation map and reading order](docs/README.md)
-- [Architecture and source ownership](docs/components/ARCHITECTURE.md)
-- [Configuration and rule semantics](docs/components/CONFIGURATION.md)
-- [Navigation and calibration](docs/components/NAVIGATION.md)
-- [Storage behavior](docs/components/STORAGE.md) and [binary formats](docs/components/STORAGE_FORMAT.md)
-- [USB protocol](docs/components/USB.md)
+- [Architecture and source ownership](docs/technical/ARCHITECTURE.md)
+- [Configuration and rule semantics](docs/technical/CONFIGURATION.md)
+- [Navigation and calibration](docs/technical/NAVIGATION.md)
+- [Flight state machines and bistage design](docs/technical/state_macines.md)
+- [Storage behavior](docs/technical/STORAGE.md) and [binary formats](docs/technical/STORAGE_FORMAT.md)
+- [USB protocol](docs/technical/USB.md)
 - [Build/tests and device diagnostics](docs/testing/README.md)
 - [Simulation and replay](docs/testing/SIMULATION.md)
 - [Recording, download and timing](docs/testing/RECORDING.md)
 - [Validation evidence and remaining work](docs/testing/VALIDATION.md)
 - [Hardware and datasheets](docs/HARDWARE.md)
-- [Target application requirements](docs/design/REQUIREMENTS.md) — future behavior, not a feature list

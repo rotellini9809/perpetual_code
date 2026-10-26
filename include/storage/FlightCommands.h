@@ -23,6 +23,7 @@ private:
   storage::QueuedRecorder *worker_;
   storage::RecordingInfo selected_;
   storage::FlightHeaderLayout headerLayout_;
+  storage::FlightCalibration calibration_;
   std::array<storage::OutputStartSlot, recovery::MaxAssignments> starts_{};
   storage::SensorMode sensorMode_ = storage::SensorMode::Simulation;
   storage::OutputMode outputMode_ = storage::OutputMode::Virtual;

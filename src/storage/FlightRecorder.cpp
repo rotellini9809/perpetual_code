@@ -33,6 +33,12 @@ bool FlightRecorder::initializeBlank() {
   if (!directory_.format()) return fault(RecorderError::Directory);
   return initialize();
 }
+bool FlightRecorder::format() {
+  if (active_) return fail(RecorderError::NotRecording);
+  initialized_=metadataValid_=false; faultLatched_=false; failure_={}; error_=RecorderError::None;
+  if (!directory_.format()) return fault(RecorderError::Directory);
+  return initialize();
+}
 bool FlightRecorder::fault(RecorderError error) {
   fail(error); faultLatched_=true;
   initialized_ = active_ = metadataValid_ = false; header_.abandon(); samples_.abandon(); return false;
@@ -134,7 +140,7 @@ bool FlightRecorder::initialize() {
   initialized_ = true; error_ = RecorderError::None; failure_={}; return true;
 }
 bool FlightRecorder::begin(const recovery::Configuration &config, const recovery::ValidationLimits &limits, uint32_t sampleBytes,
-                           SensorMode sensorMode, OutputMode outputMode, sensors::FrameConvention frame) {
+                           SensorMode sensorMode, OutputMode outputMode, sensors::FrameConvention frame, const FlightCalibration &calibration) {
   if (active_) return fail(RecorderError::Busy);
   if (!initialized_) return fail(RecorderError::NotInitialized);
   faultLatched_=false; failure_={};
@@ -158,7 +164,7 @@ bool FlightRecorder::begin(const recovery::Configuration &config, const recovery
   // Ownership is durable before any erase. Erase only the new contiguous extent.
   for (uint32_t i = 0; i < allocated; i += FlashLayout::SectorBytes)
     if (!flash_.eraseSector(start + i)) return fault(RecorderError::Io);
-  if (!header_.create(start, config, limits, sensorMode, outputMode, frame)) return fault(RecorderError::Header);
+  if (!header_.create(start, config, limits, sensorMode, outputMode, frame, calibration)) return fault(RecorderError::Header);
   if (!samples_.begin(reservation.sequence, start + headerBytes_, sampleBytes)) return fault(RecorderError::Sample);
   if (!persistProgress(FlightStatus::Recording)) return false;
   active_ = metadataValid_ = true; error_ = RecorderError::None; return true;

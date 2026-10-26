@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import device_client as transport
 FIELDS = ['t_ms', 'accelX', 'accelY', 'accelZ', 'gyroX', 'gyroY', 'gyroZ', 'pressure',
-          'temp', 'z_est', 'vz_est', 'roll', 'pitch', 'yaw', 'az_est', 'state', 'battery_v']
+          'temp', 'z_est', 'vz_est', 'roll', 'pitch', 'yaw', 'az_est', 'state', 'battery_v', 'abort_reason']
 STATUS = {1: 'recording', 2: 'completed', 3: 'interrupted', 4: 'stopped_full', 5: 'invalidated', 6: 'CORRUPT'}
 
 
@@ -94,6 +94,24 @@ def _download(client,sequence,destination,progress,cancelled,owned):
     if info.get('config_version') != 2:
         raise ValueError('Unsupported configuration export format; upload current MAIN firmware')
     response = request(f'flights summary {sequence}')
+    calibration_response=request(f'flights calibration {sequence}')
+    if calibration_response.get('sequence')!=sequence or 'calibration' not in calibration_response:
+        raise RuntimeError('Invalid flight calibration snapshot')
+    calibration=calibration_response['calibration']
+    if calibration is not None:
+        if type(calibration.get('bistage')) is not bool or type(calibration.get('minimum_coast_velocity')) not in (int,float) or not math.isfinite(calibration['minimum_coast_velocity']) or not 0<=calibration['minimum_coast_velocity']<=100000:
+            raise RuntimeError('Invalid recorded state-machine settings')
+        if (type(calibration.get('gyro_calibrated')) is not bool or type(calibration.get('sensor_axes')) is not bool
+                or not isinstance(calibration.get('reference_altitude_m'),(int,float)) or not math.isfinite(calibration['reference_altitude_m'])):
+            raise RuntimeError('Invalid flight calibration snapshot')
+        if calibration['sensor_axes']:
+            if calibration.get('up_axis') not in ('+X','-X','+Y','-Y','+Z','-Z'): raise RuntimeError('Invalid recorded orientation')
+            for key in ('gyro_bias_radps','accel_bias_mps2'):
+                values=calibration.get(key)
+                if not isinstance(values,list) or len(values)!=3 or any(type(v) not in (int,float) or not math.isfinite(v) for v in values):
+                    raise RuntimeError('Invalid recorded sensor bias')
+        elif calibration.get('gyro_calibrated') or any(calibration.get(key) is not None for key in ('up_axis','gyro_bias_radps','accel_bias_mps2')):
+            raise RuntimeError('Unexpected calibration for simulated BODY data')
     summary = response.get('summary', {})
     if response.get('sequence') != sequence or summary.get('state') not in ('Missing', 'Incomplete', 'Valid', 'Corrupt', 'Unsupported'):
         raise RuntimeError('Invalid recording summary')
@@ -128,6 +146,7 @@ def _download(client,sequence,destination,progress,cancelled,owned):
             raise RuntimeError('Invalid output-start timestamp')
         starts.append(dict(rule_id=rule, rule_name=names[rule], kind='pyro' if kind == 0 else 'servo',
                            channel=channel, state={0: 'empty', 2: 'recorded', 3: 'invalid'}[state], t_ms=stamp))
+    abort=None
     count, previous = 0, None
     if progress: progress(0,info['samples'])
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -147,10 +166,11 @@ def _download(client,sequence,destination,progress,cancelled,owned):
                 if not 1 <= total <= 11 or not 1 <= len(rows) <= 2 or offset+len(rows) > total:
                     raise RuntimeError('Invalid sample chunk dimensions')
                 for row in rows:
-                    if len(row) != len(FIELDS) or not isinstance(row[0], int) or not 0 <= row[0] <= 0xFFFFFFFF or row[15] not in range(5):
+                    if len(row) != len(FIELDS) or not isinstance(row[0], int) or not 0 <= row[0] <= 0xFFFFFFFF or row[15] not in range(8) or row[17] not in range(3):
                         raise RuntimeError('Invalid stored sample')
                     if previous is not None and row[0] <= previous:
                         raise RuntimeError('Stored timestamps are not increasing')
+                    if row[17] and abort is None: abort=dict(t_ms=row[0],reason={1:'Velocity',2:'Tilt'}[row[17]])
                     previous = row[0]
                     writer.writerow(['nan' if value is None else value for value in row])
                     count += 1
@@ -163,7 +183,7 @@ def _download(client,sequence,destination,progress,cancelled,owned):
     metadata = dict(sequence=sequence, status=STATUS[info['status']], sample_count=count,
                     sensor_mode=info['sensor_mode'], output_mode=info['output_mode'], frame=info['frame'],
                     configuration=snapshot, configuration_version=2, configuration_hex=payload.hex(), output_starts=starts,
-                    recording_summary=summary)
+                    recording_summary=summary, calibration=calibration, abort=abort)
     checkpoint()
     with metadata_path.open('x', encoding='utf-8') as target:
         owned.append(metadata_path)

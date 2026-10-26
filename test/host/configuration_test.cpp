@@ -374,6 +374,30 @@ void run() {
   ConfigurationService reboot(store, limits); reboot.boot(true);
   assert(reboot.applied() && reboot.applied()->pyros[0].pulseMs == 150);
   assert(strcmp(reboot.applied()->rules[0].name.data(), "Service edit") == 0);
+  // Mounting survives reboot and rule saves; invalid/corrupt settings cannot be armed silently.
+  assert(!config.orientationReady());
+  for (uint8_t axis=0; axis<6; ++axis) {
+    assert(!config.setOrientation(axis));
+    ConfigurationService mounted(store,limits); mounted.boot(true);
+    assert(mounted.orientationReady() && mounted.upAxis()==axis && mounted.configValid());
+  }
+  auto bytes=flash.bytes;
+  assert(!strcmp(config.setOrientation(6),"INVALID_ARGUMENT") && flash.bytes==bytes);
+  config.setDisarmed(false); assert(!strcmp(config.setOrientation(0),"ARMED") && flash.bytes==bytes); config.setDisarmed(true);
+  assert(!config.beginDraft()); assert(!strcmp(config.setOrientation(0),"DRAFT_ACTIVE") && flash.bytes==bytes); config.discardDraft();
+  assert(config.acquireRun()); assert(!strcmp(config.setOrientation(0),"BUSY") && flash.bytes==bytes); config.releaseRun();
+  flash.bytes[storage::ConfigurationStore::Begin+storage::FlashLayout::SectorBytes+5]^=1;
+  ConfigurationService damaged(store,limits); damaged.boot(true); assert(!damaged.orientationReady() && damaged.configValid());
+  assert(!damaged.setOrientation(3) && damaged.orientationReady());
+  recovery::StateMachineSettings machine; machine.bistage=true; machine.minimumCoastVelocity=35.5f;
+  assert(!damaged.setStateMachine(machine));
+  ConfigurationService machineReboot(store,limits); machineReboot.boot(true);
+  assert(machineReboot.stateMachine().bistage && machineReboot.stateMachine().minimumCoastVelocity==35.5f);
+  auto beforeMachine=flash.bytes;
+  machine.minimumCoastVelocity=-1; assert(!strcmp(damaged.setStateMachine(machine),"INVALID_ARGUMENT") && flash.bytes==beforeMachine);
+  assert(!damaged.factoryReset());
+  ConfigurationService reset(store,limits); reset.boot(true);
+  assert(!reset.configValid() && !reset.orientationReady() && !reset.stateMachine().bistage);
   puts("Configuration service tests passed: direct edits, guards, rejection atomicity and persistence.");
 }
 } // namespace test_configuration_service

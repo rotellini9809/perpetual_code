@@ -20,6 +20,7 @@ struct FlightSample {
   uint32_t timeMs = 0;
   std::array<float, 14> values; // See Field for explicit units and ordering.
   recovery::FlightPhase phase = recovery::FlightPhase::Pad;
+  recovery::AbortReason abortReason = recovery::AbortReason::None;
   uint16_t batteryMv = UINT16_MAX; // Latest 5 Hz board measurement; FFFF = unavailable.
   enum Field : std::size_t {
     AccelX, AccelY, AccelZ, GyroX, GyroY, GyroZ, PressureHpa, TemperatureC,
@@ -29,6 +30,14 @@ struct FlightSample {
 };
 enum class SensorMode : uint8_t { Hardware = 0, Simulation = 1 };
 enum class OutputMode : uint8_t { Physical = 0, Virtual = 1 };
+// Immutable per-flight snapshot, captured before recording begins.
+struct FlightCalibration {
+  recovery::StateMachineSettings machine;
+  bool available = false, sensorAxes = false, gyroCalibrated = false;
+  uint8_t upAxis = 0;
+  float referenceAltitude = 0, gyroBias[3] = {}, accelBias[3] = {};
+};
+
 enum class StartState : uint8_t { Empty, Pending, Recorded, Invalid };
 struct OutputStartSlot {
   recovery::RuleId rule = 0;

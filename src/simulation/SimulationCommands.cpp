@@ -8,13 +8,15 @@ bool SimulationCommands::dispatch(const char *command, const char *arguments, bo
   protocol::Tokens tokens(arguments); protocol::Json data; const char *error = nullptr;
   auto status = [&]() {
     const auto s = session_.status();
-    data.add(",\"source\":\"hoppino\",\"duration_ms\":%lu,\"total_samples\":%lu",
-             static_cast<unsigned long>(sensors::SimulatedSensorSource::durationMs()), static_cast<unsigned long>(sensors::SimulatedSensorSource::sampleCount()));
+    data.add(",\"source\":\"%s\",\"duration_ms\":%lu,\"total_samples\":%lu", session_.bistage() ? "bistage_synthetic" : "hoppino",
+             static_cast<unsigned long>(session_.durationMs()), static_cast<unsigned long>(session_.totalSamples()));
     data.add(",\"arming_state\":\"%s\",\"flight_mode\":\"simulation\"", flight::armingStateName(session_.controller().state()));
     data.add(",\"active\":%s,\"reason\":\"%s\",\"error\":\"%s\",\"output_mode\":\"%s\",\"outputs_active\":%s,\"samples\":%lu,\"t_ms\":%lu,\"phase\":%u",
              session_.active() ? "true" : "false", session_.reason(), session_.error(),
              s.outputMode == storage::OutputMode::Physical ? "PHYSICAL" : "VIRTUAL", s.outputsActive ? "true" : "false", static_cast<unsigned long>(s.samples),
              static_cast<unsigned long>(s.timeMs), unsigned(session_.navigation().phase));
+    data.add(",\"bistage\":%s,\"abort_reason\":%u",s.bistage ? "true" : "false",unsigned(s.abortReason));
+    data.number("coast_velocity_median",s.coastVelocityMedian); data.number("tilt_deg",s.tiltRadians*57.2957795131f);
     data.number("z_est", session_.navigation().altitude); data.number("vz_est", session_.navigation().verticalVelocity);
     data.add(",\"recording_busy\":%s", s.recordingBusy ? "true" : "false");
     data.add(",\"recording_sequence\":\"%llu\",\"saved_samples\":%lu,\"dropped_samples\":%lu,\"recording_error\":\"%s\",\"pending_samples\":%lu,\"invalid_frames\":%lu,\"starts\":%u,\"cancelled_pending\":%u",
@@ -37,7 +39,7 @@ bool SimulationCommands::dispatch(const char *command, const char *arguments, bo
   else if (tokens.count == 1 && tokens.is(0, "timing")) {
     const auto &h = session_.runtime().timing();
     data.add(",\"period_us\":%lu,\"duration_ms\":%lu,\"missed_ticks\":%lu,\"max_lateness_us\":%lu,\"over_budget\":%lu,\"prepare_us\":%lu,\"finish_us\":%lu",
-             static_cast<unsigned long>(sensors::SimulatedSensorSource::periodUs()), static_cast<unsigned long>(sensors::SimulatedSensorSource::durationMs()),
+             static_cast<unsigned long>(sensors::SimulatedSensorSource::periodUs()), static_cast<unsigned long>(session_.durationMs()),
              static_cast<unsigned long>(session_.missed()), static_cast<unsigned long>(session_.maxLatenessUs()),
              static_cast<unsigned long>(session_.overBudget()), static_cast<unsigned long>(h.prepareUs), static_cast<unsigned long>(h.finishUs));
     protocol::appendTiming(data, "cycle", session_.cycles()); protocol::appendTiming(data, "compute", h.compute);

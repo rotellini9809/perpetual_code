@@ -51,14 +51,14 @@ or non-finite; these observations never change arming readiness or the navigatio
 | ping, info, status, sensors, help, capabilities | This document; `help` lists the supported groups |
 | bluetooth status, control status | Radio health and transport ownership below |
 | sleep, wake | Peripheral power saving below; ordinary operational commands also wake automatically |
-| preflight [physical\|simulation], arm, disarm / ds, servo arm [channel] | Shared arming/readiness below |
+| preflight [physical\|simulation], arm, disarm / ds, servo arm [channel], servo release [channel] | Shared arming/readiness below |
 | config, rule, condition, output, pyro, servo | [Configuration/edit grammar](CONFIGURATION.md) |
 | replay, hil, sim | [Simulation/replay commands](../testing/SIMULATION.md) |
 | flights | [Recording/download/diagnostics](../testing/RECORDING.md) |
 
-Physical channel tests, monitoring and binary transfer remain
-future [requirements](../design/REQUIREMENTS.md). Development exports use bounded JSON chunks
-decoded to CSV on the PC.
+Physical channel tests, monitoring and receiver-negotiated binary transfer are not implemented.
+See [remaining work](../README.md#remaining-work-and-documentation-gaps). Current exports use
+bounded JSON chunks decoded to CSV on the PC.
 
 ## Power saving
 
@@ -94,6 +94,9 @@ unchanged. See [hardware](../HARDWARE.md#status-led-and-power-saving) for LED be
 
 ## Arming and readiness
 
+The [state-machine reference](state_macines.md#5-ciclo-di-armamento--macchina-separata-implementata)
+owns operational transition functions; this section defines command effects and replies.
+
 ```text
 preflight
 preflight simulation
@@ -110,8 +113,9 @@ configuration/ownership only; it skips physical readiness and does not request r
 
 `arm` requests physical mode (120 Hz nominal, 1 MiB sample budget). On the present board it
 returns `ok:false`, normally `IMU_UNAVAILABLE`, with the complete blocker list. Depending on the
-current state this also includes `STORAGE_NOT_READY`, `CONTINUITY_FAULT`, `SERVOS_NOT_PREPARED`
-and `SERVOS_NOT_CONFIGURED` (an assigned servo has no saved endpoints).
+current state this also includes `STORAGE_NOT_READY`, `CONTINUITY_FAULT`, `SERVOS_NOT_PREPARED`,
+`SERVOS_NOT_CONFIGURED` (an assigned servo has no saved endpoints),
+and `ORIENTATION_NOT_READY` (no explicitly saved mounting).
 Mount/recovery failures remain visible in `flights status` and `flights failure`; boot never formats storage.
 MAIN does not provide a way to override physical activation readiness. A rejected preflight
 does not reserve a flight or write flash. Positive physical calibration/start transitions are
@@ -123,11 +127,13 @@ prepared mask. PWM remains active after success; disconnect or a rejected Arm do
 For disarmed editor positioning, `servo preview <channel> <pwm>` holds a bounded PWM without
 saving settings or marking the servo prepared; `servo release <channel>` releases that preview.
 Previews block arming/runs and are released when their controlling transport disconnects.
-`disarm`/`ds` releases preparation even before a run. Normal Arm always selects physical outputs,
+`servo release` without a channel releases held PWM while idle/disarmed; idle `disarm`/`ds`
+does not release preparation. Normal Arm always selects physical outputs,
 collects gyro bias, rechecks readiness and prepares recording before starting the flight epoch.
 After landing's 15-second window it cancels future starts, finishes active pulses, releases PWM
-and requests asynchronous recording close. Physical servo preparation blocks virtual replay/HIL/
-simulation until Disarm, preventing active PWM from silently carrying into a virtual run.
+and requests asynchronous recording close. Held preparation does not block idle settings or HIL/estimate replay. Virtual onboard simulation
+releases it before starting; physical simulation adopts valid preparation and prepares missing
+assigned channels through the same executor.
 
 Simulation still starts with `sim begin [physical] [record]` or `hil begin ...`: the same controller goes
 directly to Armed, with zero gyro calibration samples. `disarm`/`ds` target the active physical,
@@ -141,7 +147,8 @@ Arming replies also expose `boost_reached`, `recording_busy`, `recording_discard
 `recording_error`. Orderly physical PAD disarm requests log discard; `recording_discarded` becomes
 true only after its durable directory invalidation, never merely on close submission. Logs that
 reached BOOST are retained even if their BOOST samples were dropped. Development simulation/HIL
-also retain PAD-only recordings. Physical activation remains blocked in MAIN.
+also retain PAD-only recordings. The current board's IMU fault blocks normal physical arming;
+physical output execution itself is integrated, including opt-in physical simulation.
 
 ## Sensor diagnostics
 
@@ -274,10 +281,10 @@ single request. No firmware changes, settings writes or radio reconfiguration ar
 
 ## Current scheduling limit
 
-The firmware is disarmed-only development code. Apply performs bounded flash operations
-synchronously on core 0 and reports success only after verification; USB is temporarily
-unserviced during it. This must move to the storage worker before integrating a time-critical
-flight loop. HIL frame processing now enqueues sample/start data for the core 1 worker.
+Rule Apply performs bounded flash operations synchronously on core 0 while disarmed/idle,
+and reports success only after verification; USB is temporarily unserviced during it. The
+router excludes these mutations during runs. Idle preparation/scans still need measured
+latency qualification; this is not a hard real-time scheduling guarantee. HIL frame processing now enqueues sample/start data for the core 1 worker.
 Preparation still waits for storage while disarmed. Close/abort submit a request and return
 immediately; poll `recording_busy` until release before using flash. Bulk flash scans and erases
 can take seconds; development clients wait without automatic retry. Detailed flash timing is

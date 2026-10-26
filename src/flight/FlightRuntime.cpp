@@ -23,7 +23,8 @@ const char *FlightRuntime::begin(sensors::SensorSource &source, float referenceA
   if (recordBytes && (!recorder_ || !recorder_->initialized())) return "STORAGE_NOT_READY";
   if (recordBytes % storage::FlashLayout::SectorBytes) return "INVALID_ARGUMENT";
   pipeline_.end(); source_ = nullptr; started_ = false;
-  if (!pipeline_.begin(source, calibration, referenceAltitude, nominalHz)) return "INITIALIZATION_FAILED";
+  machine_=config_.stateMachine(); abortReason_=recovery::AbortReason::None; velocityMedian_=tilt_=0;
+  if (!pipeline_.begin(source, calibration, referenceAltitude, nominalHz,machine_)) return "INITIALIZATION_FAILED";
   if (const char *error = run_.begin(RunMode::Sensors, config_)) { pipeline_.end(); return error; }
   recordingRequested_ = recordBytes != 0; saved_ = dropped_ = 0; full_ = false;
   boostReached_ = processingFailed_ = landed_ = closingStarts_ = false; sensorMode_ = sensorMode; outputMode_ = outputMode;
@@ -31,8 +32,14 @@ const char *FlightRuntime::begin(sensors::SensorSource &source, float referenceA
   timing_ = {}; timing_.nominalPeriodUs = uint32_t(1000000.0f / nominalHz);
   if (recordingRequested_) {
     const auto start = clock_ ? clock_() : 0;
+    storage::FlightCalibration snapshot;
+    snapshot.available=true; snapshot.sensorAxes=source.convention()==sensors::FrameConvention::SensorAxes;
+    snapshot.gyroCalibrated=sensorMode==storage::SensorMode::Hardware && calibration.configured;
+    snapshot.machine=machine_;
+    snapshot.referenceAltitude=referenceAltitude; snapshot.upAxis=uint8_t(calibration.upAxis);
+    for (unsigned i=0;i<3;++i) { snapshot.gyroBias[i]=calibration.gyroBias[i]; snapshot.accelBias[i]=calibration.accelBias[i]; }
     const bool prepared = recorder_->begin(*config_.applied(), config_.limits(), recordBytes, sensorMode,
-                                           outputMode, source.convention());
+                                           outputMode, source.convention(), snapshot);
     timing_.prepareUs = clock_ ? uint32_t(clock_() - start) : 0;
     if (!prepared) {
       recordingError_ = recorder_->error(); run_.stop(RunMode::Sensors); pipeline_.end();
@@ -49,6 +56,7 @@ const char *FlightRuntime::begin(sensors::SensorSource &source, float referenceA
 RuntimeStatus FlightRuntime::status() const {
   const auto &progress = run_.progress(RunMode::Sensors);
   RuntimeStatus status; status.active = active(); status.timingValid = clock_ != nullptr;
+  status.bistage=machine_.bistage; status.abortReason=abortReason_; status.coastVelocityMedian=velocityMedian_; status.tiltRadians=tilt_;
   status.outputMode = outputMode_;
   status.outputsActive = outputMode_ == storage::OutputMode::Physical && outputs_ && outputs_->owner() == identity_ && outputs_->active();
   status.samples = progress.samples; status.timeMs = progress.timeMs; status.maxComputeUs = maxComputeUs_;
@@ -125,7 +133,7 @@ void FlightRuntime::save(const sensors::Reading &input, const FrameResult &resul
     const auto &a = result.events.starts[i];
     if (!recorder_->recordStart(a.rule, a.kind, a.channel, uint32_t(a.timeMs))) { recordingFault(recorder_->error()); return; }
   }
-  storage::FlightSample sample; sample.timeMs = result.timeMs; sample.phase = result.navigation.phase;
+  storage::FlightSample sample; sample.timeMs = result.timeMs; sample.phase = result.navigation.phase; sample.abortReason=result.navigation.abortReason;
   if (battery_) sample.batteryMv = battery_->millivolts();
   for (unsigned i = 0; i < 3; ++i) {
     sample.values[storage::FlightSample::AccelX+i] = input.imuValid ? input.accelMps2[i] : std::numeric_limits<float>::quiet_NaN();
@@ -153,7 +161,7 @@ PollResult FlightRuntime::poll(FrameResult &result) {
   if (blockedByOtherRun()) { polled.error = "BUSY"; return polled; }
   if (!active()) { polled.error = "NOT_RUNNING"; return polled; }
   if (outputMode_ == storage::OutputMode::Physical) {
-    outputs_->poll();
+    outputs_->poll(!machine_.bistage);
     if (landed_ && (run_.landingWindowExpired(RunMode::Sensors) || (clock_ && uint32_t(clock_()-landingClockUs_)>=15000000u))) {
       run_.closeStarts(); closingStarts_=true;
     }
@@ -173,11 +181,14 @@ const char *FlightRuntime::process(const sensors::Reading &input, FrameResult &r
   if (!run_.validTime(RunMode::Sensors, time)) return "INVALID_TIMESTAMP";
   const auto start = clock_ ? clock_() : 0;
   if (!pipeline_.process(input, result.navigation)) { processingFailed_ = true; stop(); return "SOURCE_ERROR"; }
+  abortReason_=result.navigation.abortReason; velocityMedian_=result.navigation.coastVelocityMedian; tilt_=result.navigation.tiltRadians;
+  if (machine_.bistage && !result.navigation.valid) result.navigation.startsAllowed=false;
+  if (result.navigation.phase==recovery::FlightPhase::Abort && outputMode_==storage::OutputMode::Physical) outputs_->inhibit(identity_);
   result.events = run_.evaluate(RunMode::Sensors, time, result.navigation.ruleSnapshot());
   if (result.events.accepted && outputMode_ == storage::OutputMode::Physical) {
     for (std::size_t i=0;i<result.events.startCount;++i)
       if (!outputs_->submit(result.events.starts[i])) { processingFailed_=true; stop(); return "OUTPUT_ERROR"; }
-    outputs_->poll();
+    outputs_->poll(!machine_.bistage || (result.navigation.valid && result.navigation.startsAllowed));
     result.events.startCount=outputs_->drain(result.events.starts.data(),result.events.starts.size());
   }
   const auto computeEnd = clock_ ? clock_() : 0;
@@ -186,7 +197,7 @@ const char *FlightRuntime::process(const sensors::Reading &input, FrameResult &r
   if (!result.events.accepted) { processingFailed_ = true; stop(); return "PROCESSING_ERROR"; }
   // The detector's phase history remains authoritative even if this frame's
   // numerical estimate is invalid after the detector has advanced.
-  if (result.navigation.phase == recovery::FlightPhase::Boost) boostReached_ = true;
+  if (recovery::boostPhase(result.navigation.phase)) boostReached_ = true;
   if (!landed_ && result.navigation.phase == recovery::FlightPhase::Landed) {
     landed_=true; landingClockUs_=clock_ ? clock_() : 0;
   }

@@ -28,7 +28,8 @@ public:
   void reconcile(const recovery::Configuration *config);
   const char *begin(const recovery::Configuration &config, uint64_t owner, bool requirePrepared = false);
   bool submit(const recovery::VirtualStart &start);
-  void poll(); // Called every cooperative loop, also when no sensor frame is due.
+  void inhibit(uint64_t owner);
+  void poll(bool allowNewStarts = true); // Called every cooperative loop, also when no sensor frame is due.
   std::size_t drain(recovery::VirtualStart *starts, std::size_t capacity);
   unsigned stop(uint64_t owner);
   uint64_t owner() const { return owner_; }

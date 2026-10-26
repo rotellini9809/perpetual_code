@@ -7,7 +7,7 @@ class SimulationSession {
 public:
   SimulationSession(ConfigurationService &config, flight::RunController &run, timing::Clock clock,
                     storage::RecordingSink *recorder = nullptr, flight::OutputExecutor *outputs = nullptr)
-      : controller_(config, run, clock, recorder, outputs), source_(clock), clock_(clock) {}
+      : controller_(config, run, clock, recorder, outputs), source_(clock), clock_(clock), config_(config) {}
   const char *begin(bool record = false, bool physical = false);
   bool poll(); // One due sensor frame per call, independent of USB connection.
   void stop();
@@ -31,7 +31,10 @@ public:
   const char *reason() const { return reason_; }
   const char *error() const { return error_; }
   struct PhaseEvent { recovery::FlightPhase phase = recovery::FlightPhase::Pad; uint32_t timeMs = 0; };
-  const std::array<PhaseEvent, 5> &phases() const { return phases_; }
+  const std::array<PhaseEvent, 8> &phases() const { return phases_; }
+  bool bistage() const { return source_.bistage(); }
+  uint32_t durationMs() const { return source_.activeDurationMs(); }
+  uint32_t totalSamples() const { return source_.activeSampleCount(); }
   unsigned phaseCount() const { return phaseCount_; }
   const std::array<recovery::VirtualStart, recovery::MaxAssignments> &starts() const { return starts_; }
   unsigned startCount() const { return startCount_; }
@@ -40,6 +43,7 @@ private:
   flight::ArmingController controller_;
   sensors::SimulatedSensorSource source_;
   timing::Clock clock_;
+  ConfigurationService &config_;
   bool running_ = false;
   const char *reason_ = "idle", *error_ = "None";
   navigation::NavigationOutput navigation_;
@@ -47,7 +51,7 @@ private:
   timing::Statistics cycles_;
   uint32_t overBudget_ = 0, invalid_ = 0;
   unsigned cancelled_ = 0, phaseCount_ = 0, startCount_ = 0;
-  std::array<PhaseEvent, 5> phases_{};
+  std::array<PhaseEvent, 8> phases_{};
   std::array<recovery::VirtualStart, recovery::MaxAssignments> starts_{};
 };
 }

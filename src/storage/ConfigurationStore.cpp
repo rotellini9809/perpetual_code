@@ -3,8 +3,67 @@
 #include "storage/VerifiedPage.h"
 #include <cstring>
 #include <limits>
+#include <initializer_list>
+#include <cmath>
 
 namespace storage {
+namespace {
+constexpr uint32_t OrientationAddress=ConfigurationStore::Begin+FlashLayout::SectorBytes;
+constexpr uint32_t MachineAddress=ConfigurationStore::Begin+2*FlashLayout::SectorBytes;
+}
+bool ConfigurationStore::loadStateMachine(recovery::StateMachineSettings &settings) {
+  uint8_t page[FlashLayout::PageBytes];
+  if (!flash_.read(MachineAddress,page,sizeof(page))) return fail(ConfigError::Io);
+  bool blank=true; for (auto byte:page) blank &= byte==255;
+  if (blank) { settings={}; error_=ConfigError::None; return true; }
+  if (binary::get32(page,4)!=0x4d534650 || page[4]!=1 || page[5]>1 || binary::get32(page+252,4)!=binary::crc(page,252)) return fail(ConfigError::Corrupt);
+  uint32_t bits=binary::get32(page+8,4); float minimum; memcpy(&minimum,&bits,4);
+  if (!std::isfinite(minimum) || minimum<0 || minimum>100000) return fail(ConfigError::Corrupt);
+  settings.bistage=page[5]; settings.minimumCoastVelocity=minimum; error_=ConfigError::None; return true;
+}
+bool ConfigurationStore::saveStateMachine(const recovery::StateMachineSettings &settings,bool disarmed) {
+  if (!disarmed) return fail(ConfigError::Armed);
+  if (!std::isfinite(settings.minimumCoastVelocity) || settings.minimumCoastVelocity<0 || settings.minimumCoastVelocity>100000) return fail(ConfigError::InvalidConfiguration);
+  uint8_t page[FlashLayout::PageBytes],check[FlashLayout::PageBytes]; memset(page,255,sizeof(page));
+  binary::put(page,0x4d534650,4); page[4]=1; page[5]=settings.bistage;
+  uint32_t bits; memcpy(&bits,&settings.minimumCoastVelocity,4); binary::put(page+8,bits,4);
+  binary::put(page+252,binary::crc(page,252),4);
+  if (!flash_.eraseSector(MachineAddress) || writeVerifiedPage(flash_,MachineAddress,page,check)!=PageWriteError::None) return fail(ConfigError::Io);
+  error_=ConfigError::None; return true;
+}
+bool ConfigurationStore::loadOrientation(uint8_t &axis) {
+  uint8_t page[FlashLayout::PageBytes];
+  if (!flash_.read(OrientationAddress,page,sizeof(page))) return fail(ConfigError::Io);
+  bool blank=true; for (auto byte:page) blank &= byte==255;
+  if (blank) return fail(ConfigError::Missing);
+  if (binary::get32(page,4)!=0x544e524f || page[4]!=1 || page[5]>=6 ||
+      binary::get32(page+252,4)!=binary::crc(page,252)) return fail(ConfigError::Corrupt);
+  axis=page[5]; error_=ConfigError::None; return true;
+}
+bool ConfigurationStore::saveOrientation(uint8_t axis, bool disarmed) {
+  if (!disarmed) return fail(ConfigError::Armed);
+  if (axis>=6) return fail(ConfigError::InvalidConfiguration);
+  uint8_t page[FlashLayout::PageBytes], check[FlashLayout::PageBytes];
+  memset(page,255,sizeof(page)); binary::put(page,0x544e524f,4); page[4]=1; page[5]=axis;
+  binary::put(page+252,binary::crc(page,252),4);
+  if (!flash_.eraseSector(OrientationAddress) || writeVerifiedPage(flash_,OrientationAddress,page,check)!=PageWriteError::None)
+    return fail(ConfigError::Io);
+  error_=ConfigError::None; return true;
+}
+
+bool ConfigurationStore::clear(bool disarmed) {
+  if (!disarmed) return fail(ConfigError::Armed);
+  uint8_t page[FlashLayout::PageBytes];
+  for (const auto address:{Begin,OrientationAddress,MachineAddress}) {
+    if (!flash_.eraseSector(address)) return fail(ConfigError::Io);
+    for (uint32_t offset=0;offset<FlashLayout::SectorBytes;offset+=sizeof(page)) {
+      if (!flash_.read(address+offset,page,sizeof(page))) return fail(ConfigError::Io);
+      for (auto byte:page) if (byte!=255) return fail(ConfigError::Io);
+    }
+  }
+  error_=ConfigError::None; return true;
+}
+
 namespace {
 using binary::put;
 using binary::get32;

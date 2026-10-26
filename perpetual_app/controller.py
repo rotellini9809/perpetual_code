@@ -14,7 +14,7 @@ from .configuration import Plan, read_plan, stage_plan, rule_label
 from .ports import enumerate_ports
 from .connection import ConnectionSession
 
-PHASES = ['PAD', 'BOOST', 'COAST', 'DESCENT', 'LANDED']
+PHASES = ['PAD', 'BOOST', 'COAST', 'DESCENT', 'LANDED', 'BOOST 2', 'COAST 2', 'ABORT']
 REASONS = {
     'IMU_UNAVAILABLE':'IMU non disponibile', 'BAROMETER_UNAVAILABLE':'Barometro non disponibile',
     'STORAGE_NOT_READY':'Memoria di registrazione da preparare',
@@ -23,13 +23,14 @@ REASONS = {
     'SERVO_PREPARATION_FAILED':'Preparazione della posizione iniziale del servo non riuscita',
     'OUTPUT_ERROR':'Comando a un’uscita fisica non riuscito',
     'SERVO_NOT_ASSIGNED':'Servo non assegnato ad alcuna regola',
-    'PHYSICAL_SERVOS_PREPARED':'Servo fisici ancora preparati: esegui Disarm prima della simulazione virtuale',
+    'PHYSICAL_SERVOS_PREPARED':'Servo ancora preparati: usa Rilascia servo e aggiorna il firmware della scheda',
+    'ORIENTATION_NOT_READY':'Orientamento della scheda da salvare in Impostazioni',
     'CONFIG_INVALID':'Configurazione non valida',
     'DRAFT_ACTIVE':'Bozza sulla scheda ancora attiva', 'BUSY':'Scheda occupata',
     'OUTPUT_ALREADY_ASSIGNED':'Canale già assegnato: ogni canale può appartenere a una sola regola',
     'CONTROL_BUSY':'Controllo riservato a un altro collegamento',
     'SENSOR_SLEEP_FAILED':'Sospensione dei sensori non riuscita',
-    'FLASH_SLEEP_FAILED':'Sospensione della flash non riuscita', 'FLASH_WAKE_FAILED':'Riattivazione della flash non riuscita',
+    'FLASH_SLEEP_FAILED':'Sospensione della memoria non riuscita', 'FLASH_WAKE_FAILED':'Riattivazione della memoria non riuscita',
     'DISARM_PROHIBITED_IN_FLIGHT':'Disarmo rifiutato durante il volo', 'NO_DRAFT':'Nessuna bozza sulla scheda',
 }
 
@@ -61,6 +62,8 @@ class AppState:
     sensor_availability: dict = field(default_factory=dict) # Last awake observation; sleep is not a sensor fault.
     preflight: dict = field(default_factory=dict)
     pyro_continuity: dict = field(default_factory=dict)
+    orientation: dict = field(default_factory=dict)
+    machine: dict = field(default_factory=dict)
     capabilities: dict = field(default_factory=dict)
     control: dict = field(default_factory=dict)
     config_meta: dict = field(default_factory=dict)
@@ -120,6 +123,8 @@ def load_flight(path):
     if not valid: raise ValueError('Nessun campione valido nel CSV')
     metadata = {}
     if path.with_suffix('.json').exists(): metadata=json.loads(path.with_suffix('.json').read_text(encoding='utf-8'))
+    if (metadata.get('calibration') or {}).get('bistage'):
+        phases=[(stamp,{'BOOST':'BOOST 1','COAST':'COAST 1'}.get(name,name)) for stamp,name in phases]
     step = max(1,math.ceil(len(rows)/1200))
     plot=[]
     for i in range(0,len(rows),step):
@@ -211,7 +216,7 @@ class Controller(QObject):
         if self._download_cancel: self._download_cancel.set(); self._download_cancel=None
         if self.state.download.get('state') in ('downloading','cancelling'): self.state.download['state']='interrupted'
         if starting:
-            for key in ('status','preflight','pyro_continuity','sim','events','sensors','sensor_availability'): setattr(self.state,key,{})
+            for key in ('status','preflight','pyro_continuity','sim','events','sensors','sensor_availability','orientation','machine'): setattr(self.state,key,{})
 
     def _connection_update(self, snapshot, message, error):
         previous=self.state.connection.get('state')
@@ -225,13 +230,41 @@ class Controller(QObject):
         plan,meta,view=read_plan(client)
         return dict(plan=plan,meta=meta,view=view)
 
+    def _read_orientation(self,client):
+        try: return dict(self.request(client,'config orientation'),supported=True)
+        except CommandError as error:
+            if error.code not in ('UNKNOWN_COMMAND','INVALID_ARGUMENT','NO_DRAFT'): raise
+            return dict(supported=False)
+
+    def _read_machine(self,client):
+        try: return dict(self.request(client,'config machine'),supported=True)
+        except CommandError as error:
+            if error.code not in ('UNKNOWN_COMMAND','INVALID_ARGUMENT','NO_DRAFT'): raise
+            return dict(supported=False)
+
+    def save_machine(self,bistage,minimum):
+        s=self.state
+        if not s.editable or s.dirty or s.staged or s.machine.get('supported') is False: return
+        if s.sim.get('active') or s.status.get('sensor_hil_active'): return
+        if type(bistage) is not bool or not math.isfinite(minimum) or not 0<=minimum<=100000: return
+        client=self.connection
+        def save():
+            command='config machine '+('bistage '+format(minimum,'.9g') if bistage else 'normal')
+            reply=self.request(client,command,60)
+            if not all(reply.get(key) is True for key in ('persisted','verified')): raise RuntimeError('Salvataggio macchina a stati non confermato')
+            machine=self._read_machine(client)
+            if machine.get('bistage')!=bistage or machine.get('minimum_coast_velocity')!=(minimum if bistage else 0):
+                raise RuntimeError('Verifica macchina a stati non riuscita')
+            return dict(machine=machine,status=self.request(client,'status'),preflight=self.request(client,'preflight'))
+        self._job('Salvataggio macchina a stati',save)
+
     def refresh(self):
         if not self.state.connected or self.state.foreground: return
         client=self.connection
         def read():
             return dict(status=self.request(client,'status'),capabilities=self.request(client,'capabilities'),
                         control=self.request(client,'control status'),preflight=self.request(client,'preflight'),
-                        sensors=self.request(client,'sensors'),configuration=self._read_config(client),sim=self.request(client,'sim status'))
+                        sensors=self.request(client,'sensors'),configuration=self._read_config(client),sim=self.request(client,'sim status'),orientation=self._read_orientation(client),machine=self._read_machine(client))
         self._job('Sincronizzazione scheda',read)
 
     def reload_config(self):
@@ -277,10 +310,11 @@ class Controller(QObject):
             elif command=='sensors': data['sensors']=response
             elif command=='pyro continuity': data['pyro_continuity']=response
             elif command.startswith('sim '): data.update(sim=self.request(client,'sim status'),status=self.request(client,'status'))
-            elif command in ('arm','disarm','ds','sleep','wake') or command.startswith('servo arm'):
+            elif command in ('arm','disarm','ds','sleep','wake') or command.startswith('servo arm') or command=='servo release':
                 data['status']=self.request(client,'status')
                 if command!='sleep': data['preflight']=self.request(client,'preflight')
                 if command=='wake': data['sensors']=self.request(client,'sensors')
+                if command in ('disarm','ds'): data['sim']=self.request(client,'sim status')
             if was_sleeping and command!='sleep':
                 data['status']=self.request(client,'status')
                 if data['status'].get('power_mode')=='active':
@@ -288,6 +322,36 @@ class Controller(QObject):
                     if 'sensors' not in data: data['sensors']=self.request(client,'sensors')
             return data
         self._job(name or 'Comando: '+command,send)
+
+    def save_orientation(self,axis):
+        s=self.state
+        if s.orientation.get('supported') is False: return
+        if axis not in ('+X','-X','+Y','-Y','+Z','-Z'): return
+        if not s.editable or s.dirty or s.staged or s.sim.get('active') or s.status.get('sensor_hil_active'): return
+        client=self.connection
+        def save():
+            response=self.request(client,'config orientation '+axis,60)
+            if not all(response.get(key) is True for key in ('persisted','verified','orientation_ready')) or response.get('up_axis')!=axis:
+                raise RuntimeError('Orientamento non confermato dalla scheda')
+            orientation=self.request(client,'config orientation')
+            if orientation.get('up_axis')!=axis or not orientation.get('orientation_ready'): raise RuntimeError('Verifica orientamento non riuscita')
+            return dict(orientation=orientation,status=self.request(client,'status'),preflight=self.request(client,'preflight'))
+        self._job('Salvataggio orientamento',save)
+
+    def maintenance(self,format_memory=False):
+        s=self.state
+        if not s.editable or s.sim.get('active') or s.status.get('sensor_hil_active'): return
+        if format_memory and (s.dirty or s.staged): return
+        client=self.connection
+        def perform():
+            response=self.request(client,'flights format' if format_memory else 'config reset',60)
+            required=('formatted','ready') if format_memory else ('reset','persisted','verified')
+            if not all(response.get(key) is True for key in required): raise RuntimeError('Operazione non confermata dalla scheda')
+            result=dict(status=self.request(client,'status'),preflight=self.request(client,'preflight'))
+            if format_memory: result.update(flights=[],flight={})
+            else: result.update(applied=True,configuration=self._read_config(client),control=self.request(client,'control status'),orientation=self.request(client,'config orientation'),machine=self._read_machine(client))
+            return result
+        self._job('Formattazione memoria' if format_memory else 'Ripristino dati di fabbrica',perform)
 
     def prepare_servos(self, channels):
         if not self.state.connected: return
@@ -310,14 +374,41 @@ class Controller(QObject):
             return dict(status=self.request(client,'status'),preflight=self.request(client,'preflight'))
         self._job('Rilascio servo',release,False)
 
+    def simulation_blocker(self):
+        s=self.state
+        if not s.connected: return 'Collega la scheda per avviare la simulazione.'
+        if s.foreground: return 'Operazione in corso: '+s.foreground
+        if not s.owns_control: return 'Scheda controllata da un altro collegamento.'
+        if s.sim.get('active') or s.status.get('simulation_active'): return 'Simulazione in corso.'
+        if s.status.get('arming_state')!='disarmed': return 'La scheda deve essere disarmata per avviare la simulazione.'
+        if s.status.get('sensor_hil_active') or s.status.get('estimate_replay_active'): return 'Arresta il test in corso prima di avviare la simulazione.'
+        if not s.status.get('config_valid'): return 'Applica una configurazione valida prima di avviare la simulazione.'
+        if s.dirty: return 'Applica o scarta le modifiche alla configurazione.'
+        if s.staged: return 'Applica o scarta la bozza validata sulla scheda.'
+        return ''
+
     def simulate(self, record=False, physical=False):
-        if not self.state.connected or self.state.dirty or self.state.staged: return
+        if self.simulation_blocker(): return
         client=self.connection
         def begin():
+            if not physical:
+                status=self.request(client,'status')
+                if status.get('arming_state')!='disarmed' or any(status.get(key) for key in ('simulation_active','sensor_hil_active','estimate_replay_active')):
+                    raise RuntimeError('Arresta l'+chr(8217)+'attivit'+chr(224)+' in corso prima di avviare la simulazione virtuale.')
+                if status.get('outputs_active'):
+                    try: released=self.request(client,'servo release')
+                    except CommandError as error:
+                        if error.code in ('UNKNOWN_COMMAND','INVALID_ARGUMENT','NO_DRAFT'):
+                            raise RuntimeError('Aggiorna il firmware della scheda: il rilascio automatico dei servo non '+chr(232)+' supportato.') from error
+                        raise
+                    if released.get('released') is not True or released.get('prepared_servo_mask')!=0:
+                        raise RuntimeError('Rilascio servo non confermato dalla scheda. Aggiorna il firmware prima di riprovare.')
+                    if self.request(client,'status').get('outputs_active'):
+                        raise RuntimeError('Il PWM dei servo risulta ancora attivo: simulazione non avviata.')
             if record: self.request(client,'flights recover',600)
             command='sim begin'+(' physical' if physical else '')+(' record' if record else '')
             return dict(sim=self.request(client,command,600 if record else 5),
-                        status=self.request(client,'status'),events=self.request(client,'sim events'))
+                        status=self.request(client,'status'),events=self.request(client,'sim events'),preflight=self.request(client,'preflight'))
         self._job('Preparazione della simulazione' if record else 'Avvio simulazione',begin)
 
     def list_flights(self):
@@ -394,7 +485,7 @@ class Controller(QObject):
                 self.state.download.update(state='failed',error_code=code)
                 if code=='Corrupt': self.state.error='Volo corrotto'
             if isinstance(error,CommandError) and (error.command=='arm' or error.command.startswith('servo arm')) and error.response.get('reasons'): self.state.preflight=error.response
-            if isinstance(error,CommandError) and error.code=='CONFIG_INVALID': self.state.staged=True
+            if isinstance(error,CommandError) and error.code=='CONFIG_INVALID' and error.command in ('config validate','config apply'): self.state.staged=True
             if isinstance(error,CommandError) and error.response.get('store_error'):
                 self.state.status['config_valid']=False; self.state.config_meta['available']=False
             self.logged.emit('error',self.state.error)
@@ -404,7 +495,7 @@ class Controller(QObject):
                 self.state.preflight={}; self.state.pyro_continuity={}
             if result.get('downloaded_path'):
                 self.state.download.update(state='completed',path=result['downloaded_path'])
-            for key in ('status','preflight','pyro_continuity','sensors','capabilities','control','events','flights','flight'):
+            for key in ('status','preflight','pyro_continuity','sensors','capabilities','control','events','flights','flight','orientation','machine'):
                 if key in result: setattr(self.state,key,result[key])
             if self.state.status.get('power_mode')!='sleeping':
                 for source in (result.get('sensors',{}),result.get('status',{})):

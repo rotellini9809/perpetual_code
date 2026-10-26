@@ -33,6 +33,7 @@ private:
   std::array<bool, recovery::MaxRules> reported_{};
   std::size_t ruleCount_ = 0;
   uint32_t landedAt_ = 0;
+  recovery::FlightPhase previousPhase_ = recovery::FlightPhase::Pad;
   bool landed_ = false;
 };
 }

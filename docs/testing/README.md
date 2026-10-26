@@ -67,7 +67,7 @@ python tools/device_client.py --port COM11 --watch 10
 
 Close other programs using that port first. These explicit hardware checks show handshake,
 transport identity, recent-reply age and background heartbeat state; Ctrl+C closes the session.
-The [client lifecycle/API](../components/USB.md#pc-client-and-connection-lifecycle) is shared by
+The [client lifecycle/API](../technical/USB.md#pc-client-and-connection-lifecycle) is shared by
 the normal replay/download runners and will back the desktop UI.
 
 ## PlatformIO test evaluation
@@ -93,7 +93,7 @@ requirement.
 |---|---|
 | Configuration/rules | Capacity/bounds, IDs/references/cycles, shared validation, immutable rejected drafts, fresh condition triggering, latched rule delays/cancellation and simultaneous output starts |
 | USB/lifecycle | Framing, bounded replies, ID conflicts/retries, readback/apply/boot, run identity/locking, disconnect, paused close/abort and late persistence failures |
-| Navigation/sources | Quaternion/Kalman behavior, phase logic, actual dt, invalid/repeated/stale inputs, raw/provider equivalence, bias validation/session isolation, six signed mounting axes (default +X), calibrated-BODY bypass and mailbox bounds |
+| Navigation/sources | Quaternion/Kalman behavior, phase logic, actual dt, invalid/repeated/stale inputs, raw/provider equivalence, bias validation/session isolation, six explicitly selected signed mounting axes, calibrated-BODY bypass and mailbox bounds |
 | Simulation/clients | Absolute deadlines/rollover, no catch-up burst, skipped ticks, PC pacing, exclusive outputs, virtual-only source path and retained completed reports |
 | Shared flight runtime | Direct hardware-source versus HIL navigation/rules, raw sensor recording provenance, virtual starts, exclusive ownership and storage-fault isolation |
 | Shared arming | Missing-IMU/no-write rejection, complete blocker masks, immediate simulation, fresh physical calibration, configuration reservation, USB disconnect, cancellation, epoch reset and airborne disarm rejection |
@@ -227,7 +227,7 @@ observer disconnect, partial-command radio disconnect and reconnect. It never ap
 settings; finish any existing edit/run before using it. The second starts the same virtual
 onboard simulation through Bluetooth. These are explicit hardware actions, separate from
 `run_tests.py`. `bluetooth status` and `control status` are available on either connection;
-see [the shared protocol](../components/USB.md) for ownership and startup requirements.
+see [the shared protocol](../technical/USB.md) for ownership and startup requirements.
 
 ### Focused name test (currently selected)
 

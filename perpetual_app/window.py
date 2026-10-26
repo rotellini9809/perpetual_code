@@ -6,16 +6,17 @@ from math import ceil
 from PySide6.QtCore import Qt,QTimer,QSettings
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (QMainWindow,QWidget,QFrame,QVBoxLayout,QHBoxLayout,QGridLayout,QStackedWidget,
-    QComboBox,QLineEdit,QScrollArea,QTreeWidget,QTreeWidgetItem,
+    QComboBox,QDoubleSpinBox,QLineEdit,QScrollArea,QTreeWidget,QTreeWidgetItem,
     QPlainTextEdit,QCheckBox,QProgressBar,QFileDialog,QMessageBox,QHeaderView,QInputDialog,QSizePolicy)
 from .controller import Controller,PHASES,REASONS
 from .configuration import rule_label,decode_condition,condition_text
 from .configuration_page import ConfigurationPage
+from .orientation import OrientationPanel
 from .sensor_details import SensorDetails
 from .flight_plot import FlightPlot
 from .widgets import ASSETS,Metric,label,button,card,row,table,fill_table
 
-def phase_name(value): return PHASES[value] if type(value) is int and 0<=value<len(PHASES) else '—'
+def phase_name(value,bistage=False): return (PHASES[value]+' 1' if bistage and value in (1,2) else PHASES[value]) if type(value) is int and 0<=value<len(PHASES) else '—'
 
 
 class MainWindow(QMainWindow):
@@ -23,7 +24,7 @@ class MainWindow(QMainWindow):
         super().__init__(); self.controller=controller or Controller(); self.setWindowTitle('Perpetual · Flight Console')
         self.resize(1380,900); self.setMinimumSize(1120,730); self.setStyleSheet((ASSETS/'style.qss').read_text(encoding='utf-8'))
         self.settings=QSettings('Perpetual','Flight Console')
-        self._flight_path=None; self._flight_entries=None
+        self._flight_path=None; self._flight_entries=None; self._rendered_machine=None
         self._closing=False; self._allow_close=False
         self._sensor_details=None
         root=QWidget(); self.setCentralWidget(root); outer=QHBoxLayout(root); outer.setContentsMargins(0,0,0,0); outer.setSpacing(0)
@@ -33,7 +34,7 @@ class MainWindow(QMainWindow):
         body=QWidget(); content=QVBoxLayout(body); content.setContentsMargins(30,24,30,18); content.setSpacing(16); layout.addWidget(body,1)
         self.pages=QStackedWidget(); content.addWidget(self.pages,1)
         self.configuration_page=ConfigurationPage(self.controller)
-        for page in (self._dashboard(),self.configuration_page,self._simulation(),self._flights(),self._console()):
+        for page in (self._dashboard(),self.configuration_page,self._simulation(),self._flights(),self._additional_settings(),self._console()):
             scroll=QScrollArea(); scroll.setWidgetResizable(True); scroll.setWidget(page); self.pages.addWidget(scroll)
         self.configuration_page.attach_footer(content)
         self.feedback=label('Collega la scheda per iniziare.','hint'); self.feedback.setWordWrap(True); content.addWidget(self.feedback)
@@ -57,7 +58,7 @@ class MainWindow(QMainWindow):
         subtitle=label('FLIGHT CONSOLE','eyebrow'); subtitle.setAlignment(Qt.AlignCenter)
         layout.addWidget(subtitle); layout.addSpacing(24)
         self.nav=[]
-        for i,text in enumerate(['Dashboard','Configurazione','Test e simulazione','Voli registrati','Console']):
+        for i,text in enumerate(['Dashboard','Configurazione','Test e simulazione','Voli registrati','Impostazioni','Console']):
             nav=button(text,lambda i=i:self.navigate(i),'nav'); nav.setCheckable(True); self.nav.append(nav); layout.addWidget(nav)
         self.nav[0].setChecked(True); layout.addStretch()
         for text,kind in [('Perpetual · Avionics','hint'),('GROUND STATION','eyebrow'),('Made by rotellini9809','credit')]:
@@ -109,26 +110,39 @@ class MainWindow(QMainWindow):
         self.readiness_table.setWordWrap(True); self.readiness_table.setTextElideMode(Qt.ElideNone)
         self.readiness_table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         body.addWidget(self.readiness_table,1)
-        self.arm_button=button('Arm',lambda:self.controller.command('arm','Richiesta di armamento'),'primary')
-        self.disarm_button=button('Disarm',lambda:self.controller.command('disarm','Richiesta di disarmo'),'danger')
-        body.addLayout(row(self.arm_button,self.disarm_button,None))
+        self.arm_button=button('ARM',self.toggle_arming,'armFlight')
+        body.addLayout(row(self.arm_button,None))
         preparation=QVBoxLayout(); preparation.setSpacing(18); columns.addLayout(preparation,2)
         pyros,py=card('Controllo pyro'); preparation.addWidget(pyros)
         self.pyro_status=label('','hint'); self.pyro_status.setWordWrap(True); py.addWidget(self.pyro_status)
+        self.pyro_rows=[]; self.pyro_states=[]
+        for i in range(4):
+            entry=QWidget(); layout=row(label(f'PYRO {i+1} \u00b7','actuatorName'),label('','actuatorStatus'),None)
+            layout.setContentsMargins(0,0,0,0); entry.setLayout(layout); py.addWidget(entry)
+            self.pyro_rows.append(entry); self.pyro_states.append(layout.itemAt(1).widget())
         self.check_pyros_button=button('Verifica continuità pyro',lambda:self.controller.command('pyro continuity','Verifica continuità pyro configurati'))
         self.check_pyros_button.setToolTip('Legge la continuità dei pyro assegnati alle regole della configurazione applicata.')
         py.addWidget(self.check_pyros_button)
         servos,sv=card('Preparazione servo'); preparation.addWidget(servos,1)
-        self.servo_selection=[]
+        self.servo_selection=[]; self.servo_states=[]
         for i in range(4):
-            check=QCheckBox(f'Servo {i+1}'); self.servo_selection.append(check); sv.addWidget(check)
+            check=QCheckBox(f'SERVO {i+1} \u00b7'); check.setObjectName('actuatorName'); self.servo_selection.append(check)
+            state=label('','actuatorStatus'); self.servo_states.append(state)
+            sv.addLayout(row(check,state,None))
             check.toggled.connect(lambda _:self.render())
         self.servo_empty=label('Nessun servo configurato.','hint'); sv.addWidget(self.servo_empty)
-        self.prepare_servos_button=button('Prepara selezionati',self.prepare_selected_servos)
-        sv.addWidget(self.prepare_servos_button)
-        hint=label('Porta i servo alla posizione iniziale e mantiene il PWM attivo. Premi Disarm per rilasciarli.','hint'); hint.setWordWrap(True); sv.addWidget(hint)
+        self.prepare_servos_button=button('Prepara selezionati',self.prepare_selected_servos,'primary')
+        self.prepare_servos_button.setProperty('servoPreparation',True)
+        self.release_servos_button=button('Rilascia servo',lambda:self.controller.command('servo release','Rilascio servo'),'releaseServo')
+        sv.addLayout(row(self.prepare_servos_button,self.release_servos_button))
+        hint=label('Porta i servo alla posizione iniziale e mantiene il PWM attivo. Premi Rilascia servo per interrompere il PWM.','hint'); hint.setWordWrap(True); sv.addWidget(hint)
         sv.addStretch()
         return page
+
+    def toggle_arming(self):
+        arming=self.controller.state.status.get('arming_state')
+        if arming in ('armed','arming'): self.controller.command('disarm','Richiesta di disarmo')
+        elif arming=='disarmed': self.controller.command('arm','Richiesta di armamento')
 
     def prepare_selected_servos(self):
         s=self.controller.state
@@ -138,20 +152,24 @@ class MainWindow(QMainWindow):
         if missing:
             self.navigate(1)
             self.configuration_page.show_servo(missing[0],edit=bool(s.local and not s.local.servos[missing[0]-1]['calibrated']))
-        else: self.controller.prepare_servos(selected)
+        else:
+            prepared=s.preflight.get('prepared_servo_mask',0)
+            pending=[channel for channel in selected if not prepared & (1<<(channel-1))]
+            if pending: self.controller.prepare_servos(pending)
 
     def show_sensor_details(self):
         if self._sensor_details is None: self._sensor_details=SensorDetails(self.controller,self)
         self._sensor_details.show(); self._sensor_details.raise_(); self._sensor_details.activateWindow()
 
     def _simulation(self):
-        page,box=self.page('Test e simulazione','Riproduci i sensori del volo ufficiale Hoppino direttamente sulla scheda, con navigazione e regole condivise.')
+        page,box=self.page('Test e simulazione','Simula il volo con la macchina a stati salvata sulla scheda: Hoppino normale oppure test bistadio con due BOOST.')
         setup,body=card(); box.addWidget(setup)
         self.sim_physical=QCheckBox('Uscite fisiche'); self.sim_physical.setToolTip('Durante la simulazione comanda realmente servo e pyro')
-        self.sim_record=QCheckBox('Registra in flash'); self.sim_record.setToolTip('Richiede preparazione della memoria; i voli esistenti vengono mantenuti.')
+        self.sim_record=QCheckBox('Registra in memoria'); self.sim_record.setToolTip('Richiede preparazione della memoria; i voli esistenti vengono mantenuti.')
         self.sim_start=button('Avvia simulazione',self.start_simulation,'primary')
         self.sim_stop=button('Arresta simulazione',lambda:self.controller.command('sim stop','Arresto simulazione'),'danger')
         body.addLayout(row(self.sim_physical,self.sim_record,None,self.sim_start,self.sim_stop))
+        self.sim_blocker=label('','hint'); self.sim_blocker.setWordWrap(True); body.addWidget(self.sim_blocker)
         self.sim_progress=QProgressBar(); self.sim_progress.setRange(0,1); self.sim_progress.setValue(0); body.addWidget(self.sim_progress)
         self.sim_summary=label('Nessuna simulazione avviata.','hint'); body.addWidget(self.sim_summary)
         self.sim_phase=Metric('Fase calcolata'); self.sim_altitude=Metric('Quota','Metri rispetto al lancio'); self.sim_samples=Metric('Campioni','Dati elaborati dalla scheda')
@@ -207,6 +225,98 @@ class MainWindow(QMainWindow):
         self.flight_details.setSelectionMode(QTreeWidget.SelectionMode.NoSelection); self.flight_details.setFocusPolicy(Qt.NoFocus)
         box.addWidget(self.flight_details)
         return page
+
+    def _additional_settings(self):
+        page,box=self.page('Impostazioni','Gestione della configurazione e della memoria dei voli.')
+        frame,body=card(); box.addWidget(frame)
+        self.orientation_panel=OrientationPanel(self.controller); body.addWidget(self.orientation_panel)
+        frame,body=card('Macchina a stati:'); box.addWidget(frame)
+        self.bistage_enabled=QCheckBox('Usa macchina a stati bistadio')
+        self.flight_state_sequence=label('','flightStateSequence'); self.flight_state_sequence.setWordWrap(True); body.addWidget(self.flight_state_sequence)
+        def update_sequence(bistage):
+            states=('PAD','BOOST 1','COAST 1','BOOST 2','COAST 2','DESCENT','LANDED') if bistage else ('PAD','BOOST','COAST','DESCENT','LANDED')
+            if bistage:
+                cells=[]
+                for i,state in enumerate(states):
+                    if i: cells.append('<td align="center">'+chr(8594)+'</td>')
+                    cells.append('<td align="center">'+state+'</td>')
+                branch='<tr><td colspan="4"></td><td align="center" style="color: #000000">'+chr(8595)+'<br><span style="color: #c43d3d"><b>ABORT</b></span></td><td colspan="8"></td></tr>'
+                self.flight_state_sequence.setText('<table cellspacing="6"><tr>'+''.join(cells)+'</tr>'+branch+'</table>')
+            else: self.flight_state_sequence.setText((' '+chr(8594)+' ').join(states))
+        self._update_machine_sequence=update_sequence
+        self.bistage_enabled.toggled.connect(update_sequence); update_sequence(False)
+        body.addWidget(self.bistage_enabled)
+        self.bistage_parameters=QFrame(); self.bistage_parameters.setObjectName('bistageParameters')
+        parameters=QVBoxLayout(self.bistage_parameters); parameters.setContentsMargins(16,14,16,14); parameters.setSpacing(10)
+        parameters.addWidget(label('Velocit'+chr(224)+' verticale minima all'+chr(8217)+'uscita da BOOST 1','bistageLabel'))
+        self.bistage_min_speed=QDoubleSpinBox(); self.bistage_min_speed.setRange(0,100000)
+        self.bistage_min_speed.setDecimals(1); self.bistage_min_speed.setSingleStep(1); self.bistage_min_speed.setFixedWidth(160)
+        self.bistage_min_speed.setKeyboardTracking(False)
+        self.bistage_min_speed.setAccessibleName('Velocit'+chr(224)+' verticale minima per il volo bistadio')
+        parameters.addLayout(row(self.bistage_min_speed,label('m/s','bistageLabel'),None))
+        explanation=label('Mediana dei primi 8 campioni validi in COAST 1 e inclinazione continua < 40'+chr(176)+'. In ABORT le nuove attivazioni sono bloccate.','bistageHint')
+        explanation.setWordWrap(True); parameters.addWidget(explanation)
+        self.bistage_parameters.setEnabled(False); self.bistage_enabled.toggled.connect(self.bistage_parameters.setEnabled)
+        body.addWidget(self.bistage_parameters)
+        self.machine_saved=label('Collega la scheda per leggere la macchina a stati.','hint'); self.machine_saved.setWordWrap(True); body.addWidget(self.machine_saved)
+        self.machine_save=button('Salva macchina a stati',lambda:self.controller.save_machine(self.bistage_enabled.isChecked(),self.bistage_min_speed.value()),'settingsAction')
+        body.addLayout(row(self.machine_save,None))
+        self.bistage_enabled.toggled.connect(lambda _:self.render_machine_settings(self.controller.state))
+        self.bistage_min_speed.valueChanged.connect(lambda _:self.render_machine_settings(self.controller.state))
+        box.addWidget(label('GESTIONE DISPOSITIVO','eyebrow'))
+        frame,body=card(); body.setContentsMargins(0,0,0,0); body.setSpacing(0); box.addWidget(frame)
+        actions=[('Configurazione','Ripristino dati di fabbrica','Elimina regole, posizioni servo e orientamento.',
+                  'I voli registrati vengono conservati.','Ripristina',False),
+                 ('Archiviazione','Formatta memoria','Elimina tutti i voli registrati e libera lo spazio.',
+                  'La configurazione viene conservata.','Formatta',True)]
+        for category,title,description,preserved,caption,format_memory in actions:
+            if format_memory:
+                divider=QFrame(); divider.setObjectName('settingsDivider'); divider.setFixedHeight(1); body.addWidget(divider)
+            entry=QWidget(); entry.setObjectName('settingsEntry'); line=QHBoxLayout(entry)
+            line.setContentsMargins(26,24,26,24); line.setSpacing(28)
+            details=QVBoxLayout(); details.setSpacing(7)
+            details.addWidget(label(category.upper(),'eyebrow')); details.addWidget(label(title,'settingsTitle'))
+            text=label(description,'settingsDescription'); text.setWordWrap(True); details.addWidget(text)
+            text=label(preserved,'settingsPreserved'); text.setWordWrap(True); details.addWidget(text)
+            line.addLayout(details,1)
+            action=button(caption,lambda mode=format_memory:self.confirm_maintenance(mode),'settingsDestructive' if format_memory else 'settingsAction')
+            action.setFixedWidth(132); action.setMinimumHeight(42); action.setCursor(Qt.PointingHandCursor)
+            line.addWidget(action,0,Qt.AlignVCenter); body.addWidget(entry)
+            if format_memory: self.format_memory_button=action
+            else: self.factory_reset_button=action
+        note=label('Disponibili con scheda collegata, disarmata e senza attivit'+chr(224)+' in corso.','hint')
+        note.setWordWrap(True); box.addWidget(note)
+        box.addStretch()
+        return page
+
+    def render_machine_settings(self,s):
+        machine=s.machine if s.connected else {}
+        observed=(s.connected,machine.get('bistage'),machine.get('minimum_coast_velocity'),machine.get('supported'))
+        if observed!=self._rendered_machine:
+            self._rendered_machine=observed
+            if 'bistage' in machine:
+                self.bistage_enabled.blockSignals(True); self.bistage_min_speed.blockSignals(True)
+                self.bistage_enabled.setChecked(machine['bistage']); self.bistage_min_speed.setValue(machine['minimum_coast_velocity'])
+                self.bistage_enabled.blockSignals(False); self.bistage_min_speed.blockSignals(False)
+                self._update_machine_sequence(machine['bistage'])
+        editable=s.editable and not s.dirty and not s.staged and not s.sim.get('active') and not s.status.get('sensor_hil_active') and machine.get('supported') is True
+        self.bistage_enabled.setEnabled(editable)
+        self.bistage_parameters.setEnabled(editable and self.bistage_enabled.isChecked())
+        changed=not machine.get('machine_ready',True) or self.bistage_enabled.isChecked()!=machine.get('bistage') or (self.bistage_enabled.isChecked() and self.bistage_min_speed.value()!=machine.get('minimum_coast_velocity'))
+        self.machine_save.setEnabled(editable and changed)
+        text='Collega la scheda per leggere la macchina a stati.'
+        if s.connected:
+            if machine.get('supported') is False: text='Aggiorna il firmware per impostare il bistadio.'
+            elif not machine.get('machine_ready',True): text='Macchina a stati da salvare: impostazione non valida sulla scheda.'
+            elif 'bistage' in machine: text='Salvata sulla scheda: '+('Bistadio' if machine['bistage'] else 'Normale')
+        self.machine_saved.setText(text)
+
+    def confirm_maintenance(self,format_memory):
+        title='Formatta memoria' if format_memory else 'Ripristina dati di fabbrica'
+        text=('Eliminare definitivamente tutti i voli registrati? La configurazione viene conservata.' if format_memory else
+              'Eliminare regole e posizioni dei servo e azzerare l’orientamento, comprese le modifiche non applicate? La memoria dei voli non viene cancellata.')
+        if QMessageBox.question(self,title,text,QMessageBox.Yes|QMessageBox.No,QMessageBox.No)==QMessageBox.Yes:
+            self.controller.maintenance(format_memory)
 
     def _console(self):
         page,box=self.page('Console','Richieste manuali e risposte della scheda.')
@@ -303,10 +413,16 @@ class MainWindow(QMainWindow):
         if self.arm_button.property('blocked')!=blocked:
             self.arm_button.setProperty('blocked',blocked)
             self.arm_button.style().unpolish(self.arm_button); self.arm_button.style().polish(self.arm_button)
-        self.arm_button.setEnabled(usable and s.owns_control and ready and not reasons and not s.dirty and not s.staged and arming=='disarmed')
-        self.arm_button.setToolTip('Preflight bloccato dalla scheda. Premi Ricontrolla dopo aver risolto i problemi.' if blocked else 'Richiede preflight pronto dalla scheda; la scheda ricontrolla prima di armare')
+        disarming=arming in ('armed','arming','closing')
+        self.arm_button.setText('DISARM' if disarming else 'ARM')
+        self.arm_button.setEnabled(usable and s.owns_control and (arming in ('armed','arming') if disarming else ready and not reasons and not s.dirty and not s.staged and arming=='disarmed'))
+        self.arm_button.setToolTip('Disarma la scheda; la richiesta viene verificata dal firmware.' if disarming else
+            'Preflight bloccato dalla scheda. Premi Ricontrolla dopo aver risolto i problemi.' if blocked else
+            'Richiede preflight pronto dalla scheda; la scheda ricontrolla prima di armare')
         prepared=s.preflight.get('prepared_servo_mask',0)
-        self.disarm_button.setEnabled(usable and s.owns_control and (arming in ('armed','arming') or bool(prepared)))
+        held_outputs=bool(prepared) if 'prepared_servo_mask' in s.preflight else bool(status.get('outputs_active'))
+        self.release_servos_button.setEnabled(usable and s.owns_control and arming=='disarmed' and held_outputs and
+            not s.sim.get('active') and not status.get('sensor_hil_active') and not status.get('estimate_replay_active'))
         can_prepare=usable and s.owns_control and arming=='disarmed' and not s.dirty and not s.staged and bool(s.capabilities.get('physical_actions'))
         plan=s.base if connected else None
         assigned_servos={a['channel'] for r in plan.rules for a in r['outputs'] if a['kind']=='servo'} if plan else set()
@@ -315,28 +431,39 @@ class MainWindow(QMainWindow):
             check.setVisible(assigned); check.setEnabled(can_prepare and assigned)
             if not assigned and check.isChecked():
                 check.blockSignals(True); check.setChecked(False); check.blockSignals(False)
-            check.setText(f'Servo {i+1}'+(' · preparato' if prepared & (1<<i) else ''))
+            is_prepared=bool(prepared & (1<<i))
+            state=self.servo_states[i]; state.setVisible(assigned)
+            state.setText('preparato' if is_prepared else 'non preparato')
+            preparation='prepared' if is_prepared else 'unprepared'
+            if state.property('preparation')!=preparation:
+                state.setProperty('preparation',preparation)
+                state.style().unpolish(state); state.style().polish(state)
         self.servo_empty.setVisible(not assigned_servos)
-        self.servo_empty.setText('Nessun servo assegnato alle regole.' if plan else 'Collega la scheda e leggi la configurazione.')
+        self.servo_empty.setText('Nessun servo assegnato alle regole.' if plan else 'Configurazione non caricata: premi Ricarica dalla scheda in Configurazione.' if connected else 'Collega la scheda e leggi la configurazione.')
         selected=[i+1 for i,c in enumerate(self.servo_selection) if c.isChecked() and not c.isHidden()]
         missing=[i for i in selected if plan and not plan.servos[i-1]['calibrated']]
         self.prepare_servos_button.setText('Vai alla configurazione' if missing else 'Prepara selezionati')
-        name='configureServo' if missing else ''
+        name='configureServo' if missing else 'primary'
         if self.prepare_servos_button.objectName()!=name:
             self.prepare_servos_button.setObjectName(name)
             self.prepare_servos_button.style().unpolish(self.prepare_servos_button); self.prepare_servos_button.style().polish(self.prepare_servos_button)
-        self.prepare_servos_button.setEnabled(bool(selected) and (usable and s.editable if missing else can_prepare))
+        pending=any(not prepared & (1<<(channel-1)) for channel in selected)
+        self.prepare_servos_button.setEnabled(usable and s.editable if missing else can_prepare and pending)
         pyros=sorted({a['channel'] for r in plan.rules for a in r['outputs'] if a['kind']=='pyro'}) if plan else []
         self.check_pyros_button.setEnabled(usable and arming=='disarmed' and not s.dirty and not s.staged and bool(pyros))
         continuity=s.pyro_continuity
         failed=continuity.get('failed_pyro_mask')
         checked=connected and arming=='disarmed' and failed is not None and continuity.get('configured_pyro_mask')==sum(1<<(i-1) for i in pyros)
-        if not pyros: text='Nessun pyro assegnato alle regole.' if plan else 'Continuità pyro non ancora letta.'
-        elif checked:
-            missing=[f'PYRO {i}' for i in pyros if failed & (1<<(i-1))]
-            text='Continuità assente: '+', '.join(missing) if missing else 'Continuità presente: '+', '.join(f'PYRO {i}' for i in pyros)
-        else: text=', '.join(f'PYRO {i}' for i in pyros)+' · continuità da verificare'
-        self.pyro_status.setText(text)
+        self.pyro_status.setVisible(not pyros)
+        self.pyro_status.setText('Nessun pyro assegnato alle regole.' if plan else 'Configurazione non caricata: premi Ricarica dalla scheda in Configurazione.' if connected else 'Collega la scheda per leggere la configurazione.')
+        for i,(entry,state) in enumerate(zip(self.pyro_rows,self.pyro_states)):
+            entry.setVisible(i+1 in pyros)
+            present=checked and not (failed & (1<<i))
+            state.setText(('continuità presente' if present else 'continuità assente') if checked else 'continuità da verificare')
+            preparation='prepared' if present else 'unprepared'
+            if state.property('preparation')!=preparation:
+                state.setProperty('preparation',preparation)
+                state.style().unpolish(state); state.style().polish(state)
         sensors=s.sensors if connected else {}
         available={key:status.get(key,sensors.get(key)) for key in ('imu_ready','baro_ready')} if connected else {}
         if sleeping: available=s.sensor_availability
@@ -351,7 +478,9 @@ class MainWindow(QMainWindow):
             widget.setToolTip(f'ID: {sensors.get(key+"_id","—")} · errore: {sensors.get(key+"_error","—")}')
         self.configuration_page.render(s)
         active=s.sim.get('active',False)
-        self.sim_start.setEnabled(usable and s.owns_control and not active and bool(status.get('config_valid')) and not s.dirty and not s.staged and arming=='disarmed')
+        blocker=self.controller.simulation_blocker()
+        self.sim_start.setEnabled(not blocker); self.sim_start.setToolTip(blocker)
+        self.sim_blocker.setText(blocker); self.sim_blocker.setVisible(bool(blocker) and not active)
         self.sim_stop.setEnabled(usable and s.owns_control and active); self.sim_record.setEnabled(usable and not active)
         self.sim_physical.setEnabled(usable and not active)
         if active: self.sim_physical.setChecked(s.sim.get('output_mode')=='PHYSICAL')
@@ -364,6 +493,11 @@ class MainWindow(QMainWindow):
             self.download_button.setObjectName(name); self.download_button.style().unpolish(self.download_button); self.download_button.style().polish(self.download_button)
         self.download_button.setEnabled((connected and download_state=='downloading') if downloading else usable and bool(s.flights) and arming=='disarmed')
         self.open_flight_button.setEnabled(not s.foreground)
+        maintenance=s.editable and not s.sim.get('active') and not status.get('sensor_hil_active')
+        self.orientation_panel.render(s)
+        self.render_machine_settings(s)
+        self.factory_reset_button.setEnabled(maintenance)
+        self.format_memory_button.setEnabled(maintenance and not s.dirty and not s.staged)
         self.command_input.setEnabled(usable); self.command_send.setEnabled(usable)
         self._render_flights(s)
 
@@ -373,11 +507,12 @@ class MainWindow(QMainWindow):
         self.sim_progress.setRange(0,max(1,duration or 0))
         self.sim_progress.setValue(stamp)
         total=f'{duration/1000:.2f}' if duration else '—'
-        self.sim_summary.setText(f'Hoppino · {stamp/1000:.2f} / {total} s · {"In esecuzione" if data.get("active") else data.get("reason","In attesa")} · {data.get("starts",0)} attivazioni')
-        self.sim_phase.set(phase_name(data.get('phase')) if data.get('samples') else '—')
+        profile='Test bistadio' if data.get('source')=='bistage_synthetic' else 'Hoppino'
+        self.sim_summary.setText(f'{profile} · {stamp/1000:.2f} / {total} s · {"In esecuzione" if data.get("active") else data.get("reason","In attesa")} · {data.get("starts",0)} attivazioni')
+        self.sim_phase.set(phase_name(data.get('phase'),data.get('bistage',False)) if data.get('samples') else '—')
         self.sim_altitude.set(f'{data["z_est"]:.1f} m' if data.get('samples') and data.get('z_est') is not None else '—')
         self.sim_samples.set(f'{data["samples"]:,}'.replace(',',' ') if 'samples' in data else '—')
-        events=[(t/1000,phase_name(p),'') for p,t in s.events.get('phases',[])]
+        events=[(t/1000,phase_name(p,data.get('bistage',False)),'') for p,t in s.events.get('phases',[])]
         rules=s.base.rules if s.base else []
         prefix='' if s.events.get('output_mode')=='PHYSICAL' else 'VIRTUAL '
         events += [(stamp/1000,prefix+kind.upper(),f'Canale {channel} · {rule_label(rules,rule)}') for rule,kind,channel,stamp in s.events.get('starts',[])]
@@ -428,6 +563,28 @@ class MainWindow(QMainWindow):
             ('Picco velocità verticale',f'{data["max_speed"]:.1f} m/s','Massimo valore assoluto della velocità verticale, considerando salita e discesa.'),
             ('Campioni non salvati',summary.get('dropped_samples','—'),'Campioni scartati dal registratore.')]:
             item=QTreeWidgetItem(self.flight_details,[key,str(value)]); item.setToolTip(0,hint); item.setToolTip(1,hint)
+        calibration=meta.get('calibration') or {}
+        def biases(key,unit):
+            values=calibration.get(key)
+            if not isinstance(values,list) or len(values)!=3: return 'Non applicati (dati simulati)' if calibration else 'Non disponibile'
+            return '  /  '.join(f'{axis}: {value:.6g}' for axis,value in zip('XYZ',values))+' '+unit
+        sensor_mode=meta.get('sensor_mode'); output_mode=meta.get('output_mode')
+        mode=('Volo reale' if sensor_mode==0 else 'Simulazione' if sensor_mode==1 else 'Non disponibile')
+        if output_mode in (0,1): mode+=' '+chr(183)+' uscite '+('fisiche' if output_mode==0 else 'virtuali')
+        gyro=biases('gyro_bias_radps','rad/s')
+        reference=calibration.get('reference_altitude_m')
+        for key,value,hint in [
+            ('Bias giroscopio',gyro,'Correzioni X/Y/Z negli assi del sensore, usate in questa registrazione.'),
+            ('Riferimento barometrico',f'{reference:.3f} m' if reference is not None else 'Non disponibile','Quota barometrica di riferimento sottratta per ottenere la quota relativa del volo.'),
+            ('Bias accelerometro',biases('accel_bias_mps2','m/s'+chr(178)),'Correzioni X/Y/Z applicate negli assi del sensore. Zero significa nessuna correzione; non certifica una calibrazione eseguita.'),
+            ('Orientamento scheda',calibration.get('up_axis') or ('Non applicato (dati simulati)' if calibration else 'Non disponibile'),'Asse del sensore rivolto verso la punta, salvato con questo volo.'),
+            ('Modalit'+chr(224),mode,'Sorgente dei sensori e modalit'+chr(224)+' delle uscite usate nel volo registrato.')]:
+            item=QTreeWidgetItem(self.flight_details,[key,value]); item.setToolTip(0,hint); item.setToolTip(1,hint)
+        if calibration.get('bistage'):
+            QTreeWidgetItem(self.flight_details,['Macchina a stati','Bistadio'])
+            QTreeWidgetItem(self.flight_details,['Velocit'+chr(224)+' minima in COAST 1',str(calibration.get('minimum_coast_velocity'))+' m/s'])
+        abort=meta.get('abort')
+        if abort: QTreeWidgetItem(self.flight_details,['ABORT',{'Velocity':'Velocit'+chr(224)+' insufficiente','Tilt':'Inclinazione oltre il limite'}.get(abort.get('reason'),'Non disponibile')+f' a {abort["t_ms"]/1000:.3f} s'])
         rules=meta.get('configuration',{}).get('rules',[])
         starts=meta.get('output_starts')
         recorded={(e.get('rule_id'),e.get('kind'),e.get('channel')) for e in starts or [] if e.get('state')=='recorded'}
@@ -441,7 +598,7 @@ class MainWindow(QMainWindow):
             for condition in r.get('conditions',[]):
                 decoded=decode_condition(condition)
                 if decoded['type']=='phase':
-                    decoded['phase']=' o '.join(name for i,name in enumerate(PHASES) if condition['phase_mask'] & (1<<i)) or '—'
+                    decoded['phase']=' o '.join(phase_name(i,calibration.get('bistage',False)) for i in range(len(PHASES)) if condition['phase_mask'] & (1<<i)) or '—'
                 QTreeWidgetItem(rule,['Condizione · AND',condition_text(decoded,rules)])
             for output in r.get('outputs',[]):
                 value=f'Ritardo canale {output["delay_ms"]} ms' if 'delay_ms' in output else 'Ritardo non disponibile'

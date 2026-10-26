@@ -8,7 +8,7 @@ enum class ArmingState { Disarmed, Arming, Armed, Closing };
 enum class ArmBlocker : uint8_t {
   Busy, DraftActive, ConfigInvalid, NotDisarmed, TimingUnavailable, ImuUnavailable,
   BarometerUnavailable, StorageNotReady, ContinuityFault, ServosNotPrepared,
-  HardwareChecksUnavailable, ServosNotConfigured, PhysicalServosPrepared, Count
+  HardwareChecksUnavailable, ServosNotConfigured, PhysicalServosPrepared, OrientationNotReady, Count
 };
 struct Preflight {
   uint32_t blockers = 0;
@@ -48,6 +48,8 @@ public:
   unsigned stop(storage::RecordingEnd reason = storage::RecordingEnd::Stopped);
   const char *disarmError() const;
   const char *disarm(); // Ordinary flight disarm: PAD/LANDED or cancel an arming attempt.
+  const char *releaseServos();
+  const char *releaseForVirtualSimulation(bool record);
   const char *prepareServos(uint32_t channel = 0); // Zero selects every assigned servo.
   const char *positionServo(uint32_t channel, uint32_t pulseUs); // Zero PWM releases only this preview.
   bool hasServoPreview() const { return outputs_ && outputs_->hasPreview(); }
@@ -55,6 +57,8 @@ public:
   const char *checkPyroContinuity(uint8_t &configured, uint8_t &connected) const; // Read-only; no cached preflight approval.
   ArmingState state() const;
   bool active() const { return state() == ArmingState::Arming || (state() == ArmingState::Armed && runtime_.active()); }
+  uint8_t deviceUpAxis() const { return config_.upAxis(); }
+  bool orientationReady() const { return config_.orientationReady(); }
   bool armed() const { return state() == ArmingState::Armed && runtime_.active(); }
   FlightMode mode() const { return mode_; }
   storage::OutputMode outputMode() const { return mode_==FlightMode::Physical ? storage::OutputMode::Physical : outputMode_; }
