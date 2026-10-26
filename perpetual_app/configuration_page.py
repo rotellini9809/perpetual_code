@@ -31,6 +31,7 @@ class ConfigurationPage(QWidget):
         self.add_rule_button=button('+ Nuova regola',self.add_rule,'primary'); self.edit_rule_button=button('Modifica',self.edit_rule); self.remove_rule_button=button('Rimuovi',self.remove_rule)
         rule_box.addLayout(row(self.add_rule_button,self.edit_rule_button,self.remove_rule_button,None))
         tabs.addTab(rules,'Regole'); tabs.addTab(channels,'Canali'); tabs.setCurrentIndex(0)
+        self.attach_footer(box)
 
     def attach_footer(self,layout):
         self.draft_bar=QFrame(); self.draft_bar.setObjectName('draftBar'); box=QHBoxLayout(self.draft_bar); box.setContentsMargins(16,12,16,12)

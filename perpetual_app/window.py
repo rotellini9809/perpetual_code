@@ -36,7 +36,6 @@ class MainWindow(QMainWindow):
         self.configuration_page=ConfigurationPage(self.controller)
         for page in (self._dashboard(),self.configuration_page,self._simulation(),self._flights(),self._additional_settings(),self._console()):
             scroll=QScrollArea(); scroll.setWidgetResizable(True); scroll.setWidget(page); self.pages.addWidget(scroll)
-        self.configuration_page.attach_footer(content)
         self.feedback=label('Collega la scheda per iniziare.','hint'); self.feedback.setWordWrap(True); content.addWidget(self.feedback)
         self.controller.changed.connect(self.render)
         self.controller.connection_changed.connect(self.render_connection)
@@ -232,7 +231,7 @@ class MainWindow(QMainWindow):
         return page
 
     def _additional_settings(self):
-        page,box=self.page('Impostazioni','Gestione della configurazione e della memoria dei voli.')
+        page,box=self.page('Impostazioni','Orientamento scheda, macchina a stati e gestione del dispositivo. Le operazioni sono disponibili con scheda collegata, disarmata e senza attività in corso.')
         frame,body=card(); box.addWidget(frame)
         self.orientation_panel=OrientationPanel(self.controller); body.addWidget(self.orientation_panel)
         frame,body=card('Macchina a stati:'); box.addWidget(frame)
@@ -289,8 +288,6 @@ class MainWindow(QMainWindow):
             line.addWidget(action,0,Qt.AlignVCenter); body.addWidget(entry)
             if format_memory: self.format_memory_button=action
             else: self.factory_reset_button=action
-        note=label('Disponibili con scheda collegata, disarmata e senza attivit'+chr(224)+' in corso.','hint')
-        note.setWordWrap(True); box.addWidget(note)
         box.addStretch()
         return page
 
