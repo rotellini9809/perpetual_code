@@ -1,3 +1,4 @@
+#include "configuration/StateMachineValidation.h"
 #include <cstdio>
 #include "configuration/RecoveryConfiguration.h"
 #include <cassert>
@@ -403,6 +404,15 @@ void run() {
 } // namespace test_configuration_service
 
 int main() {
+  for (bool bistage : {false,true}) {
+    recovery::StateMachineSettings settings; settings.bistage=bistage;
+    for (float value : {0.0f,0.1f,100000.0f}) {
+      settings.minimumCoastVelocity=value; assert(recovery::validStateMachineSettings(settings));
+    }
+    for (float value : {-0.1f,100001.0f,std::numeric_limits<float>::quiet_NaN(),std::numeric_limits<float>::infinity()}) {
+      settings.minimumCoastVelocity=value; assert(!recovery::validStateMachineSettings(settings));
+    }
+  }
   std::puts("  recovery_configuration"); std::fflush(stdout);
   test_recovery_configuration::run();
   std::puts("  recovery_rule_engine"); std::fflush(stdout);

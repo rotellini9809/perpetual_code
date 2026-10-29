@@ -180,7 +180,7 @@ class RuleDialog(QDialog):
 
 
 class ChannelDialog(QDialog):
-    def __init__(self,parent,kind,channel,value,limits,controller=None):
+    def __init__(self,parent,kind,channel,value,limits,controller=None,*,airbrake=False):
         super().__init__(parent); self.setWindowTitle(f'{kind.upper()} {channel} · Configurazione'); self.setMinimumWidth(560)
         self.kind=kind; layout=QVBoxLayout(self); layout.setSpacing(16); self.pwm_labels={}; self.sliders={}
         self.controller=controller; self.channel=channel; self._pending=None; self._sending=False; self._tested=False
@@ -189,7 +189,7 @@ class ChannelDialog(QDialog):
         self.preview_timer=QTimer(self); self.preview_timer.setInterval(100); self.preview_timer.timeout.connect(self._send_position)
         minimum=limits.get('servo_min_us',1000); maximum=limits.get('servo_max_us',2000)
         layout.addWidget(label(f'SERVO {channel} · POSIZIONI PWM','eyebrow'))
-        for key,title in [('initial_us','Posizione iniziale'),('final_us','Posizione finale')]:
+        for key,title in [('initial_us','Chiuso '+chr(183)+' 0%' if airbrake else 'Posizione iniziale'),('final_us','Aperto '+chr(183)+' 100%' if airbrake else 'Posizione finale')]:
             section=QVBoxLayout(); section.setSpacing(7); section.addWidget(label(title,'cardTitle'))
             frame,body=card(); section.addWidget(frame); layout.addLayout(section)
             display=label('','servoPwm'); display.setAlignment(Qt.AlignCenter); self.pwm_labels[key]=display

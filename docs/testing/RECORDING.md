@@ -40,7 +40,7 @@ python tools/replay/replay_sensors_usb.py --port COM9 --record
 python tools/replay/run_simulation_usb.py --port COM9 --record
 ```
 
-Both USB Hoppino HIL and onboard Hoppino use a 1 MiB sample budget (11,264 samples),
+Both USB Hoppino HIL and onboard Hoppino use a 1 MiB sample budget (9,216 samples),
 plus a configuration-dependent aligned header reservation. Preparation may take seconds and
 erases only the new durably owned extent. HIL accepts `--record-bytes
 <positive_multiple_of_4096>`, `--input`, `--pressure-unit hpa|pa` and `--output`. Temperature is
@@ -80,7 +80,7 @@ CSV columns are defined once in [Storage formats](../technical/STORAGE_FORMAT.md
 The metadata contains sequence/status/sample count, sensor/output/frame modes, frozen
 configuration with rule names and codec hex, output-start states/timestamps, and
 recording_summary or its unavailable state, and the frozen `calibration` snapshot retrieved with
-`flights calibration <sequence>`. Its schema is [defined once in Storage formats](../technical/STORAGE_FORMAT.md#per-flight-calibration-snapshot-header-v4). Historical names/actions come from that flight, even
+`flights calibration <sequence>`. Its schema is [defined once in Storage formats](../technical/STORAGE_FORMAT.md#per-flight-calibration-snapshot-header-v6). Historical names/actions come from that flight, even
 if applied settings change. Null numeric values decode as NaN. An empty/invalid output slot is
 not proof the physical output never operated.
 

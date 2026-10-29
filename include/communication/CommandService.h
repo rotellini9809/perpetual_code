@@ -40,6 +40,7 @@ public:
     int phase = -1;
     uint32_t gyroSamples = 0, gyroTarget = 0;
     const char *configError = "NotLoaded";
+    uint32_t bluetoothBaud = 9600, bluetoothRxOverflows = 0;
     bool bluetoothReady = false, bluetoothConnected = false;
     const char *bluetoothError = "NOT_INITIALIZED";
   };

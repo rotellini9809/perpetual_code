@@ -156,7 +156,7 @@ void syncBluetoothSession() {
 }
 
 void pollBluetooth() {
-  if (Serial2.overflow()) bluetoothLink.overflow();
+  if (Serial2.overflow()) { ++commandStatus.bluetoothRxOverflows; bluetoothLink.overflow(); }
   syncBluetoothSession();
   // Continue receiving link notifications during response backpressure. The
   // client must wait for its complete reply before sending the next request.
@@ -212,7 +212,7 @@ void setup() {
   hardwareSource.begin();
   // Hardware UART1: MCU TX GP4, RX GP5. PWRC is AT access, not power/reset.
   gpio_init(PWRC_BLE); gpio_put(PWRC_BLE, false); gpio_set_dir(PWRC_BLE, GPIO_OUT);
-  Serial2.setTX(TX_BLE); Serial2.setRX(RX_BLE); Serial2.setFIFOSize(256); Serial2.begin(9600);
+  Serial2.setTX(TX_BLE); Serial2.setRX(RX_BLE); Serial2.setFIFOSize(256); Serial2.begin(bluetooth::Jdy34Link::UartBaud); commandStatus.bluetoothBaud=bluetooth::Jdy34Link::UartBaud;
   bluetoothLink.begin(millis()); bluetoothEpoch = bluetoothLink.epoch();
   // Blue means development/disarmed, not flight-ready.
 }

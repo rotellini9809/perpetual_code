@@ -78,6 +78,7 @@ Preflight ArmingController::preflight(FlightMode mode, bool record, PhysicalChec
   }
   uint8_t pyros = 0, servos = 0;
   if (const auto *config = config_.applied()) {
+    servos=config_.airbrakesEnabled() ? config->airbrakes.channelMask : 0;
     for (std::size_t i = 0; i < config->ruleCount; ++i)
       for (std::size_t j = 0; j < config->rules[i].assignmentCount; ++j) {
         const auto &a = config->rules[i].assignments[j];
@@ -204,6 +205,7 @@ const char *ArmingController::prepareServos(uint32_t channel) {
   if (channel>recovery::ChannelCount) return "INVALID_ARGUMENT";
   uint8_t assigned=0;
   const auto &config=*config_.applied();
+  assigned=config.airbrakes.channelMask;
   for (std::size_t i=0;i<config.ruleCount;++i)
     for (std::size_t j=0;j<config.rules[i].assignmentCount;++j) {
       const auto &a=config.rules[i].assignments[j];

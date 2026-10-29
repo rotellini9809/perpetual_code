@@ -2,6 +2,7 @@
 #include "communication/RunReply.h"
 #include "communication/TimingReply.h"
 #include "communication/ArmingReply.h"
+#include "communication/RecordingReply.h"
 
 bool SimulationCommands::dispatch(const char *command, const char *arguments, bool hasId, uint32_t id, char *output, std::size_t capacity) {
   if (strcmp(command, "sim") != 0) return false;
@@ -18,10 +19,11 @@ bool SimulationCommands::dispatch(const char *command, const char *arguments, bo
     data.add(",\"bistage\":%s,\"abort_reason\":%u",s.bistage ? "true" : "false",unsigned(s.abortReason));
     data.number("coast_velocity_median",s.coastVelocityMedian); data.number("tilt_deg",s.tiltRadians*57.2957795131f);
     data.number("z_est", session_.navigation().altitude); data.number("vz_est", session_.navigation().verticalVelocity);
-    data.add(",\"recording_busy\":%s", s.recordingBusy ? "true" : "false");
-    data.add(",\"recording_sequence\":\"%llu\",\"saved_samples\":%lu,\"dropped_samples\":%lu,\"recording_error\":\"%s\",\"pending_samples\":%lu,\"invalid_frames\":%lu,\"starts\":%u,\"cancelled_pending\":%u",
-             static_cast<unsigned long long>(s.recordingSequence), static_cast<unsigned long>(s.savedSamples), static_cast<unsigned long>(s.droppedSamples),
-             storage::recorderErrorName(s.recordingError), static_cast<unsigned long>(s.pendingSamples),
+    protocol::appendRecordingBusy(data,s);
+    protocol::appendRecordingCounts(data,s);
+    protocol::appendRecordingError(data,s);
+    protocol::appendRecordingPending(data,s);
+    data.add(R"(,"invalid_frames":%lu,"starts":%u,"cancelled_pending":%u)",
              static_cast<unsigned long>(session_.invalidFrames()), session_.startCount(), session_.cancelled());
   };
   if (!tokens.valid) error = "INVALID_ARGUMENT";

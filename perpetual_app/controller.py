@@ -2,7 +2,6 @@
 from concurrent.futures import ThreadPoolExecutor,CancelledError
 from dataclasses import dataclass, field
 from pathlib import Path
-import csv
 import json
 import math
 import time
@@ -13,8 +12,8 @@ from device_client import CommandError, DeviceConnection
 from .configuration import Plan, read_plan, stage_plan, rule_label
 from .ports import enumerate_ports
 from .connection import ConnectionSession
+from .flight_data import load_flight
 
-PHASES = ['PAD', 'BOOST', 'COAST', 'DESCENT', 'LANDED', 'BOOST 2', 'COAST 2', 'ABORT']
 REASONS = {
     'IMU_UNAVAILABLE':'IMU non disponibile', 'BAROMETER_UNAVAILABLE':'Barometro non disponibile',
     'STORAGE_NOT_READY':'Memoria di registrazione da preparare',
@@ -26,6 +25,8 @@ REASONS = {
     'PHYSICAL_SERVOS_PREPARED':'Servo ancora preparati: usa Rilascia servo e aggiorna il firmware della scheda',
     'ORIENTATION_NOT_READY':'Orientamento della scheda da salvare in Impostazioni',
     'CONFIG_INVALID':'Configurazione non valida',
+    'AIRBRAKES_SETTING_INVALID':'Abilitazione aerofreni da salvare nuovamente in Impostazioni',
+    'STATE_MACHINE_INVALID':'Macchina a stati da salvare nuovamente in Impostazioni',
     'DRAFT_ACTIVE':'Bozza sulla scheda ancora attiva', 'BUSY':'Scheda occupata',
     'OUTPUT_ALREADY_ASSIGNED':'Canale già assegnato: ogni canale può appartenere a una sola regola',
     'CONTROL_BUSY':'Controllo riservato a un altro collegamento',
@@ -63,7 +64,10 @@ class AppState:
     preflight: dict = field(default_factory=dict)
     pyro_continuity: dict = field(default_factory=dict)
     orientation: dict = field(default_factory=dict)
+    airbrakes: dict = field(default_factory=dict)
+    airbrake_status: dict = field(default_factory=dict)
     machine: dict = field(default_factory=dict)
+    setting_drafts: dict = field(default_factory=dict) # Local form values; operational state above is acknowledged by the board.
     capabilities: dict = field(default_factory=dict)
     control: dict = field(default_factory=dict)
     config_meta: dict = field(default_factory=dict)
@@ -73,8 +77,10 @@ class AppState:
     validated: bool = False
     staged: bool = False
     sim: dict = field(default_factory=dict)
+    sim_preflight: dict = field(default_factory=dict) # Last rejected physical simulation; separate from real-flight readiness.
     events: dict = field(default_factory=dict)
     flights: list = field(default_factory=list)
+    flights_loaded: bool = False
     flight: dict = field(default_factory=dict)
     download: dict = field(default_factory=dict)
     foreground: str = ''
@@ -87,64 +93,30 @@ class AppState:
     @property
     def dirty(self): return self.local is not None and self.local != self.base and self.config_view=='applied'
 
+    def saved_setting(self,group):
+        if group=='orientation': return self.orientation.get('up_axis')
+        if group=='machine': return self.machine.get('bistage',False),self.machine.get('minimum_coast_velocity',0)
+        if group=='airbrakes': return self.airbrakes.get('enabled',False)
+        raise ValueError('Impostazione sconosciuta: '+group)
+
+    def local_setting(self,group): return self.setting_drafts.get(group,self.saved_setting(group))
+
+    def setting_changed(self,group):
+        local,saved=self.local_setting(group),self.saved_setting(group)
+        if group=='machine':
+            # A dormant threshold stays in the form but is not applied in normal mode.
+            local=(local[0],local[1] if local[0] else 0); saved=(saved[0],saved[1] if saved[0] else 0)
+        return local!=saved
+
+    @property
+    def has_unsaved_changes(self): return self.dirty or any(self.setting_changed(group) for group in self.setting_drafts)
+
     @property
     def editable(self):
         return self.connected and self.owns_control and not self.foreground and self.config_view=='applied' and self.status.get('arming_state')=='disarmed' and not self.status.get('estimate_replay_active')
 
     @property
     def owns_control(self): return self.control.get('owner','none') in ('none',self.connection.get('transport'))
-
-
-def load_flight(path):
-    from .orientation import euler_x_up
-    path = Path(path)
-    rows = []; phases=[]; total=0; first=None; last=None
-    fields=('z_est','vz_est','az_est','roll','pitch','yaw','gyroX','gyroY','gyroZ','battery_v')
-    def number(row,key):
-        try:
-            value=float(row.get(key,''))
-            # CSV gyro fields are BODY rad/s; convert once for the degree/s plot.
-            if key.startswith('gyro'): value=math.degrees(value)
-        except (TypeError,ValueError): return None
-        return value if math.isfinite(value) else None
-    with path.open(newline='',encoding='utf-8-sig') as source:
-        reader = csv.DictReader(source)
-        if not {'t_ms','z_est','vz_est'} <= set(reader.fieldnames or []): raise ValueError('CSV non compatibile: servono t_ms, z_est e vz_est')
-        previous = -1
-        for row in reader:
-            stamp = int(row['t_ms'])
-            if stamp <= previous: raise ValueError('Tempi del CSV non crescenti')
-            previous = stamp; total+=1
-            if first is None: first=stamp
-            last=stamp
-            values=[number(row,key) for key in fields]
-            # Stored Euler fields are already degrees in NAV Z-up. Re-express
-            # the entire rotation in X-up before decimation, preserving gaps.
-            values[3:6]=euler_x_up(*values[3:6])
-            rows.append((stamp/1000,*values))
-            phase=row.get('state') or ''
-            name=PHASES[int(phase)] if phase.isdigit() and 0<=int(phase)<len(PHASES) else None
-            if not phases or phases[-1][1]!=name: phases.append((stamp/1000,name))
-    valid=[r for r in rows if r[1] is not None and r[2] is not None]
-    if not valid: raise ValueError('Nessun campione valido nel CSV')
-    metadata = {}
-    if path.with_suffix('.json').exists(): metadata=json.loads(path.with_suffix('.json').read_text(encoding='utf-8'))
-    if (metadata.get('calibration') or {}).get('bistage'):
-        phases=[(stamp,{'BOOST':'BOOST 1','COAST':'COAST 1'}.get(name,name)) for stamp,name in phases]
-    step = max(1,math.ceil(len(rows)/1200))
-    plot=[]
-    for i in range(0,len(rows),step):
-        # Preserve gaps even when invalid readings fall between displayed points.
-        bucket=rows[max(0,i-step+1):i+1]
-        plot.append((rows[i][0],*(rows[i][col] if all(r[col] is not None for r in bucket) else None for col in range(1,len(fields)+1))))
-    if (len(rows)-1)%step: plot.append(rows[-1])
-    simulated_battery = metadata.get('sensor_mode') == 1
-    if simulated_battery:
-        # Illustrative 2S trace, separate from CSV battery_v and never exported as a measurement.
-        duration=max(.001,(last-first)/1000)
-        plot=[(*r,round(8.4-.2*(r[0]-first/1000)/duration,3)) for r in plot]
-    return dict(path=str(path),rows=plot,phases=phases,samples=total,valid_samples=len(valid),duration=(last-first)/1000,
-                max_altitude=max(r[1] for r in valid),max_speed=max(abs(r[2]) for r in valid),metadata=metadata,simulated_battery=simulated_battery)
 
 
 class Controller(QObject):
@@ -164,7 +136,7 @@ class Controller(QObject):
         self._executor = ThreadPoolExecutor(max_workers=1,thread_name_prefix='Perpetual operations')
         self._epoch, self._serial = 0, 0
         self._jobs = {}
-        self._last_status = self._last_sim = self._last_sensors = 0
+        self._last_status = self._last_sim = self._last_sensors = self._last_airbrakes = 0
         self._want_events = False
         self.page = 0
         self._sensor_stream = False
@@ -222,12 +194,20 @@ class Controller(QObject):
 
     def disconnect(self): self.session.disconnect()
 
+    def edit_setting(self,group,value):
+        self.state.saved_setting(group) # Reject an unknown group before modifying the draft.
+        if group not in self.state.setting_drafts or self.state.setting_drafts[group]!=value:
+            self.state.setting_drafts[group]=value; self.changed.emit()
+
     def _reset_session(self, starting):
+        self.state.setting_drafts={group:value for group,value in self.state.setting_drafts.items() if self.state.setting_changed(group)}
         self._epoch+=1; self.state.foreground=''; self.state.validated=False; self.state.staged=False
+        self.state.flights=[]; self.state.flights_loaded=False # Board inventory belongs to this session; local CSV data is independent.
+        self.state.sim_preflight={}
         if self._download_cancel: self._download_cancel.set(); self._download_cancel=None
         if self.state.download.get('state') in ('downloading','cancelling'): self.state.download['state']='interrupted'
         if starting:
-            for key in ('status','preflight','pyro_continuity','sim','events','sensors','sensor_availability','orientation','machine'): setattr(self.state,key,{})
+            for key in ('status','preflight','pyro_continuity','sim','events','sensors','sensor_availability','orientation','machine','airbrakes','airbrake_status'): setattr(self.state,key,{})
 
     def _connection_update(self, snapshot, message, error):
         previous=self.state.connection.get('state')
@@ -253,6 +233,30 @@ class Controller(QObject):
             if error.code not in ('UNKNOWN_COMMAND','INVALID_ARGUMENT','NO_DRAFT'): raise
             return dict(supported=False)
 
+    def _read_airbrakes(self,client):
+        try: return dict(self.request(client,'config airbrakes'),supported=True)
+        except CommandError as error:
+            if error.code not in ('UNKNOWN_COMMAND','INVALID_ARGUMENT','NO_DRAFT'): raise
+            return dict(supported=False)
+
+    def _read_airbrake_status(self,client):
+        try: return self.request(client,'airbrake status')
+        except CommandError as error:
+            if error.code not in ('UNKNOWN_COMMAND','INVALID_ARGUMENT','NO_DRAFT'): raise
+            return {}
+
+    def save_airbrakes(self,enabled):
+        s=self.state
+        if not s.editable or s.dirty or s.staged or s.sim.get('active') or s.status.get('sensor_hil_active') or s.airbrakes.get('supported') is not True: return
+        client=self.connection
+        def save():
+            reply=self.request(client,'config airbrakes '+('on' if enabled else 'off'),60)
+            if not all(reply.get(k) is True for k in ('persisted','verified')): raise RuntimeError('Salvataggio aerofreni non confermato')
+            setting=self._read_airbrakes(client)
+            if setting.get('enabled')!=enabled or not setting.get('ready'): raise RuntimeError('Verifica impostazione aerofreni non riuscita')
+            return dict(saved_setting='airbrakes',airbrakes=setting,airbrake_status=self._read_airbrake_status(client),status=self.request(client,'status'),preflight=self.request(client,'preflight'))
+        self._job('Salvataggio aerofreni',save)
+
     def save_machine(self,bistage,minimum):
         s=self.state
         if not s.editable or s.dirty or s.staged or s.machine.get('supported') is False: return
@@ -266,7 +270,7 @@ class Controller(QObject):
             machine=self._read_machine(client)
             if machine.get('bistage')!=bistage or machine.get('minimum_coast_velocity')!=(minimum if bistage else 0):
                 raise RuntimeError('Verifica macchina a stati non riuscita')
-            return dict(machine=machine,status=self.request(client,'status'),preflight=self.request(client,'preflight'))
+            return dict(saved_setting='machine',machine=machine,status=self.request(client,'status'),preflight=self.request(client,'preflight'))
         self._job('Salvataggio macchina a stati',save)
 
     def refresh(self):
@@ -275,7 +279,7 @@ class Controller(QObject):
         def read():
             return dict(status=self.request(client,'status'),capabilities=self.request(client,'capabilities'),
                         control=self.request(client,'control status'),preflight=self.request(client,'preflight'),
-                        sensors=self.request(client,'sensors'),configuration=self._read_config(client),sim=self.request(client,'sim status'),orientation=self._read_orientation(client),machine=self._read_machine(client))
+                        sensors=self.request(client,'sensors'),configuration=self._read_config(client),sim=self.request(client,'sim status'),orientation=self._read_orientation(client),machine=self._read_machine(client),airbrakes=self._read_airbrakes(client),airbrake_status=self._read_airbrake_status(client))
         self._job('Sincronizzazione scheda',read)
 
     def reload_config(self):
@@ -319,6 +323,8 @@ class Controller(QObject):
             if command=='status': data['status']=response
             elif command.startswith('preflight') and response.get('requested_mode')!='simulation': data['preflight']=response
             elif command=='sensors': data['sensors']=response
+            elif command=='airbrake status': data['airbrake_status']=response
+            elif command.startswith('config airbrakes'): data.update(airbrakes=self._read_airbrakes(client),airbrake_status=self._read_airbrake_status(client))
             elif command=='pyro continuity': data['pyro_continuity']=response
             elif command.startswith('sim '): data.update(sim=self.request(client,'sim status'),status=self.request(client,'status'))
             elif command in ('arm','disarm','ds','sleep','wake') or command.startswith('servo arm') or command=='servo release':
@@ -346,7 +352,7 @@ class Controller(QObject):
                 raise RuntimeError('Orientamento non confermato dalla scheda')
             orientation=self.request(client,'config orientation')
             if orientation.get('up_axis')!=axis or not orientation.get('orientation_ready'): raise RuntimeError('Verifica orientamento non riuscita')
-            return dict(orientation=orientation,status=self.request(client,'status'),preflight=self.request(client,'preflight'))
+            return dict(saved_setting='orientation',orientation=orientation,status=self.request(client,'status'),preflight=self.request(client,'preflight'))
         self._job('Salvataggio orientamento',save)
 
     def maintenance(self,format_memory=False):
@@ -360,7 +366,7 @@ class Controller(QObject):
             if not all(response.get(key) is True for key in required): raise RuntimeError('Operazione non confermata dalla scheda')
             result=dict(status=self.request(client,'status'),preflight=self.request(client,'preflight'))
             if format_memory: result.update(flights=[],flight={})
-            else: result.update(applied=True,configuration=self._read_config(client),control=self.request(client,'control status'),orientation=self.request(client,'config orientation'),machine=self._read_machine(client))
+            else: result.update(reset_settings=True,applied=True,configuration=self._read_config(client),control=self.request(client,'control status'),orientation=self.request(client,'config orientation'),machine=self._read_machine(client),airbrakes=self._read_airbrakes(client),airbrake_status=self._read_airbrake_status(client))
             return result
         self._job('Formattazione memoria' if format_memory else 'Ripristino dati di fabbrica',perform)
 
@@ -400,6 +406,7 @@ class Controller(QObject):
 
     def simulate(self, record=False, physical=False):
         if self.simulation_blocker(): return
+        self.state.sim_preflight={}
         client=self.connection
         def begin():
             if not physical:
@@ -422,8 +429,13 @@ class Controller(QObject):
                         status=self.request(client,'status'),events=self.request(client,'sim events'),preflight=self.request(client,'preflight'))
         self._job('Preparazione della simulazione' if record else 'Avvio simulazione',begin)
 
+    def clear_simulation_preflight(self):
+        if self.state.sim_preflight:
+            self.state.sim_preflight={}; self.changed.emit()
+
     def list_flights(self):
-        if not self.state.connected: return
+        if not self.state.connected or self.state.foreground: return
+        self.state.flights_loaded=False
         client=self.connection
         def read():
             self.request(client,'flights recover',600)
@@ -496,6 +508,7 @@ class Controller(QObject):
                 self.state.download.update(state='failed',error_code=code)
                 if code=='Corrupt': self.state.error='Volo corrotto'
             if isinstance(error,CommandError) and (error.command=='arm' or error.command.startswith('servo arm')) and error.response.get('reasons'): self.state.preflight=error.response
+            if isinstance(error,CommandError) and error.command.startswith('sim begin physical') and error.response.get('reasons'): self.state.sim_preflight=error.response
             if isinstance(error,CommandError) and error.code=='CONFIG_INVALID' and error.command in ('config validate','config apply'): self.state.staged=True
             if isinstance(error,CommandError) and error.response.get('store_error'):
                 self.state.status['config_valid']=False; self.state.config_meta['available']=False
@@ -508,6 +521,8 @@ class Controller(QObject):
                 self.state.download.update(state='completed',path=result['downloaded_path'])
             for key in ('status','preflight','pyro_continuity','sensors','capabilities','control','events','flights','flight','orientation','machine'):
                 if key in result: setattr(self.state,key,result[key])
+            if 'flights' in result: self.state.flights_loaded=True
+            if result.get('preflight',{}).get('ready'): self.state.sim_preflight={}
             if self.state.status.get('power_mode')!='sleeping':
                 for source in (result.get('sensors',{}),result.get('status',{})):
                     for key in ('imu_ready','baro_ready'):
@@ -522,9 +537,14 @@ class Controller(QObject):
                     self.state.base=config['plan'] if config['view']=='applied' else None
                     self.state.local=config['plan'].clone() if config['plan'] else Plan()
                 if result.get('applied'): self.state.validated=False; self.state.staged=False
+            for key in ('airbrakes','airbrake_status'):
+                if key in result: setattr(self.state,key,result[key])
+            if result.get('reset_settings'): self.state.setting_drafts.clear()
+            elif result.get('saved_setting'): self.state.setting_drafts.pop(result['saved_setting'],None)
             if 'sim' in result:
                 old=self.state.sim
                 self.state.sim=result['sim']
+                if self.state.sim.get('active'): self.state.sim_preflight={}
                 if self.state.sim.get('error') not in (None,'None',''):
                     self.state.error=REASONS.get(self.state.sim['error'],self.state.sim['error'])
                 if 'events' not in result and any(old.get(k)!=self.state.sim.get(k) for k in ('starts','active','phase')): self._want_events=True
@@ -553,6 +573,9 @@ class Controller(QObject):
                     result['status']=client.request('status'); result['events']=client.request('sim events')
                 return result
             self._last_sim=now; self._job('poll',poll_sim,False)
+        elif self.page==0 and self.state.airbrakes.get('enabled') and self.state.base and self.state.base.airbrakes['channel_mask'] and now-self._last_airbrakes>=(1.5 if self.state.connection.get('transport')=='bluetooth' else .8):
+            self._last_airbrakes=now
+            self._job('poll',lambda:dict(airbrake_status=self._read_airbrake_status(client)),False)
         elif now-self._last_status>=4:
             previous=self.state.status.get('power_mode')
             def poll_status():

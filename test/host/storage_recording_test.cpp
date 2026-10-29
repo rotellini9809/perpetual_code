@@ -69,40 +69,40 @@ void run() {
   assert(!begin(recorder) && recorder.error() == RecorderError::Busy);
   RecordingInfo info; assert(!recorder.inspect(1, info) && recorder.error() == RecorderError::Busy);
   const auto programs = flash.programs;
-  for (unsigned i = 0; i < 11; ++i) assert(recorder.append(sample(i)));
-  assert(!recorder.append(sample(11)) && recorder.error() == RecorderError::Backpressure);
+  for (unsigned i = 0; i < 9; ++i) assert(recorder.append(sample(i)));
+  assert(!recorder.append(sample(9)) && recorder.error() == RecorderError::Backpressure);
   assert(recorder.recordStart(10, recovery::OutputKind::Pyro, 1, 0));
   assert(flash.programs == programs); assert(recorder.service());
-  assert(recorder.current()->committedBytes == 4096 && recorder.committedSamples() == 11);
-  assert(recorder.append(sample(11)));
-  assert(recorder.current()->committedBytes == 4096 && recorder.committedSamples() == 11);
+  assert(recorder.current()->committedBytes == 4096 && recorder.committedSamples() == 9);
+  assert(recorder.append(sample(9)));
+  assert(recorder.current()->committedBytes == 4096 && recorder.committedSamples() == 9);
   assert(!recorder.finish(false) && recorder.error() == RecorderError::ProducerActive);
   assert(recorder.recordStart(10, recovery::OutputKind::Servo, 1, 250) && recorder.finish(true));
   assert(recorder.current()->status == FlightStatus::Completed);
-  assert(recorder.inspect(1, info) && info.samples == 12 && info.entry.committedBytes == 6144);
+  assert(recorder.inspect(1, info) && info.samples == 10 && info.entry.committedBytes == 6144);
   assert(recorder.metadata()->starts[0].state == StartState::Recorded && recorder.metadata()->starts[0].timeMs == 0);
-  SampleBlock block; assert(recorder.readBlock(1, 1, block) && block.firstSample == 11 && block.samples[0].timeMs == 11);
+  SampleBlock block; assert(recorder.readBlock(1, 1, block) && block.firstSample == 9 && block.samples[0].timeMs == 9);
   block.count = 99; assert(!recorder.readBlock(1, 2, block) && block.count == 99);
   assert(!recorder.inspect(999, info) && recorder.error() == RecorderError::StaleSelection && !recorder.metadata());
   const auto retained = std::vector<uint8_t>(flash.bytes.begin()+0x15000, flash.bytes.begin()+0x17000);
   assert(begin(recorder) && recorder.current()->start == 0x17000 && recorder.current()->sequence == 2);
   assert(std::equal(retained.begin(), retained.end(), flash.bytes.begin()+0x15000));
-  for (unsigned i = 0; i < 44; ++i) { assert(recorder.append(sample(i)) && recorder.service()); }
-  assert(recorder.samplesFull() && !recorder.append(sample(44)) && recorder.error() == RecorderError::Full);
+  for (unsigned i = 0; i < 36; ++i) { assert(recorder.append(sample(i)) && recorder.service()); }
+  assert(recorder.samplesFull() && !recorder.append(sample(36)) && recorder.error() == RecorderError::Full);
   assert(recorder.recordStart(10, recovery::OutputKind::Pyro, 1, 99) && recorder.finish(true));
   assert(recorder.current()->status == FlightStatus::StoppedFull);
-  assert(recorder.inspect(2, info) && info.samples == 44 && recorder.metadata()->starts[0].timeMs == 99);
+  assert(recorder.inspect(2, info) && info.samples == 36 && recorder.metadata()->starts[0].timeMs == 99);
   assert(std::equal(protectedBytes.begin(), protectedBytes.end(), flash.bytes.begin()));
   // Recover a committed block beyond the last directory checkpoint, plus ignore a torn tail.
   MemoryDevice crash = empty; FlightRecorder running(crash); assert(running.initialize() && begin(running));
-  for (unsigned i = 0; i < 11; ++i) assert(running.append(sample(i)));
+  for (unsigned i = 0; i < 9; ++i) assert(running.append(sample(i)));
   assert(running.service());
-  for (unsigned i = 11; i < 22; ++i) assert(running.append(sample(i)));
+  for (unsigned i = 9; i < 18; ++i) assert(running.append(sample(i)));
   crash.budget = 100;
   try { running.service(); } catch (const PowerCut &) {}
   crash.budget = -1; FlightRecorder boot(crash); assert(boot.initialize());
   assert(!boot.active() && boot.directory().entries()[0].status == FlightStatus::Interrupted);
-  assert(boot.inspect(1, info) && info.samples == 11 && info.entry.committedBytes == 5120);
+  assert(boot.inspect(1, info) && info.samples == 9 && info.entry.committedBytes == 5120);
   const auto afterRecovery = crash.bytes; assert(boot.initialize() && crash.bytes == afterRecovery);
   // Every byte cut of full-block flush and final directory close; metadata commit may lag data.
   for (unsigned cut = 0; cut <= 2048; ++cut) {
@@ -213,7 +213,7 @@ recovery::Configuration allOutputs() {
   return c;
 }
 FlightSample sample(unsigned i) { FlightSample s; s.timeMs = i*5; s.values[0] = float(i); return s; }
-bool begin(QueuedRecorder &q, const recovery::Configuration &c, uint32_t bytes = 8192) {
+bool begin(QueuedRecorder &q, const recovery::Configuration &c, uint32_t bytes = 12288) {
   return q.begin(c, limits, bytes, SensorMode::Simulation, OutputMode::Virtual, sensors::FrameConvention::LoggedCalibratedBody);
 }
 }
@@ -245,22 +245,22 @@ void run() {
   assert(info.summaryState==SummaryState::Valid && info.summary.savedSamples==64 && info.summary.droppedSamples==1 && info.summary.queuePeak==64 && info.summary.queueCapacity==64);
   for (const auto &a : writer.metadata()->starts) assert(a.state == StartState::Recorded && a.timeMs == 0);
   SampleBlock block;
-  for (unsigned i = 0, ordinal = 0; i < 6; ++i) {
+  for (unsigned i = 0, ordinal = 0; i < 8; ++i) {
     assert(writer.readBlock(1, i, block));
     for (unsigned j = 0; j < block.count; ++j, ++ordinal) assert(block.samples[j].timeMs == ordinal*5 && block.samples[j].values[0] == float(ordinal));
   }
   runner.pause(); assert(begin(queued, config, 4096)); flash.workerOnly.store(true);
   for (unsigned i = 0; i < 64; ++i) assert(queued.append(sample(i)));
   runner.paused.store(false);
-  while (queued.pendingSamples() || queued.committedSamples() < 44 || queued.backgroundDroppedSamples() < 20) std::this_thread::yield();
+  while (queued.pendingSamples() || queued.committedSamples() < 36 || queued.backgroundDroppedSamples() < 28) std::this_thread::yield();
   assert(!queued.append(sample(64)) && queued.error() == RecorderError::Full);
   assert(queued.recordStart(10, recovery::OutputKind::Pyro, 1, 12345));
   assert(queued.finish(true,closing)); while (queued.busy()) std::this_thread::yield(); flash.workerOnly.store(false);
-  assert(queued.samplesFull() && queued.committedSamples() == 44 && queued.backgroundDroppedSamples() == 20);
+  assert(queued.samplesFull() && queued.committedSamples() == 36 && queued.backgroundDroppedSamples() == 28);
   assert(writer.inspect(2, info) && info.entry.status == FlightStatus::StoppedFull && writer.metadata()->starts[0].timeMs == 12345);
-  assert(info.summaryState==SummaryState::Valid && info.summary.droppedSamples==21 && info.summary.reason==RecordingEnd::StorageFull);
+  assert(info.summaryState==SummaryState::Valid && info.summary.droppedSamples==29 && info.summary.reason==RecordingEnd::StorageFull);
   runner.pause(); assert(begin(queued, config)); flash.failProgram.store(true); flash.workerOnly.store(true);
-  for (unsigned i = 0; i < 11; ++i) assert(queued.append(sample(i)));
+  for (unsigned i = 0; i < 9; ++i) assert(queued.append(sample(i)));
   assert(queued.finish(true)); // Acknowledgment of the request is not persistence success.
   runner.paused.store(false); while (queued.busy()) std::this_thread::yield();
   assert(!queued.initialized() && queued.error() == RecorderError::Sample && !queued.service());

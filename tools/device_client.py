@@ -119,7 +119,7 @@ class Client:
 
 
 def open_serial(port):
-    """Same PC port settings for USB and outgoing SPP; module UART stays 9600."""
+    """Same PC port settings for USB and outgoing SPP; module UART is configured separately (MAIN: 230400)."""
     import serial
     link = serial.Serial(port=None, baudrate=115200, timeout=.05, write_timeout=2)
     try:

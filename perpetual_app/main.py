@@ -22,7 +22,7 @@ def terminal_interrupt(window):
     def poll():
         nonlocal pending
         if pending:
-            pending=False; window.close()
+            pending=False; window.close_from_terminal()
     previous=signal.signal(signal.SIGINT,interrupt)
     timer=QTimer(window); timer.timeout.connect(poll); timer.start(100)
     try: yield
@@ -34,8 +34,10 @@ def main():
     import argparse
     parser=argparse.ArgumentParser(description='Perpetual · Flight Console')
     parser.add_argument('--port',help='Connect explicitly to this USB/SPP port on launch')
+    parser.add_argument('--arm-preview',action='store_true',help='Test the ARM hold animation in an isolated preview without connecting to the board')
     parser.add_argument('--smoke-test',type=Path,help=argparse.SUPPRESS)
     args=parser.parse_args()
+    if args.arm_preview and (args.port or args.smoke_test): parser.error('--arm-preview runs standalone; omit --port and --smoke-test')
     if args.smoke_test:
         import os
         os.environ['QT_QPA_PLATFORM']='offscreen'
@@ -68,6 +70,10 @@ def main():
         if args.smoke_test: app.exit(1)
         else: QMessageBox.critical(None,'Perpetual · Errore',str(value)+'\n\nDettagli: '+str(log))
     sys.excepthook=exception
+    if args.arm_preview:
+        from perpetual_app.arm_button import ArmButtonPreview
+        window=ArmButtonPreview(); window.show()
+        with terminal_interrupt(window): return app.exec()
     window=MainWindow(); window.show()
     if args.port: QTimer.singleShot(150,lambda:window.controller.connect_port(args.port))
     elif not args.smoke_test: QTimer.singleShot(0,lambda:window.connect_automatically(quiet=True))

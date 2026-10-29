@@ -26,8 +26,9 @@ public:
   void releasePreview(uint8_t channel = 0);
   void releasePrepared();
   void reconcile(const recovery::Configuration *config);
-  const char *begin(const recovery::Configuration &config, uint64_t owner, bool requirePrepared = false);
+  const char *begin(const recovery::Configuration &config, uint64_t owner, bool requirePrepared = false, bool enableAirbrakes = true);
   bool submit(const recovery::VirtualStart &start);
+  bool airbrakes(uint64_t owner, const std::array<float,4> &opening);
   void inhibit(uint64_t owner);
   void poll(bool allowNewStarts = true); // Called every cooperative loop, also when no sensor frame is due.
   std::size_t drain(recovery::VirtualStart *starts, std::size_t capacity);
@@ -40,13 +41,14 @@ private:
   timing::Clock clock_;
   uint64_t owner_ = 0;
   uint32_t epochUs_ = 0, enableUs_ = 0;
+  uint8_t airbrakeMask_ = 0;
   uint8_t servoMask_ = 0, allowedPyros_ = 0, requestedPyros_ = 0, requestedServos_ = 0;
   uint8_t pendingPyros_ = 0, highPyros_ = 0;
   bool enabled_ = false;
   uint8_t preparedMask_ = 0;
   uint8_t previewMask_ = 0; // Held PWM for positioning, never valid flight preparation.
   std::array<uint16_t, recovery::ChannelCount> preparedInitial_{}, preparedFinal_{};
-  std::array<uint16_t, recovery::ChannelCount> finalUs_{};
+  std::array<uint16_t, recovery::ChannelCount> initialUs_{}, finalUs_{};
   std::array<uint32_t, recovery::ChannelCount> pulseUs_{};
   std::array<recovery::VirtualStart, recovery::ChannelCount> pyroStarts_{};
   std::array<recovery::VirtualStart, recovery::MaxAssignments> started_{};

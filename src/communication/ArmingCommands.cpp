@@ -1,5 +1,6 @@
 #include "communication/ArmingCommands.h"
 #include "communication/ArmingReply.h"
+#include "communication/RecordingReply.h"
 #include "simulation/SimulationSession.h"
 #include "simulation/HilSession.h"
 
@@ -10,9 +11,10 @@ void appendState(protocol::Json &json, const flight::ArmingController &controlle
       static_cast<unsigned long>(controller.calibrationSamples()), static_cast<unsigned long>(flight::ArmingCalibration::TargetSamples), controller.error());
   const auto s = controller.runtime().status();
   json.add(",\"output_mode\":\"%s\",\"outputs_active\":%s",controller.outputMode()==storage::OutputMode::Physical ? "PHYSICAL" : "VIRTUAL",controller.outputsActive() ? "true" : "false");
-  json.add(",\"boost_reached\":%s,\"recording_busy\":%s,\"recording_discarded\":%s,\"recording_error\":\"%s\"",
-      s.boostReached ? "true" : "false", s.recordingBusy ? "true" : "false", s.recordingDiscarded ? "true" : "false",
-      storage::recorderErrorName(s.recordingError));
+  json.add(R"(,"boost_reached":%s)",s.boostReached ? "true" : "false");
+  protocol::appendRecordingBusy(json,s);
+  json.add(R"(,"recording_discarded":%s)",s.recordingDiscarded ? "true" : "false");
+  protocol::appendRecordingError(json,s);
 }
 
 }

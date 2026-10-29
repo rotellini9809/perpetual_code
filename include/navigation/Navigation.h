@@ -24,6 +24,8 @@ struct NavigationOutput {
   float verticalSpecificForce = std::numeric_limits<float>::quiet_NaN();
   float barometerAltitude = std::numeric_limits<float>::quiet_NaN();
   float padBaseline = 0;
+  float dtSeconds = 0;
+  std::array<std::array<float,3>,3> covariance{};
   bool startsAllowed = true;
   recovery::AbortReason abortReason = recovery::AbortReason::None;
   float coastVelocityMedian = 0, tiltRadians = 0;

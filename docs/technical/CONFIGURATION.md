@@ -14,7 +14,8 @@ Renaming/list order cannot change dependencies. Self/missing references, cycles,
 conditions/outputs, invalid numbers and duplicate ownership are rejected. Rules may be saved
 with assigned servos still unset. Physical arming requires configured endpoints, which may
 run in either direction; missing setup is reported as `SERVOS_NOT_CONFIGURED` with a channel
-mask. Virtual simulation does not require servo setup. Entirely unset settings may remain
+mask. Virtual simulation does not require setup for ordinary once-only servo outputs;
+continuous airbrakes require distinct calibrated endpoints in every mode. Entirely unset settings may remain
 zero; explicitly populated settings are validated. The empty model is invalid.
 
 Altitude is launch-relative metres; speed means abs(vertical velocity), not total speed.
@@ -175,7 +176,7 @@ runs, storage work or a configuration draft. The command does not move servos, f
 read sensors or approve arming; preflight and Arm always repeat the hardware measurement.
 
 Each output has an additional delay (zero when omitted in `output assign`). `output show`
-returns `delay_ms`; capabilities advertises `output_delays:true`. Configuration codec v2 stores
+returns `delay_ms`; capabilities advertises `output_delays:true`. Configuration codec v3 stores
 the rule delay and each channel's additional delay as integer milliseconds. Exported rule and
 output snapshots both use `delay_ms`. Only this configuration format is supported.
 
@@ -255,3 +256,11 @@ normal after factory reset. See [state machines](state_macines.md#3-macchina-di-
 with a channel it retains the editor-preview meaning described above. Idle `disarm` does not
 release preparation. See [command lifecycle](USB.md#arming-and-readiness).
 
+
+## Continuous airbrake rule
+
+The plan also owns one continuous AND gate and a reserved servo-channel mask. These
+channels cannot belong to normal once-only rules. An airbrake-only plan is valid;
+a completely empty plan remains invalid. Airbrakes require distinct calibrated closed/open
+endpoints even in virtual runs. Contract, reset/closure behavior, CLI and logging are
+defined in [Airbrakes](AIRBRAKES.md).

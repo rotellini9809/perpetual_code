@@ -1,5 +1,7 @@
 """Recording regression scenarios; run through tools/run_tests.py."""
 import contextlib
+import base64
+import zlib
 import csv
 import io
 import json
@@ -74,7 +76,10 @@ def check_recording_usb():
                 for rule,kind,channel,delay in waits:
                     client.request(f'output unassign {rule} {kind} {channel}')
                     client.request(f'output assign {rule} {kind} {channel} {delay}')
+                for command in ('servo set 3 1100 1900','airbrake channels 4','airbrake add phase 68','airbrake add altitude > 20'):
+                    client.request(command)
                 client.request('config apply')
+                client.request('config airbrakes on')
                 pacer_class = replay.ReplayPacer
                 fake = FakeClock()
                 if queued:
@@ -102,6 +107,25 @@ def check_recording_usb():
                     client.request(command)
                 with contextlib.redirect_stdout(io.StringIO()):
                     metadata = export.download(client, '1', folder / 'stored.csv')
+                # Packed transport preserves the old diagnostic read exactly (float32
+                # versus JSON decimals), and fits the existing serial line limit.
+                packed=client.request('flights packed 1 0 0')
+                decoded=export.unpack_samples(packed)
+                assert 5<=packed['count']<=9 and len(json.dumps(packed,separators=(',',':')))<1024
+                legacy=[]
+                for offset in range(0,9,2): legacy.extend(client.request(f'flights read 1 0 {offset}')['rows'])
+                for a,b in zip(decoded,legacy):
+                    assert len(a)==len(b)==25
+                    for x,y in zip(a,b):
+                        assert x is y or (x is not None and y is not None and math.isclose(x,y,rel_tol=1e-8,abs_tol=1e-8))
+                for damaged in (dict(packed,crc32=packed['crc32']^1),dict(packed,data='!'),dict(packed,count=12)):
+                    try: export.unpack_samples(damaged); raise AssertionError('Corrupt packed data accepted')
+                    except RuntimeError: pass
+                raw=base64.b64decode(packed['data'])
+                for payload in (raw[:-1],raw+b'\0'):
+                    damaged=dict(packed,data=base64.b64encode(payload).decode(),crc32=zlib.crc32(payload))
+                    try: export.unpack_samples(damaged); raise AssertionError('Malformed packed data accepted')
+                    except RuntimeError: pass
                 assert metadata['configuration']['rules'][0]['name'] == 'Example apogee'
                 timestamps=[stamp-prepared[1][0][0] for stamp,_ in prepared[1]]
                 expected=[next(t for t in timestamps if t>=start+delay) for start,delay in zip((12553,12553,18491),(75,200,325))]
@@ -112,6 +136,9 @@ def check_recording_usb():
                 calibration=metadata['calibration']
                 assert not calibration['gyro_calibrated'] and not calibration['sensor_axes']
                 assert calibration['gyro_bias_radps'] is None and calibration['accel_bias_mps2'] is None and calibration['up_axis'] is None
+                assert calibration['airbrake_law_version']==1
+                air=metadata['configuration']['airbrakes']
+                assert air['channel_mask']==4 and air['logic']=='and' and len(air['conditions'])==2
                 assert math.isfinite(calibration['reference_altitude_m'])
                 summary = metadata['recording_summary']
                 assert summary['state'] == 'Valid' and summary['version'] == 1 and summary['reason'] == 'Completed'
@@ -124,6 +151,14 @@ def check_recording_usb():
                 with (folder / 'stored.csv').open(newline='') as source:
                     stored = list(csv.DictReader(source))
                 assert len(live) == len(stored) == 6600
+                enabled=[bool(int(row['airbrake_flags'])&2) for row in stored]
+                assert any(enabled) and not enabled[0] and not enabled[-1]
+                assert any(a!=b for a,b in zip(enabled,enabled[1:]))
+                for row,active in zip(stored,enabled):
+                    assert int(row['airbrake_channel_mask'])==4 and float(row['airbrake_3_pct'])==0
+                    assert all(math.isnan(float(row[f'airbrake_{i}_pct'])) for i in (1,2,4))
+                    assert active==(row['state']=='2' and float(row['z_est'])>20)
+                    if active: assert int(row['airbrake_failed_conditions'])==0
                 assert all(float(row['battery_v'])==8.402 for row in stored)
                 old_rows = prepared[0]
                 for a, b, old, reference in zip(live, stored, old_rows, navigation_reference):

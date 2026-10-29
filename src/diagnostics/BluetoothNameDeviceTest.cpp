@@ -80,6 +80,7 @@ void status() {
 void help() {
   Serial.println("status | probe | at AT | at AT+VERSION | at AT+NAME | at AT+NAMB");
   Serial.println("at AT+STAT | at AT+LADDR | at AT+BTMODE | module reboot (AT+RESET; drops radio links)");
+  Serial.println("module baud 9600|230400|600000 (explicit JDY-34 setting, disconnected links only)");
   Serial.println("baud <rate> (MCU only) | gate low|high | eol crlf|cr|lf|none");
   Serial.println("name set \"Perpetual\" : AT -> NAME set/read -> NAMB set/read; module memory only.");
 }
@@ -152,6 +153,25 @@ void command(const char *line) {
   if (!std::strcmp(line,"probe")) {
     for (const char *q : {"AT","AT+VERSION","AT+NAME","AT+NAMB"}) exchange(q);
     Serial.println("PROBE_END"); return;
+  }
+  if (!std::strcmp(line,"module baud 230400") || !std::strcmp(line,"module baud 9600") || !std::strcmp(line,"module baud 600000")) {
+    const uint32_t target=!std::strcmp(line,"module baud 600000") ? 600000 : !std::strcmp(line,"module baud 230400") ? 230400 : 9600;
+    const char *setting=target==600000 ? "D" : target==230400 ? "A" : "4";
+    exchange("AT+VERSION");
+    const bool identified=reply.matches("+JDY-34-SPP-BLE-V1.52");
+    if (!identified || reply.overflow) { Serial.println("BAUD_RESULT verified=0 reason=MODEL"); return; }
+    exchange("AT+STAT");
+    bluetooth_test::LinkSnapshot snapshot;
+    bluetooth_test::Line lines;
+    for (size_t i=0;i<reply.size;++i) if (lines.feed(reply.bytes[i])==bluetooth_test::LineResult::Ready) snapshot.add(lines.text());
+    if (snapshot.known!=255 || snapshot.connected) { Serial.println("BAUD_RESULT verified=0 reason=CONNECTION_STATE"); return; }
+    exchange(target==600000 ? "AT+BAUDD" : target==230400 ? "AT+BAUDA" : "AT+BAUD4");
+    btSerial.flush(); btSerial.end(); btSerial.begin(target); baud=target;
+    delay(500);
+    exchange("AT+BAUD");
+    if (!reply.total && !reply.overflow) exchange("AT+BAUD");
+    const bool verified=reply.matches(nullptr,"+BAUD",setting);
+    Serial.printf("BAUD_RESULT verified=%u baud=%lu\n",unsigned(verified),(unsigned long)baud); return;
   }
   if (!std::strcmp(line,"module reboot")) {
     digitalWrite(PWRC_BLE,LOW); gateHigh = false; delay(250);

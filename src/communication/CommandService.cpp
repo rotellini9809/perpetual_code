@@ -76,8 +76,8 @@ bool CommandService::dispatch(const Status &s, char *out, std::size_t cap) {
   if (!code && extension_ && extension_->dispatch(command, p, identified, id, out, cap)) return true;
   if (!code && !std::strcmp(command,"bluetooth")) {
     protocol::Tokens t(p); protocol::Json data;
-    data.add(",\"ready\":%s,\"connected\":%s,\"error\":\"%s\",\"baud\":9600",
-             s.bluetoothReady ? "true" : "false", s.bluetoothConnected ? "true" : "false", s.bluetoothError);
+    data.add(",\"ready\":%s,\"connected\":%s,\"error\":\"%s\",\"baud\":%lu,\"uart_rx_overflows\":%lu",
+             s.bluetoothReady ? "true" : "false", s.bluetoothConnected ? "true" : "false", s.bluetoothError, static_cast<unsigned long>(s.bluetoothBaud),static_cast<unsigned long>(s.bluetoothRxOverflows));
     return protocol::finish(command,data,t.valid && t.count == 1 && t.is(0,"status") ? nullptr : "INVALID_ARGUMENT",identified,id,out,cap);
   }
   const bool known = std::strcmp(command, "ping") == 0 || std::strcmp(command, "info") == 0 ||

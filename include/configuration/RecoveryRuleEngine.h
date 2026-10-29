@@ -34,6 +34,7 @@ public:
              uint32_t maxAgeMs, uint64_t nowMs = 0);
   Evaluation evaluate(uint64_t nowMs, const FlightSnapshot &snapshot);
   // Call at post-landing expiry or accepted manual disarm: cancel pending starts.
+  uint8_t airbrakeConditions(uint64_t nowMs, const FlightSnapshot &snapshot) const;
   void closeStarts();
   void cancelPending();
   void end();

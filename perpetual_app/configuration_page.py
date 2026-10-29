@@ -1,10 +1,55 @@
 """Configuration page: rule/channel editing and local draft presentation."""
 from copy import deepcopy
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt,QItemSelection,QItemSelectionModel
 from PySide6.QtWidgets import QWidget,QFrame,QVBoxLayout,QHBoxLayout,QTabWidget,QTreeWidget,QTreeWidgetItem,QHeaderView,QMessageBox
 from .configuration import condition_text,rule_label,next_rule_id
 from .dialogs import RuleDialog,ChannelDialog
+from .airbrake_dialog import AirbrakeDialog
 from .widgets import label,button,card,row,table,fill_table
+
+
+class RuleTree(QTreeWidget):
+    """One rule is the selection unit, including all its condition/output rows."""
+    def __init__(self):
+        super().__init__(); self._selecting=False
+        self.setSelectionMode(self.SelectionMode.SingleSelection)
+        self.setSelectionBehavior(self.SelectionBehavior.SelectRows)
+        self.currentItemChanged.connect(lambda current,previous:self.select_rule(current))
+        self.itemSelectionChanged.connect(self.select_rule)
+
+    @staticmethod
+    def rule_root(item):
+        while item and item.parent(): item=item.parent()
+        return item
+
+    def select_rule(self,item=None):
+        if self._selecting: return
+        if item is None:
+            selected=self.selectedItems()
+            if not selected: return
+            current=self.currentItem(); item=current if current in selected else selected[0]
+        root=self.rule_root(item); selection=QItemSelection(); pending=[root]
+        while pending:
+            item=pending.pop()
+            selection.select(self.indexFromItem(item,0),self.indexFromItem(item,self.columnCount()-1))
+            pending.extend(item.child(i) for i in range(item.childCount()))
+        self._selecting=True
+        try:
+            self.setCurrentItem(root)
+            self.selectionModel().select(selection,QItemSelectionModel.ClearAndSelect|QItemSelectionModel.Rows)
+        finally: self._selecting=False
+
+    def keyPressEvent(self,event):
+        key=event.key()
+        if self.topLevelItemCount() and key in (Qt.Key_Up,Qt.Key_Down,Qt.Key_Home,Qt.Key_End):
+            index=self.indexOfTopLevelItem(self.rule_root(self.currentItem()))
+            if key==Qt.Key_Home: index=0
+            elif key==Qt.Key_End: index=self.topLevelItemCount()-1
+            else: index+=1 if key==Qt.Key_Down else -1
+            item=self.topLevelItem(max(0,min(index,self.topLevelItemCount()-1)))
+            self.setCurrentItem(item); self.select_rule(item); self.scrollToItem(item)
+            event.accept(); return
+        super().keyPressEvent(event)
 
 
 class ConfigurationPage(QWidget):
@@ -24,12 +69,13 @@ class ConfigurationPage(QWidget):
         table_box.addWidget(self.channels_table)
         rules=QWidget(); rl=QVBoxLayout(rules); rl.setContentsMargins(0,14,0,0)
         frame,rule_box=card(); rl.addWidget(frame,1)
-        self.rules_tree=QTreeWidget(); self.rules_tree.setHeaderLabels(['REGOLA / CONDIZIONE','DETTAGLI']); self.rules_tree.setRootIsDecorated(True)
+        self.rules_tree=RuleTree(); self.rules_tree.setHeaderLabels(['REGOLA / CONDIZIONE','DETTAGLI']); self.rules_tree.setRootIsDecorated(True)
         self.rules_tree.setObjectName('rulesTree')
         self.rules_tree.header().setSectionResizeMode(QHeaderView.ResizeMode.Stretch); self.rules_tree.itemDoubleClicked.connect(lambda *_:self.edit_rule())
         rule_box.addWidget(self.rules_tree)
         self.add_rule_button=button('+ Nuova regola',self.add_rule,'primary'); self.edit_rule_button=button('Modifica',self.edit_rule); self.remove_rule_button=button('Rimuovi',self.remove_rule)
-        rule_box.addLayout(row(self.add_rule_button,self.edit_rule_button,self.remove_rule_button,None))
+        self.airbrake_button=button('Configura aerofreni',self.edit_airbrakes); self.airbrake_button.hide()
+        rule_box.addLayout(row(self.add_rule_button,self.airbrake_button,self.edit_rule_button,self.remove_rule_button,None))
         tabs.addTab(rules,'Regole'); tabs.addTab(channels,'Canali'); tabs.setCurrentIndex(0)
         self.attach_footer(box)
 
@@ -37,7 +83,7 @@ class ConfigurationPage(QWidget):
         self.draft_bar=QFrame(); self.draft_bar.setObjectName('draftBar'); box=QHBoxLayout(self.draft_bar); box.setContentsMargins(16,12,16,12)
         self.draft_text=label('Modifiche non applicate · bozza locale')
         self.validate_button=button('Valida',self.controller.validate)
-        self.apply_button=button('Applica',self.apply_configuration,'primary')
+        self.apply_button=button('Applica',self.apply_configuration,'saveAction')
         self.discard_button=button('Scarta',self.controller.discard)
         box.addWidget(self.draft_text,1); box.addWidget(self.validate_button); box.addWidget(self.apply_button); box.addWidget(self.discard_button); layout.addWidget(self.draft_bar)
 
@@ -48,9 +94,10 @@ class ConfigurationPage(QWidget):
         self.discard_button.setEnabled(not s.foreground)
         self.reload_config.setEnabled(s.connected and not s.foreground)
         editable=s.editable
-        for b in (*self.channel_buttons,self.add_rule_button,self.edit_rule_button,self.remove_rule_button): b.setEnabled(editable)
+        for b in (*self.channel_buttons,self.add_rule_button,self.edit_rule_button,self.remove_rule_button,self.airbrake_button): b.setEnabled(editable)
+        self.airbrake_button.setVisible(s.connected and s.airbrakes.get('enabled',False))
         plan=s.local
-        missing=[f'SERVO {i+1}' for i,v in enumerate(plan.servos) if plan.assigned('servo',i+1) and not v['calibrated']] if plan else []
+        missing=[f'SERVO {i+1}' for i,v in enumerate(plan.servos) if (plan.assigned('servo',i+1) or plan.airbrake_channel(i+1)) and not v['calibrated']] if plan else []
         self.servo_notice.setText(', '.join(missing)+': posizioni da configurare in Canali. Le regole si possono salvare; l’armamento reale richiede la configurazione dei servo.')
         self.servo_notice.setVisible(bool(missing))
         pulse=s.capabilities.get('pyro_pulse_ms',1000)
@@ -64,26 +111,45 @@ class ConfigurationPage(QWidget):
                 if kind=='pyro': text=f'Impulso fisso {value} ms · firmware'
                 elif value['calibrated']: text=f'{value["initial_us"]} → {value["final_us"]} PWM'
                 else: text='Posizioni iniziale e finale da definire'
-                state='Da configurare' if kind=='servo' and r and not value['calibrated'] else 'Assegnato' if r else 'Libero'
-                rows.append((f'{kind.upper()} {i+1}',text,rule_label(plan.rules,r['id']) if r else '—',state))
+                air=kind=='servo' and plan.airbrake_channel(i+1)
+                if air and value['calibrated']: text=f'Chiuso 0%: {value["initial_us"]} / Aperto 100%: {value["final_us"]}'
+                state='Da configurare' if kind=='servo' and (r or air) and not value['calibrated'] else 'Assegnato' if r or air else 'Libero'
+                rows.append((f'{kind.upper()} {i+1}',text,'Aerofreni' if air else rule_label(plan.rules,r['id']) if r else '—',state))
         fill_table(self.channels_table,rows)
         self.channel_buttons=[]
         for i,value in enumerate(plan.servos):
             self.channels_table.removeCellWidget(i+4,3); self.channels_table.setRowHeight(i+4,43)
-            if not plan.assigned('servo',i+1): continue
+            if not (plan.assigned('servo',i+1) or plan.airbrake_channel(i+1)): continue
             self.channels_table.item(i+4,3).setText(''); self.channels_table.setRowHeight(i+4,60)
             action=button('Modifica' if value['calibrated'] else 'Configura',lambda channel=i+1:self.edit_channel(channel))
             action.setEnabled(editable); action.setMinimumWidth(100); self.channel_buttons.append(action)
             cell=QWidget(); cell_box=QHBoxLayout(cell); cell_box.setContentsMargins(6,3,6,3)
             cell_box.addWidget(action,0,Qt.AlignCenter); self.channels_table.setCellWidget(i+4,3,cell)
         expanded={self.rules_tree.topLevelItem(i).data(0,Qt.ItemDataRole.UserRole) for i in range(self.rules_tree.topLevelItemCount()) if self.rules_tree.topLevelItem(i).isExpanded()}
+        selected=self.selected_rule()
         self.rules_tree.clear()
+        if plan.airbrakes['channel_mask'] or plan.airbrakes['conditions']:
+            names=', '.join(f'SERVO {i}' for i in range(1,5) if plan.airbrake_channel(i)) or 'Nessun canale'
+            item=QTreeWidgetItem(['Aerofreni', 'Controllo continuo AND '+chr(183)+' '+names]); item.setData(0,Qt.ItemDataRole.UserRole,'airbrakes')
+            self.rules_tree.addTopLevelItem(item)
+            for c in plan.airbrakes['conditions']: QTreeWidgetItem(item,['Condizione '+chr(183)+' AND',condition_text(c,plan.rules)])
+            item.setExpanded(True)
         for r in plan.rules:
             item=QTreeWidgetItem([rule_label(plan.rules,r['id']),f'Ritardo {r["delay_ms"]} ms · {len(r["outputs"])} uscite'])
             item.setData(0,Qt.ItemDataRole.UserRole,r['id']); self.rules_tree.addTopLevelItem(item)
             for c in r['conditions']: QTreeWidgetItem(item,['Condizione · AND',condition_text(c,plan.rules)])
             for a in r['outputs']: QTreeWidgetItem(item,[f'{a["kind"].upper()} {a["channel"]}',f'Ritardo canale {a.get("delay_ms",0)} ms'])
             item.setExpanded(r['id'] in expanded or len(plan.rules)<=2)
+        for i in range(self.rules_tree.topLevelItemCount()):
+            item=self.rules_tree.topLevelItem(i)
+            if item.data(0,Qt.ItemDataRole.UserRole)==selected: self.rules_tree.setCurrentItem(item); break
+
+    def edit_airbrakes(self):
+        s=self.controller.state
+        if not s.editable or s.local is None: return
+        dialog=AirbrakeDialog(self,s.local)
+        if dialog.exec():
+            plan=s.local.clone(); plan.airbrakes=dialog.rule; self.controller.edit_plan(plan)
 
     def show_servo(self,channel,edit=False):
         self.tabs.setCurrentIndex(1); self.channels_table.selectRow(channel+3)
@@ -99,14 +165,14 @@ class ConfigurationPage(QWidget):
                 f'Impulso fisso di {s.capabilities.get("pyro_pulse_ms",1000)} ms, senza ripetizione. Non richiede impostazioni per canale.')
             return
         value=s.local.servos[index]
-        dialog=ChannelDialog(self,kind,index+1,value,s.capabilities,self.controller)
+        dialog=ChannelDialog(self,kind,index+1,value,s.capabilities,self.controller,airbrake=s.local.airbrake_channel(index+1))
         if dialog.exec():
             plan=s.local.clone()
             plan.servos[index]=dialog.result_value(); self.controller.edit_plan(plan)
 
     def selected_rule(self):
-        item=self.rules_tree.currentItem()
-        while item and item.parent(): item=item.parent()
+        if not self.rules_tree.selectedItems(): return None
+        item=self.rules_tree.rule_root(self.rules_tree.currentItem())
         return item.data(0,Qt.ItemDataRole.UserRole) if item else None
 
     def add_rule(self):
@@ -119,6 +185,7 @@ class ConfigurationPage(QWidget):
     def edit_rule(self):
         s=self.controller.state; identity=self.selected_rule()
         if not s.editable or not identity: return
+        if identity=='airbrakes': self.edit_airbrakes(); return
         rule=next(r for r in s.local.rules if r['id']==identity)
         dialog=RuleDialog(self,rule,s.local.rules)
         if dialog.exec():
@@ -127,7 +194,10 @@ class ConfigurationPage(QWidget):
     def remove_rule(self):
         s=self.controller.state; identity=self.selected_rule()
         if not s.editable or not identity: return
-        plan=s.local.clone(); plan.rules=[r for r in plan.rules if r['id']!=identity]; self.controller.edit_plan(plan)
+        plan=s.local.clone()
+        if identity=='airbrakes': plan.airbrakes=dict(channel_mask=0,conditions=[])
+        else: plan.rules=[r for r in plan.rules if r['id']!=identity]
+        self.controller.edit_plan(plan)
 
     def reload_configuration(self):
         s=self.controller.state

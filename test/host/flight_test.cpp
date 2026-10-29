@@ -514,7 +514,7 @@ void run() {
   assert(runtime.status().boostReached && runtime.status().droppedSamples==1 && runtime.active());
   runtime.stop(); drain();
   assert(!runtime.status().recordingDiscarded && writer.inspect(launched,info));
-  assert(info.entry.status==FlightStatus::StoppedFull && info.samples==44 && info.summaryState==SummaryState::Valid);
+  assert(info.entry.status==FlightStatus::StoppedFull && info.samples==36 && info.summaryState==SummaryState::Valid);
   SampleBlock block;
   for (unsigned i=0;i<4;++i) {
     assert(writer.readBlock(launched,i,block));
@@ -609,7 +609,9 @@ void run() {
 }
 }
 
+#include "airbrakes_cases.h"
 int main() {
+  test_airbrakes::run();
   std::puts("  run_controller"); std::fflush(stdout);
   test_run_controller::run();
   std::puts("  flight_runtime"); std::fflush(stdout);

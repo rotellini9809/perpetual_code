@@ -28,7 +28,7 @@ private:
   bool rejected_ = false;
 };
 inline bool queryAllowed(const char *s) {
-  for (const char *q : {"AT", "AT+VERSION", "AT+NAME", "AT+NAMB", "AT+BAUD", "AT+STAT", "AT+LADDR", "AT+BTMODE"})
+  for (const char *q : {"AT", "AT+VERSION", "AT+NAME", "AT+NAMB", "AT+BAUD", "AT+MTU", "AT+STAT", "AT+LADDR", "AT+BTMODE"})
     if (!std::strcmp(s,q)) return true;
   return false;
 }

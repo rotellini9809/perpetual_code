@@ -10,7 +10,7 @@
 namespace test_bluetooth_diagnostic {
 using namespace bluetooth_test;
 void run() {
-  for (const char *q : {"AT","AT+VERSION","AT+NAME","AT+NAMB","AT+BAUD","AT+STAT","AT+LADDR","AT+BTMODE"}) assert(queryAllowed(q));
+  for (const char *q : {"AT","AT+VERSION","AT+NAME","AT+NAMB","AT+BAUD","AT+MTU","AT+STAT","AT+LADDR","AT+BTMODE"}) assert(queryAllowed(q));
   for (const char *q : {"AT+RESET","AT+DEFAULT","AT+BAUD8","AT+NAMEtest","AT+PIN1234","AT+DISC","AT\r\nAT+RESET","AT ","at",""}) assert(!queryAllowed(q));
   assert(baudAllowed(9600) && baudAllowed(115200) && baudAllowed(1000000));
   assert(!baudAllowed(0) && !baudAllowed(9999));

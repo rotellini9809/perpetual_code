@@ -79,7 +79,7 @@ void run() {
   Configuration out;
   assert(ConfigurationStore::decode(payload.data(), payload.size(), out)); assert(encoded(out) == payload);
   // Channel delays occupy the existing four-byte assignment slot, without changing offsets.
-  auto oldDelay = payload; put32(oldDelay.data()+oldDelay.size()-4, 1000);
+  auto oldDelay = payload; put32(oldDelay.data()+oldDelay.size()-6, 1000);
   assert(ConfigurationStore::decode(oldDelay.data(), oldDelay.size(), out));
   assert(out.rules[0].assignments[0].delayMs == 1000 && encoded(out) == oldDelay);
   for (std::size_t n = 0; n < payload.size(); ++n) assert(!ConfigurationStore::decode(payload.data(), n, out));
@@ -118,7 +118,7 @@ void run() {
   assert(!corrupt.load(out, limits) && corrupt.error() == ConfigError::Corrupt);
   auto marker = baseline; marker.bytes[0x1100] ^= 1; ConfigurationStore noCommit(marker);
   assert(!noCommit.load(out, limits) && noCommit.error() == ConfigError::Corrupt);
-  for (uint8_t version : {1,3}) {
+  for (uint8_t version : {1,2}) {
     auto future = baseline; future.bytes[0x1004] = version; refreshHeader(future);
     ConfigurationStore unsupported(future);
     assert(!unsupported.load(out, limits) && unsupported.error() == ConfigError::UnsupportedVersion);
@@ -151,7 +151,7 @@ void run() {
   // Codec supports every condition/assignment slot even before semantic validation.
   for (auto &r : maximum.rules) r.assignmentCount = MaxAssignments;
   const auto largest = encoded(maximum);
-  assert(largest.size() == 2101 && largest.size() < ConfigurationStore::MaxPayload);
+  assert(largest.size() == 2103 && largest.size() < ConfigurationStore::MaxPayload);
   assert(ConfigurationStore::decode(largest.data(), largest.size(), out)); assert(encoded(out) == largest);
   std::cout << "Configuration store tests passed: " << cuts.size() << " power cuts; max payload " << largest.size() << " bytes.\n";
 }
@@ -195,7 +195,7 @@ std::vector<uint8_t> encoded(const recovery::Configuration &config) {
 void calibrationRoundtrip() {
   HeaderFlash flash; FlightHeaderStore header(flash);
   FlightCalibration c; c.available=c.sensorAxes=c.gyroCalibrated=true; c.upAxis=5;
-  c.referenceAltitude=123.25f;
+  c.referenceAltitude=123.25f; c.airbrakeLawVersion=37;
   for (unsigned i=0;i<3;++i) { c.gyroBias[i]=(int(i)-1)*.03125f; c.accelBias[i]=(int(i)-1)*.25f; }
   auto invalid=c; invalid.gyroBias[0]=std::numeric_limits<float>::infinity();
   assert(!header.create(0x15000,fixture(),limits,SensorMode::Hardware,OutputMode::Physical,sensors::FrameConvention::SensorAxes,invalid) && !flash.writes);
@@ -203,6 +203,7 @@ void calibrationRoundtrip() {
   c.gyroBias[0]=999; c.referenceAltitude=999; // Mutating current settings cannot change a recorded flight.
   FlightHeaderStore reboot(flash); assert(reboot.load(0x15000));
   const auto &saved=reboot.view()->calibration;
+  assert(saved.airbrakeLawVersion==37);
   assert(saved.available && saved.sensorAxes && saved.gyroCalibrated && saved.upAxis==5);
   assert(saved.referenceAltitude==123.25f && saved.gyroBias[0]==-.03125f && saved.accelBias[2]==.25f);
   for (unsigned offset:{160u,161u,162u,164u,168u}) {
@@ -244,9 +245,9 @@ void run() {
   assert(header.view()->starts[1].kind == recovery::OutputKind::Servo && header.view()->starts[2].rule == 20);
   const auto initial = flash; const auto writes = flash.writes, reads = flash.reads;
   // A valid CRC/commit cannot enable an old or unknown header format.
-  for (unsigned field : {4u, 20u}) for (unsigned version : {1u, 2u, 3u, 5u}) {
+  for (unsigned field : {4u, 20u}) for (unsigned version : {1u, 2u, 3u, 4u, 5u, 7u}) {
     auto wrong = initial; auto *descriptor = wrong.bytes.data() + 0x15000;
-    if (field==20 && version==2) continue;
+    if (field==20 && version==3) continue;
     storage::binary::put(descriptor + field, version, 2);
     const auto payloadBytes = (layout.configBytes + 255) / 256 * 256;
     const auto checksum = storage::binary::extendCrc(storage::binary::extendCrc(storage::binary::CrcInitial, descriptor, 252), descriptor + 512, payloadBytes) ^ storage::binary::CrcInitial;

@@ -1,4 +1,5 @@
 #include "storage/FlightCommands.h"
+#include "communication/PackedFlightCodec.h"
 #include "communication/CommandProtocol.h"
 #include "communication/TimingReply.h"
 #include "communication/RecordingReply.h"
@@ -100,7 +101,8 @@ bool FlightCommands::dispatch(const char *command, const char *arguments, bool h
     const bool calibration = t.count == 2 && t.is(0, "calibration");
     const bool summary = t.count == 2 && t.is(0, "summary");
     const bool config = t.count == 3 && t.is(0, "config") && protocol::unsignedNumber(t[2], offset);
-    const bool read = t.count == 4 && t.is(0, "read") && protocol::unsignedNumber(t[2], index) && protocol::unsignedNumber(t[3], offset);
+    const bool packed = t.is(0,"packed");
+    const bool read = t.count == 4 && (t.is(0, "read") || packed) && protocol::unsignedNumber(t[2], index) && protocol::unsignedNumber(t[3], offset);
     if (!info && !calibration && !summary && !config && !read) { error = "INVALID_ARGUMENT"; return finish(); }
     if (!select(sequence)) {
       error = recorder_.error() == RecorderError::None ? "Corrupt" : FlightRecorder::errorName(recorder_.error());
@@ -112,7 +114,8 @@ bool FlightCommands::dispatch(const char *command, const char *arguments, bool h
       if (!calibration_.available) data.add("null");
       else {
         const auto &c=calibration_;
-        data.add("{\"gyro_calibrated\":%s,\"sensor_axes\":%s",c.gyroCalibrated ? "true" : "false",c.sensorAxes ? "true" : "false");
+        data.add(R"({"airbrake_law_version":%lu,"airbrakes_enabled":%s,)",(unsigned long)c.airbrakeLawVersion,c.airbrakesEnabled ? "true" : "false");
+        data.add("\"gyro_calibrated\":%s,\"sensor_axes\":%s",c.gyroCalibrated ? "true" : "false",c.sensorAxes ? "true" : "false");
         data.number("reference_altitude_m",c.referenceAltitude);
         data.add(",\"bistage\":%s",c.machine.bistage ? "true" : "false"); data.number("minimum_coast_velocity",c.machine.minimumCoastVelocity);
         data.add(",\"up_axis\":");
@@ -130,6 +133,7 @@ bool FlightCommands::dispatch(const char *command, const char *arguments, bool h
     if (summary) { protocol::appendRecordingSummary(data,selected_.summaryState,selected_.summary); return finish(); }
     const auto blocks = (selected_.entry.committedBytes - selected_.headerBytes) / FlightSampleStore::BlockBytes;
     if (info) {
+      data.add(",\"sample_transport\":\"xor32-v2\"");
       data.add(",\"status\":%u,\"samples\":%lu,\"blocks\":%lu,\"sensor_mode\":%u,\"output_mode\":%u,\"frame\":%u,\"config_version\":%u,\"config_bytes\":%u,\"starts\":[",
                unsigned(selected_.entry.status), static_cast<unsigned long>(selected_.samples), static_cast<unsigned long>(blocks),
                unsigned(sensorMode_), unsigned(outputMode_), unsigned(frame_), unsigned(storage::ConfigurationStore::FormatVersion), unsigned(configBytes_));
@@ -155,6 +159,11 @@ bool FlightCommands::dispatch(const char *command, const char *arguments, bool h
       blockValid_ = true;
     }
     if (offset >= block_.count) { error = "Bounds"; return finish(); }
+    if (packed) {
+      if (!protocol::appendPackedFlightSamples(data,block_,offset)) { error="Bounds"; return finish(); }
+      transferring_=true; lastTransferUs_=clock_ ? clock_() : 0;
+      return finish();
+    }
     const unsigned count = block_.count - offset < 2 ? block_.count - offset : 2;
     transferring_=true; lastTransferUs_=clock_ ? clock_() : 0;
     data.add(",\"block\":%lu,\"offset\":%lu,\"first\":%lu,\"block_count\":%u,\"rows\":[",
@@ -165,7 +174,9 @@ bool FlightCommands::dispatch(const char *command, const char *arguments, bool h
       data.add(",%u,", unsigned(sample.phase));
       if (sample.batteryMv==UINT16_MAX) data.add("null");
       else data.add("%.3f",double(sample.batteryMv)/1000.0);
-      data.add(",%u]",unsigned(sample.abortReason));
+      data.add(",%u",unsigned(sample.abortReason));
+      for (auto u:sample.airbrakes.opening) { data.add(","); if (u==65535) data.add("null"); else data.add("%.2f",double(u)/100); }
+      data.add(",%u,%u,%u]",unsigned(sample.airbrakes.flags),unsigned(sample.airbrakes.failedConditions),unsigned(sample.airbrakes.channelMask));
     }
     data.add("]"); return finish();
   }

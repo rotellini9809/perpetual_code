@@ -17,10 +17,11 @@ os.environ['QT_QPA_PLATFORM']='offscreen'
 ROOT=Path(__file__).resolve().parents[2]
 sys.path[:0]=[str(ROOT),str(ROOT/'tools'),str(ROOT/'tools/replay')]
 from PySide6.QtWidgets import QApplication,QMessageBox
-from PySide6.QtGui import QFontDatabase
+from PySide6.QtGui import QFontDatabase,QTransform
 from device_client import Client,CommandError,ConnectionLost
 from perpetual_app.configuration import Plan,read_plan,stage_plan,removal_order,plan_commands,next_rule_id,condition_text,rule_label
-from perpetual_app.controller import Controller,error_text,load_flight
+from perpetual_app.controller import Controller,error_text
+from perpetual_app.flight_data import load_flight
 from perpetual_app.dialogs import RuleDialog,ConditionDialog,OutputDialog,ChannelDialog
 from perpetual_app.window import MainWindow
 from perpetual_app.sensor_details import SensorHistory
@@ -80,8 +81,8 @@ def check_flight_plots(window,controller,app):
         assert next(r for r in data['rows'] if r[0]==.030)[8] is None
         legacy=Path(folder)/'minimal.csv'; legacy.write_text('t_ms,z_est,vz_est\n0,0,0\n5,1,2\n',encoding='utf-8')
         assert load_flight(legacy)['rows'][0][3:]==(None,)*8 # Missing optional values are never fake zeroes.
-        original=controller.state.flight; controller.state.flight=data; window._render_flights(controller.state)
-        details=window.flight_details
+        original=controller.state.flight; controller.state.flight=data; window.recorded_flights_page.render(controller.state)
+        details=window.recorded_flights_page.flight_details
         group=next(details.topLevelItem(i) for i in range(details.topLevelItemCount()) if details.topLevelItem(i).text(0)=='Regole del volo')
         assert group.child(0).text(0)=='Regola salvata' and group.child(0).childCount()==5
         assert [group.child(0).child(i).text(1) for i in range(3)]==['Apogeo rilevato','Fase: DESCENT','Da regola «Riferimento salvato»: 250 ms']
@@ -90,7 +91,7 @@ def check_flight_plots(window,controller,app):
         values=detail_values(); assert values['Bias giroscopio']=='Non disponibile' and values['Orientamento scheda']=='Non disponibile'
         data['metadata'].update(sensor_mode=0,output_mode=0,calibration=dict(gyro_calibrated=True,sensor_axes=True,
             reference_altitude_m=123.25,up_axis='-Z',gyro_bias_radps=[.03125,-.0625,.125],accel_bias_mps2=[.25,0,-.5]))
-        window._flight_path=None; window._render_flights(controller.state)
+        window.recorded_flights_page._flight_path=None; window.recorded_flights_page.render(controller.state)
         values=detail_values()
         assert values['Bias giroscopio']=='X: 0.03125  /  Y: -0.0625  /  Z: 0.125 rad/s'
         assert values['Riferimento barometrico']=='123.250 m' and values['Orientamento scheda']=='-Z'
@@ -102,21 +103,24 @@ def check_flight_plots(window,controller,app):
         count=next(details.topLevelItem(i) for i in range(details.topLevelItemCount()) if details.topLevelItem(i).text(0)=='Regole azionate')
         assert count.text(1)=='1 / 2'
         assert not any(details.topLevelItem(i).text(0)=='Attivazioni delle uscite' for i in range(details.topLevelItemCount()))
-        plots=window.flight_plots
+        plots=window.recorded_flights_page.flight_plots
         assert [[c[0] for c in p.curves] for p in plots]==[[1],[2,3],[7,8,9],[4,5,6],[10]]
-        assert window.flight_motion.curves[0][4]!=window.flight_motion.curves[1][4] # Separate m/s and m/s² scales.
+        assert window.recorded_flights_page.flight_motion.curves[0][4]!=window.recorded_flights_page.flight_motion.curves[1][4] # Separate m/s and m/s² scales.
         with patch.object(controller,'_job') as job:
-            window.flight_actuators.setChecked(False)
+            window.recorded_flights_page.flight_actuators.setChecked(False)
             assert all(not p.show_actuators and p.show_states for p in plots)
-            window.flight_states.setChecked(False)
+            window.recorded_flights_page.flight_states.setChecked(False)
             assert all(not p.show_actuators and not p.show_states for p in plots)
-            window.flight_actuators.setChecked(True)
+            window.recorded_flights_page.flight_actuators.setChecked(True)
             assert all(p.show_actuators and not p.show_states for p in plots)
-            window.flight_states.setChecked(True)
+            window.recorded_flights_page.flight_states.setChecked(True)
             job.assert_not_called()
         for plot in plots:
             assert plot.rows is data['rows'] and plot.phases==data['phases'] and plot.markers==[(.005,'PYRO 1'),(.150,'SERVO 1')]
             assert not plot.grab().isNull()
+            paths,segments=plot._paths,plot._segments
+            plot.grab() # Repainting unchanged data must reuse inspected geometry.
+            assert plot._paths is paths and plot._segments is segments
             # Hover uses painted geometry, including the acceleration's independent axis.
             from PySide6.QtCore import QEvent,QPointF,Qt
             from PySide6.QtGui import QMouseEvent
@@ -133,7 +137,19 @@ def check_flight_plots(window,controller,app):
             with patch('perpetual_app.flight_plot.QToolTip.hideText') as hide:
                 QApplication.sendEvent(plot,QEvent(QEvent.Leave))
                 assert plot._hover is None and hide.called
-        orientation=window.flight_orientation
+        # Real resize/data/curve changes must invalidate the paint cache and hover.
+        from perpetual_app.flight_plot import FlightPlot
+        probe=FlightPlot([(1,'Altitude','m','#123456',0)])
+        probe.resize(400,240); probe.set_data([(0,0,10),(1,1,20)]); probe.grab()
+        previous_x=probe._segments[-1][1].x()
+        probe.resize(700,240); probe.grab()
+        assert probe._segments[-1][1].x()>previous_x
+        probe.set_data([(0,5,10),(1,7,20)]); probe.grab()
+        assert '7.000 m' in probe._nearest_sample(probe._segments[-1][1])[1]
+        probe.curves=[(2,'Speed','m/s','#123456',0)]; probe.grab()
+        assert 'Speed: 20.000 m/s' in probe._nearest_sample(probe._segments[-1][1])[1]
+        probe.close()
+        orientation=window.recorded_flights_page.flight_orientation
         yaw=(178,179,-179,-178,2,0,180,180,None,180)
         orientation.set_data([(i,0,0,0,None,None,value) for i,value in enumerate(yaw)])
         orientation.grab()
@@ -147,21 +163,21 @@ def check_flight_plots(window,controller,app):
         simulated=load_flight(legacy)
         assert simulated['simulated_battery'] and [r[11] for r in simulated['rows']]==[8.4,8.2]
         assert all(r[10] is None for r in simulated['rows'])
-        controller.state.flight=simulated; window._render_flights(controller.state)
-        assert [c[1] for c in window.flight_battery.curves]==['Tensione batteria']
+        controller.state.flight=simulated; window.recorded_flights_page.render(controller.state)
+        assert [c[1] for c in window.recorded_flights_page.flight_battery.curves]==['Tensione batteria']
         def flight_kind():
             return next(details.topLevelItem(i).text(1) for i in range(details.topLevelItemCount()) if details.topLevelItem(i).text(0)=='Tipo di volo')
         assert flight_kind()=='Simulato'
-        assert not window.flight_battery.grab().isNull()
+        assert not window.recorded_flights_page.flight_battery.grab().isNull()
         legacy.with_suffix('.json').write_text(json.dumps(dict(sensor_mode=0)),encoding='utf-8')
         hardware=load_flight(legacy)
         assert not hardware['simulated_battery'] and len(hardware['rows'][0])==11
-        window._flight_path=None; controller.state.flight=hardware; window._render_flights(controller.state)
-        assert flight_kind()=='Reale' and [c[0] for c in window.flight_battery.curves]==[10]
+        window.recorded_flights_page._flight_path=None; controller.state.flight=hardware; window.recorded_flights_page.render(controller.state)
+        assert flight_kind()=='Reale' and [c[0] for c in window.recorded_flights_page.flight_battery.curves]==[10]
         data['metadata'].pop('sensor_mode') # Restore missing metadata after the calibration-details check.
-        controller.state.flight=data; window._render_flights(controller.state)
-        assert len(window.flight_battery.curves)==1 and flight_kind()=='Non disponibile'
-        app.processEvents(); controller.state.flight=original; window._render_flights(controller.state)
+        controller.state.flight=data; window.recorded_flights_page.render(controller.state)
+        assert len(window.recorded_flights_page.flight_battery.curves)==1 and flight_kind()=='Non disponibile'
+        app.processEvents(); controller.state.flight=original; window.recorded_flights_page.render(controller.state)
 
 
 def check_connections(app,wait):
@@ -214,16 +230,37 @@ def check_connections(app,wait):
             assert links[1].port==radio.device
             links[1].succeed(); wait(lambda:controller.state.connected)
             assert window.transport.text()=='Bluetooth · COM44' and window.connect_button.text()=='Disconnetti'
+            # Board inventory is session-scoped; the opened CSV remains independent.
+            local_csv=Path(folder)/'kept.csv'; local_csv.write_text('t_ms,z_est,vz_est\n0,0,1\n5,10,1\n')
+            local_flight=load_flight(local_csv); controller.state.flight=local_flight
+            old_inventory=[dict(sequence='1',status=2,committed_bytes=1024,allocated_bytes=4096)]
+            controller._complete(controller._epoch,0,'poll',dict(flights=old_inventory,status=dict(arming_state='disarmed')),None)
+            page=window.recorded_flights_page; old_epoch=controller._epoch
+            assert page.flights_table.rowCount()==1 and page.download_button.isEnabled()
             # Lost sessions close themselves. No manual Disconnect and no replay/reconnect.
             links[1].state='unresponsive'; controller.tick()
             assert not window.connect_button.isEnabled() and window.connect_button.text()=='Connetti'
+            assert controller.state.flights==[] and page.flights_table.rowCount()==0
+            assert not controller.state.flights_loaded and page.flights_empty.isHidden()
+            assert page.flights_table.currentRow()==-1 and not page.download_button.isEnabled()
+            assert controller.state.flight is local_flight and page.flight_plot.rows is local_flight['rows']
             links[1].finish_close(); wait(lambda:controller.connection is None)
             assert window.connect_button.isEnabled() and len(links)==2
             window.connect_button.click(); wait(lambda:len(links)==3)
             assert links[2].port==usb.device # USB wins even after Bluetooth was last used.
             links[2].succeed(); wait(lambda:controller.state.connected)
             assert window.transport.text()=='USB · COM43'
+            # Even overlapping sequence IDs from another device require a fresh list.
+            assert controller.state.flights==[] and page.flights_table.rowCount()==0
+            controller._complete(old_epoch,999,'poll',dict(flights=old_inventory),None)
+            assert controller.state.flights==[] and not page.download_button.isEnabled()
+            new_inventory=[dict(sequence='1',status=2,committed_bytes=2048,allocated_bytes=4096)]
+            controller._complete(controller._epoch,0,'poll',dict(flights=new_inventory,status=dict(arming_state='disarmed')),None)
+            assert page.flights_table.item(0,2).text()=='2.0 KiB' and page.download_button.isEnabled()
+            assert controller.state.flight is local_flight
+
             window.connect_button.click(); links[2].finish_close(); wait(lambda:controller.can_close())
+            assert controller.state.flights==[] and page.flights_table.rowCount()==0
             # Both candidates fail; the next click starts a fresh search directly.
             window.connect_button.click(); wait(lambda:len(links)==4)
             links[3].ready.set_exception(PermissionError('busy')); wait(lambda:links[3].close_called)
@@ -366,7 +403,7 @@ class Native:
             if 'physical' not in command and self.prepared_mask:
                 raise CommandError(command,dict(code='PHYSICAL_SERVOS_PREPARED',ok=False))
             if 'physical' in command and self.reject_physical:
-                raise CommandError(command,dict(code='CONTINUITY_FAULT',reasons=['CONTINUITY_FAULT'],failed_pyro_mask=1,ok=False))
+                raise CommandError(command,dict(code='CONTINUITY_FAULT',reasons=['CONTINUITY_FAULT'],failed_pyro_mask=1,ready=False,ok=False))
             self.active=True; self.prepared_mask=0; self.output_mode='PHYSICAL' if 'physical' in command else 'VIRTUAL'
         if command=='sim stop': self.active=False
         if command.startswith('sim begin') or command in ('sim stop','sim status'):
@@ -410,9 +447,12 @@ def run():
     from PySide6.QtTest import QTest
     from perpetual_app.main import terminal_interrupt
     interrupt_controller=Controller(port_scanner=lambda:[]); interrupt_window=MainWindow(interrupt_controller); interrupt_window.show()
+    interrupt_controller.state.local=Plan() # Unsaved rules and settings must not open a modal on SIGINT.
+    interrupt_controller.edit_setting('machine',(True,42.5))
+    assert interrupt_controller.state.has_unsaved_changes
     previous=signal.getsignal(signal.SIGINT)
     try:
-        with patch.object(interrupt_controller,'disconnect') as disconnect, patch.object(interrupt_controller,'can_close',return_value=False) as can_close:
+        with patch.object(interrupt_controller,'disconnect') as disconnect, patch.object(interrupt_controller,'can_close',return_value=False) as can_close, patch('perpetual_app.window.QMessageBox.question') as question:
             with terminal_interrupt(interrupt_window):
                 signal.raise_signal(signal.SIGINT)
                 wait(lambda:interrupt_window._closing)
@@ -421,10 +461,17 @@ def run():
                 assert interrupt_window.isVisible() and disconnect.call_count==1
                 can_close.return_value=True
                 wait(lambda:not interrupt_window.isVisible())
+                question.assert_not_called()
         assert signal.getsignal(signal.SIGINT)==previous
     finally:
         interrupt_window._allow_close=True; interrupt_window.close(); app.processEvents()
 
+    from desktop_airbrakes import check_airbrakes
+    from desktop_settings import check_setting_drafts
+    from desktop_arm_button import check_arm_button
+    check_arm_button(app)
+    check_airbrakes(app,wait,Native)
+    check_setting_drafts(app,wait,Native)
     check_connections(app,wait)
 
     backend=Native(); backend.state='connected'
@@ -465,6 +512,14 @@ def run():
         raises(RuntimeError,lambda:stage_plan(Foreign(),current,current.clone()))
         assert 'config discard' not in backend.commands[start:] and backend.request('config draft')['available']
         backend.request('config discard')
+        # Invisible airbrake settings survive an ordinary app configuration edit.
+        air=current.clone(); air.servos[2]=dict(calibrated=True,initial_us=1100,final_us=1900)
+        air.airbrakes=dict(channel_mask=4,conditions=[dict(type='phase',phase='68'),dict(type='since_rule_ms',reference=20,elapsed_ms=0)])
+        stage_plan(backend,current,air); backend.request('config apply')
+        frozen,_,_=read_plan(backend); assert frozen==air
+        edited=frozen.clone(); edited.rules[0]['name']='Another edit'
+        stage_plan(backend,frozen,edited); backend.request('config apply')
+        assert read_plan(backend)[0].airbrakes==air.airbrakes
     finally: backend.close()
 
     # IDs remain internal and immutable; named references preserve full uint32 identity.
@@ -561,30 +616,57 @@ def run():
     main_thread=threading.get_ident()
     try:
         assert not window.arm_button.isEnabled() and not window.sim_start.isEnabled()
-        assert not window.bistage_enabled.isChecked() and not window.bistage_min_speed.isEnabled()
-        assert window.flight_state_sequence.text()==(' '+chr(8594)+' ').join(('PAD','BOOST','COAST','DESCENT','LANDED'))
+        assert not window.settings_page.bistage_enabled.isChecked() and not window.settings_page.bistage_min_speed.isEnabled()
+        assert window.settings_page.flight_state_sequence.text()==(' '+chr(8594)+' ').join(('PAD','BOOST','COAST','DESCENT','LANDED'))
 
         controller.connect_port('PC_FIXTURE')
         wait(lambda:controller.state.local is not None and not controller.state.foreground)
         backend=backends[-1]
-        window.bistage_enabled.setChecked(True); assert window.bistage_min_speed.isEnabled()
-        assert 'BOOST 2' in window.flight_state_sequence.text() and 'COAST 2' in window.flight_state_sequence.text()
-        assert 'ABORT' in window.flight_state_sequence.text() and chr(8595) in window.flight_state_sequence.text()
-        window.bistage_min_speed.setValue(42.5)
-        assert window.bistage_min_speed.value()==42.5 and not window.bistage_min_speed.suffix()
-        window.bistage_enabled.setChecked(False); assert not window.bistage_min_speed.isEnabled()
-        assert window.bistage_min_speed.value()==42.5
-        window.bistage_enabled.setChecked(True); assert window.machine_save.isEnabled()
-        window.machine_save.click(); wait(lambda:not controller.state.foreground)
+        assert window.settings_page.bistage_enabled.parentWidget() is window.settings_page.bistage_parameters
+        assert window.settings_page.bistage_enabled.isEnabled() and window.settings_page.machine_saved.isHidden()
+        window.settings_page.bistage_enabled.setChecked(True); assert window.settings_page.bistage_min_speed.isEnabled()
+        assert 'BOOST 2' in window.settings_page.flight_state_sequence.text() and 'COAST 2' in window.settings_page.flight_state_sequence.text()
+        assert 'ABORT' in window.settings_page.flight_state_sequence.text() and chr(8595) in window.settings_page.flight_state_sequence.text()
+        window.settings_page.bistage_min_speed.setValue(42.5)
+        assert window.settings_page.bistage_min_speed.value()==42.5 and not window.settings_page.bistage_min_speed.suffix()
+        window.settings_page.bistage_enabled.setChecked(False); assert not window.settings_page.bistage_min_speed.isEnabled()
+        assert window.settings_page.bistage_min_speed.value()==42.5
+        window.settings_page.bistage_enabled.setChecked(True); assert window.settings_page.machine_save.isEnabled()
+        assert window.settings_page.machine_save.text()=='Salva' and window.settings_page.machine_saved.isHidden()
+        window.settings_page.machine_save.click(); wait(lambda:not controller.state.foreground)
         assert not controller.state.error and controller.state.machine['bistage']
         assert controller.state.machine['minimum_coast_velocity']==42.5
-        assert not window.machine_save.isEnabled()
-        window.bistage_enabled.setChecked(False); window.machine_save.click(); wait(lambda:not controller.state.foreground)
+        assert not window.settings_page.machine_save.isEnabled()
+        assert window.settings_page.machine_saved.isHidden()
+        window.settings_page.bistage_enabled.setChecked(False); window.settings_page.machine_save.click(); wait(lambda:not controller.state.foreground)
         assert not controller.state.machine['bistage']
 
         assert window.configuration_page.channels_table.rowCount()==8 and window.configuration_page.rules_tree.topLevelItemCount()==2
         for i,r in enumerate(controller.state.local.rules):
             assert window.configuration_page.rules_tree.topLevelItem(i).text(0)==r['name']
+        # A click on a detail selects one whole rule, including its sibling rows.
+        from PySide6.QtCore import Qt
+        tree=window.configuration_page.rules_tree; window.navigate(1); app.processEvents()
+        first,second=(tree.topLevelItem(i) for i in range(2))
+        QTest.mouseClick(tree.viewport(),Qt.LeftButton,pos=tree.visualItemRect(first.child(0)).center())
+        assert tree.currentItem() is first and first.isSelected()
+        assert all(first.child(i).isSelected() for i in range(first.childCount()))
+        assert not second.isSelected() and not any(second.child(i).isSelected() for i in range(second.childCount()))
+        QTest.keyClick(tree,Qt.Key_Down)
+        assert tree.currentItem() is second and second.isSelected() and not first.isSelected()
+        QTest.mouseClick(tree.viewport(),Qt.LeftButton,Qt.ControlModifier,pos=tree.visualItemRect(first.child(1)).center())
+        assert tree.currentItem() is first and all(first.child(i).isSelected() for i in range(first.childCount()))
+        assert not second.isSelected()
+        with patch('perpetual_app.configuration_page.RuleDialog') as dialog:
+            dialog.return_value.exec.return_value=0
+            QTest.mouseClick(tree.viewport(),Qt.LeftButton,pos=tree.visualItemRect(first.child(0)).center())
+            QTest.mouseDClick(tree.viewport(),Qt.LeftButton,pos=tree.visualItemRect(first.child(0)).center())
+            assert dialog.call_args.args[1]['id']==controller.state.local.rules[0]['id']
+        selected=window.configuration_page.selected_rule()
+        updated=controller.state.local.clone(); updated.rules[0]['name']='Local selection check'
+        controller.edit_plan(updated)
+        assert window.configuration_page.selected_rule()==selected
+        controller.edit_plan(controller.state.base.clone()); window.navigate(0); app.processEvents()
         assert not window.arm_button.isEnabled() and window.arm_button.property('blocked') and window.sim_start.isEnabled()
         assert window.arm_button.text()=='ARM' and window.arm_button.objectName()=='armFlight'
         assert not hasattr(window,'phase_metric') and not hasattr(window,'sensor_metric')
@@ -602,7 +684,7 @@ def run():
             assert not controller.state.error and controller.state.base is not None
             assert controller.state.orientation==dict(supported=False)
             assert not window.servo_selection[0].isHidden() and window.check_pyros_button.isEnabled()
-            assert 'Aggiorna il firmware' in window.orientation_panel.saved.text() and not window.orientation_panel.save.isEnabled()
+            assert 'Aggiorna il firmware' in window.settings_page.orientation_panel.saved.text() and not window.settings_page.orientation_panel.save.isEnabled()
         controller.refresh(); wait(lambda:not controller.state.foreground)
         assert controller.state.orientation['supported'] and controller.state.orientation['up_axis']=='+X'
         backend.failed_pyros=1
@@ -715,6 +797,7 @@ def run():
         from PySide6.QtTest import QTest
         from PySide6.QtCore import Qt
         previous_size=window.size(); window.resize(1120,730); window.navigate(2); app.processEvents()
+        assert window.sim_record.x()<window.sim_physical.x() and window.sim_preflight_notice.isHidden()
         scroll=window.pages.widget(2).verticalScrollBar()
         scroll.setValue(min(40,scroll.maximum())); position=scroll.value()
         QTest.mouseClick(window.sim_start,Qt.LeftButton); wait(lambda:'sim begin' in backend.commands)
@@ -753,12 +836,12 @@ def run():
         assert not backend.prepared_mask and window.servo_states[0].text()=='non preparato' and window.servo_states[0].property('preparation')=='unprepared'
         window.prepare_servos_button.click(); wait(lambda:not controller.state.foreground)
         # Held servo PWM is not an armed run: all idle settings stay available.
-        assert window.factory_reset_button.isEnabled() and window.format_memory_button.isEnabled()
+        assert window.settings_page.factory_reset_button.isEnabled() and window.settings_page.format_memory_button.isEnabled()
         assert window.configuration_page.add_rule_button.isEnabled() and window.check_pyros_button.isEnabled()
-        window.orientation_panel.axis.setCurrentIndex(window.orientation_panel.axis.findData('-X')); window.render()
-        assert window.orientation_panel.axis.isEnabled() and window.orientation_panel.save.isEnabled()
+        window.settings_page.orientation_panel.axis.setCurrentIndex(window.settings_page.orientation_panel.axis.findData('-X')); window.render()
+        assert window.settings_page.orientation_panel.axis.isEnabled() and window.settings_page.orientation_panel.save.isEnabled()
         assert backend.prepared_mask
-        window.orientation_panel.axis.setCurrentIndex(window.orientation_panel.axis.findData('+X'))
+        window.settings_page.orientation_panel.axis.setCurrentIndex(window.settings_page.orientation_panel.axis.findData('+X'))
         # A rejected run is not a configuration draft and must not latch Start disabled.
         controller._complete(controller._epoch,997,'Avvio simulazione',None,CommandError('sim begin',dict(code='CONFIG_INVALID',ok=False)))
         assert not controller.state.staged
@@ -766,6 +849,7 @@ def run():
             window.sim_physical.setChecked(physical); window.render()
             assert backend.prepared_mask and controller.state.status['outputs_active']
             assert not controller.simulation_blocker() and window.sim_start.isEnabled()
+            assert window.sim_preflight_notice.isHidden() # Selecting physical outputs alone never shows the recovery action.
         controller.state.staged=True; window.render()
         assert not window.sim_start.isEnabled() and 'bozza' in window.sim_blocker.text()
         controller.state.staged=False; window.render()
@@ -802,18 +886,34 @@ def run():
             window.sim_physical.setChecked(checked); window.render()
             assert window.arm_button.isEnabled() and controller.state.preflight==physical_preflight
         assert len(backend.commands)==requests # Simulation selection never changes real-flight checks or sends commands.
-        window.arm_button.click(); wait(lambda:not controller.state.foreground)
+        previous_page=window.pages.currentIndex(); window.navigate(0); window.activateWindow(); app.processEvents()
+        QTest.mousePress(window.arm_button,Qt.LeftButton); QTest.qWait(1580); QTest.mouseRelease(window.arm_button,Qt.LeftButton)
+        wait(lambda:not controller.state.foreground); window.navigate(previous_page)
         assert 'IMU' in controller.state.error and controller.state.status['arming_state']=='disarmed'
         assert controller.state.preflight['reasons']==['IMU_UNAVAILABLE']
         assert not window.arm_button.isEnabled() and window.arm_button.property('blocked')
         backend.ready_to_arm=False
         # Physical selection only changes the request. Firmware refusal stays authoritative.
-        backend.reject_physical=True; window.sim_physical.setChecked(True); window.sim_start.click()
+        backend.reject_physical=True; window.sim_physical.setChecked(True)
+        assert window.sim_preflight_notice.isHidden()
+        window.sim_start.click()
         wait(lambda:not controller.state.foreground)
         assert 'sim begin physical' in backend.commands and not controller.state.sim['active']
         assert controller.state.preflight['reasons']==['IMU_UNAVAILABLE'] and 'Continuità' in controller.state.error
+        assert controller.state.sim_preflight['reasons']==['CONTINUITY_FAULT'] and not window.sim_preflight_notice.isHidden()
+        before=backend.commands.count('preflight'); starts=backend.commands.count('sim begin physical')
+        window.sim_preflight_button.click(); wait(lambda:not controller.state.foreground)
+        assert window.pages.currentIndex()==0 and controller.page==0 and backend.commands.count('preflight')==before+1
+        assert backend.commands.count('sim begin physical')==starts # Reviewing checks never starts or arms anything.
+        window.navigate(2); window.sim_physical.setChecked(False)
+        assert window.sim_preflight_notice.isHidden() and not controller.state.sim_preflight
+        window.sim_physical.setChecked(True); assert window.sim_preflight_notice.isHidden()
+        window.sim_start.click(); wait(lambda:not controller.state.foreground)
+        assert not window.sim_preflight_notice.isHidden()
         backend.reject_physical=False; gate=threading.Event(); backend.gates['sim begin physical']=gate
-        window.sim_start.click(); wait(lambda:backend.commands.count('sim begin physical')==2)
+        starts=backend.commands.count('sim begin physical')
+        window.sim_start.click(); wait(lambda:backend.commands.count('sim begin physical')==starts+1)
+        assert window.sim_preflight_notice.isHidden() and not controller.state.sim_preflight
         assert not window.sim_physical.isEnabled() and controller.state.status['arming_state']=='disarmed'
         gate.set(); wait(lambda:controller.state.sim.get('active') and not controller.state.foreground)
         assert controller.state.sim['output_mode']=='PHYSICAL' and window.arming_state.text()=='ARMED'
@@ -838,55 +938,69 @@ def run():
         assert controller.state.base.rules[0]['name']=='GUI native roundtrip'
         assert not controller.state.base.servos[1]['calibrated']
         # Real flash-format/download path inside the PC firmware fixture, not fabricated CSV.
-        backend.request('flights init'); backend.request('hil begin 0 200 logged_body record 4096')
+        backend.request('flights init'); window.navigate(3)
+        assert window.recorded_flights_page.flights_empty.isHidden()
+        gate=threading.Event(); backend.gates['flights list 0']=gate
+        window.recorded_flights_page.list_flights_button.click(); wait(lambda:'flights list 0' in backend.commands)
+        assert controller.state.foreground and window.recorded_flights_page.flights_empty.isHidden()
+        gate.set(); wait(lambda:not controller.state.foreground); backend.gates.pop('flights list 0')
+        assert not controller.state.flights and not controller.state.error
+        assert controller.state.flights_loaded and window.recorded_flights_page.flights_empty.isVisible()
+        assert window.recorded_flights_page.flights_empty.text()=='Nessun volo in memoria.' and not window.feedback.isVisible()
+        assert window.recorded_flights_page.flights_table.rowCount()==0 and not window.recorded_flights_page.download_button.isEnabled()
+        with patch.object(backend,'request',side_effect=CommandError('flights recover',dict(code='FLASH_WAKE_FAILED',ok=False))):
+            window.recorded_flights_page.list_flights_button.click(); wait(lambda:not controller.state.foreground)
+        assert controller.state.error and not controller.state.flights_loaded and window.recorded_flights_page.flights_empty.isHidden()
+        backend.request('hil begin 0 200 logged_body record 4096')
         for i in range(22): backend.request(f'hil sample {i*5} 0 0 9.80665 0 0 0 101325')
         backend.request('hil stop completed')
         controller.list_flights(); wait(lambda:not controller.state.foreground)
         assert len(controller.state.flights)==1
+        assert window.recorded_flights_page.flights_empty.isHidden()
         with tempfile.TemporaryDirectory() as folder:
             target=Path(folder)/'flight.csv'
             window.navigate(3)
-            assert window.download_feedback.currentIndex()==0 and not window.download_progress.isVisible()
-            with patch('perpetual_app.window.QFileDialog.getSaveFileName',return_value=('','CSV (*.csv)')):
-                window.download_button.click()
-            assert not controller.state.download and not window.download_progress.isVisible()
-            gate=threading.Event(); backend.gates['flights read 1 0 0']=gate
-            with patch('perpetual_app.window.QFileDialog.getSaveFileName',return_value=(str(target),'CSV (*.csv)')):
-                window.download_button.click()
-            wait(lambda:'flights read 1 0 0' in backend.commands and controller.state.download.get('total')==22)
-            assert window.download_progress.isVisible() and window.download_result.isHidden()
-            assert window.download_progress.maximum()==100 and window.download_progress.value()<100
-            assert window.download_progress.text()=='0% · Calcolo tempo…'
+            assert window.recorded_flights_page.download_feedback.currentIndex()==0 and not window.recorded_flights_page.download_progress.isVisible()
+            with patch('perpetual_app.recorded_flights_page.QFileDialog.getSaveFileName',return_value=('','CSV (*.csv)')):
+                window.recorded_flights_page.download_button.click()
+            assert not controller.state.download and not window.recorded_flights_page.download_progress.isVisible()
+            gate=threading.Event(); backend.gates['flights packed 1 0 0']=gate
+            with patch('perpetual_app.recorded_flights_page.QFileDialog.getSaveFileName',return_value=(str(target),'CSV (*.csv)')):
+                window.recorded_flights_page.download_button.click()
+            wait(lambda:'flights packed 1 0 0' in backend.commands and controller.state.download.get('total')==22)
+            assert window.recorded_flights_page.download_progress.isVisible() and window.recorded_flights_page.download_result.isHidden()
+            assert window.recorded_flights_page.download_progress.maximum()==100 and window.recorded_flights_page.download_progress.value()<100
+            assert window.recorded_flights_page.download_progress.text()=='0% · Calcolo tempo…'
             controller._on_progress(controller._epoch-1,11,22,10) # Results from a previous connection cannot change ETA.
             assert controller.state.download['eta_seconds'] is None
             controller._on_progress(controller._epoch,11,22,.5)
             assert controller.state.download['eta_seconds'] is None
             controller._on_progress(controller._epoch,11,22,10)
-            assert controller.state.download['eta_seconds']==10 and window.download_progress.text()=='50% · ~10 s rimanenti'
+            assert controller.state.download['eta_seconds']==10 and window.recorded_flights_page.download_progress.text()=='50% · ~10 s rimanenti'
             controller._on_progress(controller._epoch,22,22,20)
-            assert window.download_progress.text()=='99% · Finalizzazione…'
-            gate.set(); wait(lambda:not controller.state.foreground); backend.gates.pop('flights read 1 0 0')
+            assert window.recorded_flights_page.download_progress.text()=='99% · Finalizzazione…'
+            gate.set(); wait(lambda:not controller.state.foreground); backend.gates.pop('flights packed 1 0 0')
             assert not controller.state.error and controller.state.flight['samples']==22
-            assert target.with_suffix('.json').exists() and len(window.flight_plot.points)==22
+            assert target.with_suffix('.json').exists() and len(window.recorded_flights_page.flight_plot.points)==22
             assert controller.state.download['state']=='completed' and controller.state.download['done']==22
-            assert not window.download_progress.isVisible() and window.download_result.isVisible()
-            assert window.download_result.text()=='Downloaded at '+str(target.resolve())
+            assert not window.recorded_flights_page.download_progress.isVisible() and window.recorded_flights_page.download_result.isVisible()
+            assert window.recorded_flights_page.download_result.text()=='Downloaded at '+str(target.resolve())
             # Cancel during a real pending reply, after a chunk has been saved.
             cancelled=Path(folder)/'cancelled.csv'; marker=len(backend.commands)
-            gate=threading.Event(); backend.gates['flights read 1 0 2']=gate
+            gate=threading.Event(); backend.gates['flights packed 1 1 0']=gate
             controller.download('1',cancelled)
-            wait(lambda:'flights read 1 0 2' in backend.commands[marker:] and controller.state.download.get('done')==2)
-            assert cancelled.exists() and window.download_button.text()=='Annulla' and window.download_button.isEnabled()
-            assert window.download_button.objectName()=='downloadCancel'
-            window.download_button.click()
+            wait(lambda:'flights packed 1 1 0' in backend.commands[marker:] and controller.state.download.get('done')==9)
+            assert cancelled.exists() and window.recorded_flights_page.download_button.text()=='Annulla' and window.recorded_flights_page.download_button.isEnabled()
+            assert window.recorded_flights_page.download_button.objectName()=='downloadCancel'
+            window.recorded_flights_page.download_button.click()
             assert controller.state.download['state']=='cancelling' and controller.state.foreground
-            assert window.download_button.text()=='Annullamento…' and not window.download_button.isEnabled()
-            gate.set(); wait(lambda:not controller.state.foreground); backend.gates.pop('flights read 1 0 2')
+            assert window.recorded_flights_page.download_button.text()=='Annullamento…' and not window.recorded_flights_page.download_button.isEnabled()
+            gate.set(); wait(lambda:not controller.state.foreground); backend.gates.pop('flights packed 1 1 0')
             assert controller.state.download['state']=='cancelled' and not controller.state.error and controller.state.connected
-            assert window.download_result.text()=='Download annullato' and not window.download_progress.isVisible()
-            assert window.download_button.text()=='Scarica selezionato' and window.download_button.isEnabled()
+            assert window.recorded_flights_page.download_result.text()=='Download annullato' and not window.recorded_flights_page.download_progress.isVisible()
+            assert window.recorded_flights_page.download_button.text()=='Scarica selezionato' and window.recorded_flights_page.download_button.isEnabled()
             assert not cancelled.exists() and not cancelled.with_suffix('.json').exists()
-            assert [command for command in backend.commands[marker:] if command.startswith('flights read ')]==['flights read 1 0 0','flights read 1 0 2']
+            assert [command for command in backend.commands[marker:] if command.startswith('flights packed ')]==['flights packed 1 0 0','flights packed 1 1 0']
             assert backend.request('flights info 1')['samples']==22 # Reply drained; remote recording and connection are intact.
             controller.download('1',cancelled); wait(lambda:not controller.state.foreground)
             assert controller.state.download['state']=='completed' and cancelled.with_suffix('.json').exists()
@@ -894,43 +1008,46 @@ def run():
                 window.navigate(page); app.processEvents(); assert window.grab().width()>=1120
             check_flight_plots(window,controller,app)
             controller.download('1',target); wait(lambda:not controller.state.foreground) # Existing files are rejected.
-            assert controller.state.download['state']=='failed' and window.download_result.text()=='Download non completato'
-            assert not window.download_progress.isVisible()
+            assert controller.state.download['state']=='failed' and window.recorded_flights_page.download_result.text()=='Download non completato'
+            assert not window.recorded_flights_page.download_progress.isVisible()
             with patch('download_flight.download',side_effect=CommandError('flights info 1',dict(ok=False,code='Corrupt'))):
                 controller.download('1',Path(folder)/'corrupt.csv'); wait(lambda:not controller.state.foreground)
-            assert window.download_result.text()=='Volo corrotto' and controller.state.error=='Volo corrotto'
-            assert not window.download_progress.isVisible()
+            assert window.recorded_flights_page.download_result.text()=='Volo corrotto' and controller.state.error=='Volo corrotto'
+            assert not window.recorded_flights_page.download_progress.isVisible()
             backend.request('hil begin 0 200 logged_body record 4096'); backend.request('hil stop completed')
             empty=Path(folder)/'empty_flight.csv'; controller.download('2',empty); wait(lambda:not controller.state.foreground)
             assert empty.exists() and empty.with_suffix('.json').exists()
-            assert controller.state.download['state']=='completed' and window.download_result.text()=='Downloaded at '+str(empty.resolve())
+            assert controller.state.download['state']=='completed' and window.recorded_flights_page.download_result.text()=='Downloaded at '+str(empty.resolve())
             assert 'anteprima non disponibile' in controller.state.error # An empty flight still downloads successfully.
             controller.list_flights(); wait(lambda:not controller.state.foreground)
             assert [e['sequence'] for e in controller.state.flights]==['2','1']
-            assert window.flights_table.item(0,0).text()=='2'
-            assert window.flights_table.currentRow()==1 # The selected flight 1 moved down; preserve its identity.
-            with patch.object(controller,'download') as download, patch('perpetual_app.window.QFileDialog.getSaveFileName',return_value=(str(target),'CSV (*.csv)')):
-                window.download_selected()
+            assert window.recorded_flights_page.flights_table.item(0,0).text()=='2'
+            assert window.recorded_flights_page.flights_table.currentRow()==1 # The selected flight 1 moved down; preserve its identity.
+            with patch.object(controller,'download') as download, patch('perpetual_app.recorded_flights_page.QFileDialog.getSaveFileName',return_value=(str(target),'CSV (*.csv)')):
+                window.recorded_flights_page.download_selected()
                 download.assert_called_once_with('1',str(target))
         # Maintenance uses real firmware storage and preserves the opposite partition.
         assert window.nav[4].text()=='Impostazioni' and window.nav[5].text()=='Console'
-        panel=window.orientation_panel
+        panel=window.settings_page.orientation_panel
         panel.axis.setCurrentIndex(panel.axis.findData('-X')); app.processEvents()
-        assert panel.caption.text()=='USB in alto' and panel.save.isEnabled()
+        assert panel.image.accessibleName()=='Anteprima orientamento -X' and panel.save.isEnabled()
         panel.save.click(); wait(lambda:not controller.state.foreground)
         assert not controller.state.error and controller.state.orientation['up_axis']=='-X'
         assert not panel.save.isEnabled() and '-X' in panel.saved.text()
         panel.axis.setCurrentIndex(panel.axis.findData('+Y')); app.processEvents()
-        assert panel.caption.text()=='USB a sinistra' and panel.image.pixmap().width()>panel.image.pixmap().height()
+        assert panel.image.accessibleName()=='Anteprima orientamento +Y' and panel.image.pixmap().width()>panel.image.pixmap().height()
         left=panel.image.pixmap().toImage()
         panel.axis.setCurrentIndex(panel.axis.findData('-Y')); app.processEvents()
-        assert panel.caption.text()=='USB a destra' and panel.image.pixmap().width()>panel.image.pixmap().height()
+        assert panel.image.accessibleName()=='Anteprima orientamento -Y' and panel.image.pixmap().width()>panel.image.pixmap().height()
         assert panel.image.pixmap().toImage()!=left
         panel.axis.setCurrentIndex(panel.axis.findData('+Z')); app.processEvents()
-        assert panel.caption.text()=='Immagine di riferimento +X'
+        assert panel.image.accessibleName()=='Anteprima orientamento +Z' and not panel.z_artwork.isNull()
+        positive_z=panel.image.pixmap().toImage()
+        panel.axis.setCurrentIndex(panel.axis.findData('-Z')); app.processEvents()
+        assert panel.image.accessibleName()=='Anteprima orientamento -Z' and panel.image.pixmap().toImage()==positive_z.transformed(QTransform().rotate(180))
         saved=controller.state.base.clone()
         with patch('perpetual_app.window.QMessageBox.question',return_value=QMessageBox.No):
-            before=len(backend.commands); window.confirm_maintenance(False)
+            before=len(backend.commands); window.settings_page.confirm_maintenance(False)
             assert len(backend.commands)==before
         controller.save_machine(True,50); wait(lambda:not controller.state.foreground)
         assert controller.state.machine['bistage']
@@ -938,7 +1055,8 @@ def run():
         assert not controller.state.error and controller.state.base is None and not controller.state.local.rules
         assert controller.state.orientation['up_axis'] is None and panel.axis.currentData() is None
         assert panel.axis.currentText()==chr(8212) and not panel.save.isEnabled()
-        assert not controller.state.machine['bistage'] and not window.bistage_enabled.isChecked()
+        assert panel.image_opacity.opacity()==.25
+        assert not controller.state.machine['bistage'] and not window.settings_page.bistage_enabled.isChecked()
         assert not backend.request('config show')['available']
         assert backend.request('flights info 1')['samples']==22
         controller.edit_plan(saved); controller.validate(apply=True); wait(lambda:not controller.state.foreground)

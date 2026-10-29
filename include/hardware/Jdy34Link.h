@@ -7,6 +7,7 @@ namespace bluetooth {
 // to MAIN. Boot only queries module NVM; it never renames/reconfigures the radio.
 class Jdy34Link {
 public:
+  static constexpr uint32_t UartBaud = 230400;
   void begin(uint32_t now);
   const char *poll(uint32_t now); // At most one CRLF-terminated AT request.
   bool feed(char byte, uint32_t now); // True: one application line, without LF.

@@ -5,7 +5,7 @@ from PySide6.QtGui import QColor,QPainter,QPainterPath,QPen
 from PySide6.QtWidgets import QWidget,QToolTip
 
 
-PHASE_COLORS={'PAD':'#e7edf3','BOOST':'#fbe5da','COAST':'#e0edf9','DESCENT':'#dcf0e9','LANDED':'#ece7f4','BOOST 1':'#fbe5da','COAST 1':'#e0edf9','BOOST 2':'#ffd7c4','COAST 2':'#c9dff5','ABORT':'#f6cccc'}
+PHASE_COLORS={'PAD':'#e7edf3','BOOST':'#fbe5da','COAST':'#e0edf9','DESCENT':'#dcf0e9','LANDED':'#ece7f4','BOOST 1':'#fbe5da','COAST 1':'#e0edf9','BOOST 2':'#ffd7c4','COAST 2':'#c9dff5','ABORT':'#f6cccc','Controllo abilitato':'#dcf0e9','Controllo inibito':'#edf1f5'}
 
 
 def axis_scale(values,angular=False,include_zero=True):
@@ -34,19 +34,20 @@ def axis_scales(values_by_axis,angular=False,include_zero=True):
 
 class FlightPlot(QWidget):
     # Each curve: (CSV row column, display name, unit, colour, axis).
-    def __init__(self,curves,angular=False,include_zero=True):
-        super().__init__(); self.curves=curves; self.angular=angular; self.include_zero=include_zero
+    def __init__(self,curves,angular=False,include_zero=True,fixed_range=None):
+        super().__init__(); self.fixed_range=fixed_range; self.curves=curves; self.angular=angular; self.include_zero=include_zero
         self.rows=[]; self.points=[]; self.markers=[]; self.phases=[]
-        self._segments=[]; self._hover=None; self.setMouseTracking(True)
+        self._segments=[]; self._hover=None; self._geometry_key=None; self._paths={}; self._scales={}; self.setMouseTracking(True)
         self.show_actuators=True; self.show_states=True; self.setMinimumHeight(240)
 
     def set_data(self,rows,markers=(),phases=()):
-        self._segments=[]; self._hover=None; QToolTip.hideText()
+        self._geometry_key=None; self._segments=[]; self._hover=None; QToolTip.hideText()
         self.rows=rows; self.markers=list(markers); self.phases=list(phases)
         self.points=[(r[0],r[self.curves[0][0]]) for r in rows if r[self.curves[0][0]] is not None]
         self.update()
 
     def set_overlays(self,actuators,states):
+        if (self.show_actuators,self.show_states)==(actuators,states): return
         self.show_actuators=actuators; self.show_states=states; self.update()
 
     def _nearest_sample(self,position):
@@ -70,8 +71,35 @@ class FlightPlot(QWidget):
     def leaveEvent(self,event):
         self._hover=None; QToolTip.hideText(); self.update(); super().leaveEvent(event)
 
+    def _prepare_geometry(self,box):
+        key=(box.left(),box.top(),box.width(),box.height(),tuple(self.curves),self.angular,self.include_zero,self.fixed_range)
+        if key==self._geometry_key: return
+        self._geometry_key=key; self._segments=[]; self._paths={}
+        dual=any(c[4]==1 for c in self.curves)
+        values={axis:[r[c[0]] for c in self.curves if c[4]==axis for r in self.rows if r[c[0]] is not None]
+                for axis in ((0,1) if dual else (0,))}
+        self._scales=axis_scales(values,self.angular,self.include_zero)
+        if self.fixed_range:
+            low,high=self.fixed_range; self._scales={0:(low,high,[low+(high-low)*i/4 for i in range(5)])}
+        x0=self.rows[0][0]; span=max(.001,self.rows[-1][0]-x0)
+        for curve in self.curves:
+            col,_,_,_,axis=curve
+            if axis not in self._scales: continue
+            low,high,_=self._scales[axis]; path=QPainterPath(); previous=None; angular_points=[]
+            for r in self.rows:
+                value=r[col]
+                if value is None: previous=None; continue
+                point=QPointF(box.left()+(r[0]-x0)/span*box.width(),box.bottom()-(value-low)/(high-low)*box.height())
+                if previous is None or (self.angular and abs(value-previous[1][col])>=180):
+                    path.moveTo(point)
+                    if self.angular: self._segments.append((point,point,r,r,curve))
+                else:
+                    path.lineTo(point); self._segments.append((previous[0],point,previous[1],r,curve))
+                if self.angular: angular_points.append(point)
+                previous=(point,r)
+            self._paths[col]=(path,angular_points)
+
     def paintEvent(self,event):
-        self._segments=[]
         p=QPainter(self); p.setRenderHint(QPainter.RenderHint.Antialiasing)
         dual=any(c[4]==1 for c in self.curves)
         box=QRectF(68,48,max(10,self.width()-136),max(10,self.height()-82))
@@ -97,9 +125,8 @@ class FlightPlot(QWidget):
             p.setPen(QColor('#7b8998'))
             p.drawText(QRectF(x-26,box.bottom()+8,52,18),Qt.AlignCenter,f'{x0+(x1-x0)*i/4:.1f}')
         p.drawText(QRectF(box.right()+31,box.bottom()+8,24,18),Qt.AlignLeft,'s')
-        values_by_axis={axis:[r[c[0]] for c in self.curves if c[4]==axis for r in self.rows if r[c[0]] is not None]
-                        for axis in ((0,1) if dual else (0,))}
-        scales=axis_scales(values_by_axis,self.angular,self.include_zero)
+        self._prepare_geometry(box)
+        scales=self._scales
         for axis,(low,high,ticks) in scales.items():
             curves=[c for c in self.curves if c[4]==axis]
             color=curves[0][3] if dual else '#65768b'
@@ -121,18 +148,7 @@ class FlightPlot(QWidget):
             p.setPen(line_color); text=f'{name} ({unit})'
             p.drawText(QPointF(legend_x,17),text); legend_x+=p.fontMetrics().horizontalAdvance(text)+24
             if axis not in scales: continue
-            low,high,_=scales[axis]; path=QPainterPath(); previous=None; angular_points=[]
-            for r in self.rows:
-                value=r[col]
-                if value is None: previous=None; continue
-                point=QPointF(xpos(r[0]),box.bottom()-(value-low)/(high-low)*box.height())
-                if previous is None or (self.angular and abs(value-previous[1][col])>=180):
-                    path.moveTo(point)
-                    if self.angular: self._segments.append((point,point,r,r,(col,name,unit,color,axis)))
-                else:
-                    path.lineTo(point); self._segments.append((previous[0],point,previous[1],r,(col,name,unit,color,axis)))
-                if self.angular: angular_points.append(point)
-                previous=(point,r)
+            path,angular_points=self._paths[col]
             p.setPen(QPen(line_color,3 if col==selected else 2)); p.drawPath(path)
             if angular_points: p.drawPoints(angular_points)
         if not scales:

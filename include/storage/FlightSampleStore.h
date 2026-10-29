@@ -15,14 +15,14 @@ struct SampleBlock {
   uint64_t sequence = 0;
   uint32_t index = 0, firstSample = 0;
   uint16_t count = 0;
-  std::array<FlightSample, 11> samples;
+  std::array<FlightSample, 9> samples;
 };
 // Low-level synchronous storage-worker component; never call flush from navigation.
 // Caller owns a contiguous, preallocated, erased extent. No erase or directory writes.
 class FlightSampleStore {
 public:
-  static constexpr uint32_t RecordBytes = 64, BodyBytes = 768, BlockBytes = 1024;
-  static constexpr uint16_t SamplesPerBlock = 11;
+  static constexpr uint32_t RecordBytes = 76, BodyBytes = 768, BlockBytes = 1024;
+  static constexpr uint16_t SamplesPerBlock = 9;
   explicit FlightSampleStore(FlashDevice &flash) : flash_(flash) {}
   bool begin(uint64_t sequence, uint32_t start, uint32_t allocatedBytes);
   bool append(const FlightSample &sample); // RAM only; full buffer requires worker flush.
@@ -35,6 +35,7 @@ public:
   uint16_t bufferedSamples() const { return buffered_; }
   SampleError error() const { return error_; }
   static const char *errorName(SampleError error);
+  static void encodeSample(const FlightSample &sample, uint8_t *record);
 private:
   friend class FlightRecorder;
   void abandon() { active_ = false; buffered_ = 0; }

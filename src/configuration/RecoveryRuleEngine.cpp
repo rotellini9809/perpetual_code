@@ -52,6 +52,15 @@ bool RuleEngine::conditionTrue(const Condition &c, uint64_t now,
   }
   return false;
 }
+uint8_t RuleEngine::airbrakeConditions(uint64_t now, const FlightSnapshot &s) const {
+  uint8_t failed=0;
+  const bool phaseValid=s.phaseValid && uint8_t(s.phase)<=uint8_t(FlightPhase::Abort) && fresh(now,s.phaseMeasuredMs);
+  const bool altitude=s.altitude.valid && std::isfinite(s.altitude.value) && fresh(now,s.altitude.measuredMs);
+  const bool velocity=s.verticalVelocity.valid && std::isfinite(s.verticalVelocity.value) && fresh(now,s.verticalVelocity.measuredMs);
+  for (std::size_t i=0;i<config_.airbrakes.conditionCount;++i)
+    if (!active_ || !phaseValid || !airbornePhase(s.phase) || !conditionTrue(config_.airbrakes.conditions[i],now,s,altitude,velocity)) failed|=uint8_t(1u<<i);
+  return failed;
+}
 Evaluation RuleEngine::evaluate(uint64_t now, const FlightSnapshot &s) {
   Evaluation result;
   if (!active_ || now < lastMs_) return result;

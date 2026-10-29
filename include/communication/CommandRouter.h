@@ -6,6 +6,7 @@
 #include "simulation/SimulationCommands.h"
 #include "communication/ArmingCommands.h"
 #include "hardware/PowerManager.h"
+#include "communication/CommandPolicy.h"
 
 // Routes siblings and owns the development-mode command policy.
 class CommandRouter : public CommandExtension {
@@ -21,7 +22,7 @@ public:
   void setPower(PowerManager &power, bool (*transportBusy)() = nullptr) { power_=&power; transportBusy_=transportBusy; }
   void pollPower();
 private:
-  bool dispatchCommand(const char *command, const char *arguments, bool hasId, uint32_t id, char *output, std::size_t capacity);
+  bool dispatchCommand(const char *command, const char *arguments, const protocol::CommandPolicy &policy, bool hasId, uint32_t id, char *output, std::size_t capacity);
   bool occupied() const;
   bool powerBusy() const;
   Source owner_ = Source::None;

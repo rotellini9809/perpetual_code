@@ -1,5 +1,8 @@
 #include <cstdio>
 #include "communication/CommandService.h"
+#include "communication/CommandPolicy.h"
+#include "communication/RecordingReply.h"
+#include "communication/PackedFlightCodec.h"
 #include <cassert>
 #include <string>
 #include <vector>
@@ -37,6 +40,13 @@ std::vector<std::string> send(CommandService &service, const std::string &bytes,
 }
 void run() {
   CommandService service;
+  {
+    CommandService custom; CommandService::Status status;
+    status.bluetoothBaud=600000; status.bluetoothRxOverflows=3;
+    char reply[CommandService::MaxReply]; bool ready=false;
+    for (char c : std::string("bluetooth status\n")) ready=custom.feed(c,status,reply,sizeof(reply));
+    assert(ready && std::strstr(reply,"\"baud\":600000") && std::strstr(reply,"\"uart_rx_overflows\":3"));
+  }
   assert(send(service, "pi").empty());
   assert(send(service, "ng\n").at(0) == "PONG\n");
   auto replies = send(service, "\n \r\n ping\r\ninfo\nstatus\nhelp\n");
@@ -515,13 +525,13 @@ void run() {
     const auto command = "hil sample " + std::to_string(i*5) + " 0 0 9.80665 0 0 0 101325 22.5";
     has(send(usb, command), "\"ok\":true");
   }
-  has(send(usb, "hil stop"), "\"saved_samples\":44");
+  has(send(usb, "hil stop"), "\"saved_samples\":36");
   assert(session.timing().prepareUs > 0 && session.timing().finishUs > 0);
   assert(session.timing().step.count == 45 && session.timing().storage.count == 45 && session.timing().storage.maxUs > 400);
   has(send(usb, "hil timing"), "\"timing_valid\":true");
   has(send(usb, "flights timing"), "\"failures\":[0,0,0]");
-  has(send(usb, "hil status"), "\"dropped_samples\":1");
-  has(send(usb, "flights info 1"), "\"samples\":44");
+  has(send(usb, "hil status"), "\"dropped_samples\":9");
+  has(send(usb, "flights info 1"), "\"samples\":36");
   has(send(usb, "flights info 1"), "\"status\":4");
   has(send(usb, "flights read 1 0 0"), "22.5");
   has(send(usb, "flights info 18446744073709551616"), "INVALID_ARGUMENT");
@@ -628,7 +638,7 @@ void run() {
   assert(recorder.begin(fixture(),limits,4096,storage::SensorMode::Simulation,storage::OutputMode::Virtual,
                         sensors::FrameConvention::LoggedCalibratedBody));
   const auto damaged=*recorder.current(); const auto headerBytes=recorder.metadata()->layout.headerBytes;
-  for(unsigned i=0;i<11;++i) { storage::FlightSample s; s.timeMs=i; assert(recorder.append(s)); }
+  for(unsigned i=0;i<9;++i) { storage::FlightSample s; s.timeMs=i; assert(recorder.append(s)); }
   assert(recorder.service()); recorder.abort(); flash.bytes[damaged.start+headerBytes+36]^=1;
   const auto damagedBytes=std::vector<uint8_t>(flash.bytes.begin()+damaged.start,flash.bytes.begin()+damaged.start+damaged.allocatedBytes);
   has(send(usb,"flights recover"),"\"corrupt_flights\":1");
@@ -636,7 +646,7 @@ void run() {
   has(send(usb,"flights list 0"),"\"corrupt\":true");
   has(send(usb,"flights list 0"),"\"status\":6");
   has(send(usb,"flights info "+std::to_string(damaged.sequence)),"Corrupt");
-  has(send(usb,"flights info 1"),"\"samples\":44");
+  has(send(usb,"flights info 1"),"\"samples\":36");
   has(send(usb,"flights recover"),"\"ready\":true");
   assert(std::equal(damagedBytes.begin(),damagedBytes.end(),flash.bytes.begin()+damaged.start));
   usb.setExtension(&router); usb.reset(); router.setPower(power);
@@ -805,7 +815,87 @@ void run() {
 }
 }
 
+namespace test_command_policy_and_fragments {
+void run() {
+  using protocol::CommandGroup;
+  enum { Read=1, Mutation=2, Operational=4, Maintenance=8, Begin=16 };
+  struct Case { const char *command; const char *args; CommandGroup group; unsigned flags; };
+  const Case cases[] = {
+    {"config","machine",CommandGroup::Configuration,Read|Operational},
+    {"config","machine bistage 35",CommandGroup::Configuration,Mutation|Operational|Maintenance},
+    {"config","orientation",CommandGroup::Configuration,Read|Operational},
+    {"config","orientation +X extra",CommandGroup::Configuration,Mutation|Operational|Maintenance},
+    {"config","reset",CommandGroup::Configuration,Mutation|Operational|Maintenance},
+    {"config","draft",CommandGroup::Configuration,Read|Operational},
+    {"rule","list",CommandGroup::Configuration,Read|Operational},
+    {"servo","release",CommandGroup::Configuration,Mutation|Operational},
+    {"airbrake","status",CommandGroup::Configuration,Read},
+    {"config","airbrakes",CommandGroup::Configuration,Read|Operational},
+    {"config","airbrakes on",CommandGroup::Configuration,Mutation|Operational|Maintenance},
+    {"servo","show",CommandGroup::Configuration,Read|Operational},
+    {"pyro","continuity",CommandGroup::Configuration,Read|Operational},
+    {"config","show \"unterminated",CommandGroup::Configuration,Read|Operational},
+    {"flights","packed 1 0 0",CommandGroup::Flights,Read|Operational},
+    {"flights","format",CommandGroup::Flights,Mutation|Operational|Maintenance},
+    {"flights","timing reset",CommandGroup::Flights,Mutation|Operational},
+    {"flights","recover",CommandGroup::Flights,Mutation|Operational},
+    {"sim","status",CommandGroup::Simulation,Read},
+    {"sim","events",CommandGroup::Simulation,Read},
+    {"sim","begin physical record",CommandGroup::Simulation,Mutation|Operational|Begin},
+    {"sim","stop",CommandGroup::Simulation,Mutation|Operational},
+    {"hil","begin",CommandGroup::Hil,Mutation|Operational|Begin},
+    {"hil","timing",CommandGroup::Hil,Read},
+    {"replay","begin",CommandGroup::Replay,Mutation|Operational|Begin},
+    {"arm","extra",CommandGroup::Other,Mutation|Operational|Begin},
+    {"ds","",CommandGroup::Other,Mutation|Operational},
+    {"preflight","physical",CommandGroup::Other,Read|Operational},
+    {"sensors","",CommandGroup::Other,Read|Operational},
+    {"sleep","",CommandGroup::Power,Mutation},
+    {"wake","extra",CommandGroup::Power,Mutation},
+    {"control","status",CommandGroup::Control,Read},
+    {"unknown","format",CommandGroup::Other,Read},
+  };
+  for (const auto &c : cases) {
+    const protocol::Tokens tokens(c.args);
+    const auto p=protocol::classifyCommand(c.command,tokens);
+    const unsigned flags=(p.readOnly ? Read : 0)|(p.mutation ? Mutation : 0)|(p.operational ? Operational : 0)|
+                         (p.maintenance ? Maintenance : 0)|(p.beginRun ? Begin : 0);
+    assert(p.group==c.group && flags==c.flags);
+  }
+  flight::RuntimeStatus status;
+  status.recordingSequence=UINT64_MAX; status.savedSamples=17; status.droppedSamples=3;
+  status.pendingSamples=7; status.recordingBusy=true; status.recordingError=storage::RecorderError::Sample;
+  protocol::Json fragment;
+  protocol::appendRecordingBusy(fragment,status);
+  protocol::appendRecordingCounts(fragment,status);
+  protocol::appendRecordingError(fragment,status);
+  protocol::appendRecordingPending(fragment,status);
+  assert(!strcmp(fragment.bytes,R"(,"recording_busy":true,"recording_sequence":"18446744073709551615","saved_samples":17,"dropped_samples":3,"recording_error":"Sample","pending_samples":7)"));
+
+  storage::SampleBlock block; block.index=7; block.firstSample=42; block.count=1;
+  block.samples[0].values.fill(0); block.samples[0].batteryMv=0;
+  protocol::Json encoded;
+  assert(protocol::appendPackedFlightSamples(encoded,block,0));
+  assert(!strcmp(encoded.bytes,R"(,"block":7,"offset":0,"first":42,"block_count":1,"count":1,"crc32":3565452569,"data":"AAADAP//////////")"));
+  protocol::Json invalid;
+  assert(!protocol::appendPackedFlightSamples(invalid,block,1) && invalid.length==0);
+  block.count=12;
+  assert(!protocol::appendPackedFlightSamples(invalid,block,0) && invalid.length==0);
+  block.count=9; block.index=UINT32_MAX; block.firstSample=UINT32_MAX-9;
+  for (unsigned i=0;i<block.count;++i) {
+    auto &s=block.samples[i]; s.timeMs=i*5;
+    for (unsigned j=0;j<s.values.size();++j) s.values[j]=float((i+1)*7919+(j+1)*104729)/(i+j+1);
+    s.phase=recovery::FlightPhase::Abort; s.abortReason=recovery::AbortReason::Tilt;
+  }
+  protocol::Json bounded;
+  bounded.add(R"(,"sequence":"18446744073709551615")");
+  assert(protocol::appendPackedFlightSamples(bounded,block,0));
+  assert(bounded.ok && bounded.length<sizeof(bounded.bytes));
+}
+}
+
 int main() {
+  test_command_policy_and_fragments::run();
   std::puts("  usb_command_service"); std::fflush(stdout);
   test_usb_command_service::run();
   std::puts("  configuration_commands"); std::fflush(stdout);

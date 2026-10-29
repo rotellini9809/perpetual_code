@@ -1,3 +1,4 @@
+#include "configuration/StateMachineValidation.h"
 #include "storage/ConfigurationStore.h"
 #include "storage/BinaryEncoding.h"
 #include "storage/VerifiedPage.h"
@@ -9,7 +10,23 @@
 namespace storage {
 namespace {
 constexpr uint32_t OrientationAddress=ConfigurationStore::Begin+FlashLayout::SectorBytes;
+constexpr uint32_t AirbrakeAddress=ConfigurationStore::Begin+3*FlashLayout::SectorBytes;
 constexpr uint32_t MachineAddress=ConfigurationStore::Begin+2*FlashLayout::SectorBytes;
+}
+bool ConfigurationStore::loadAirbrakes(bool &enabled) {
+  uint8_t page[FlashLayout::PageBytes];
+  if (!flash_.read(AirbrakeAddress,page,sizeof(page))) return fail(ConfigError::Io);
+  bool blank=true; for (auto byte:page) blank &= byte==255;
+  if (blank) { enabled=false; error_=ConfigError::None; return true; }
+  if (binary::get32(page,4)!=0x52424150 || page[4]!=1 || page[5]>1 || binary::get32(page+252,4)!=binary::crc(page,252)) return fail(ConfigError::Corrupt);
+  enabled=page[5]; error_=ConfigError::None; return true;
+}
+bool ConfigurationStore::saveAirbrakes(bool enabled,bool disarmed) {
+  if (!disarmed) return fail(ConfigError::Armed);
+  uint8_t page[FlashLayout::PageBytes],check[FlashLayout::PageBytes]; memset(page,255,sizeof(page));
+  binary::put(page,0x52424150,4); page[4]=1; page[5]=enabled; binary::put(page+252,binary::crc(page,252),4);
+  if (!flash_.eraseSector(AirbrakeAddress) || writeVerifiedPage(flash_,AirbrakeAddress,page,check)!=PageWriteError::None) return fail(ConfigError::Io);
+  error_=ConfigError::None; return true;
 }
 bool ConfigurationStore::loadStateMachine(recovery::StateMachineSettings &settings) {
   uint8_t page[FlashLayout::PageBytes];
@@ -17,13 +34,14 @@ bool ConfigurationStore::loadStateMachine(recovery::StateMachineSettings &settin
   bool blank=true; for (auto byte:page) blank &= byte==255;
   if (blank) { settings={}; error_=ConfigError::None; return true; }
   if (binary::get32(page,4)!=0x4d534650 || page[4]!=1 || page[5]>1 || binary::get32(page+252,4)!=binary::crc(page,252)) return fail(ConfigError::Corrupt);
-  uint32_t bits=binary::get32(page+8,4); float minimum; memcpy(&minimum,&bits,4);
-  if (!std::isfinite(minimum) || minimum<0 || minimum>100000) return fail(ConfigError::Corrupt);
-  settings.bistage=page[5]; settings.minimumCoastVelocity=minimum; error_=ConfigError::None; return true;
+  recovery::StateMachineSettings decoded; decoded.bistage=page[5];
+  uint32_t bits=binary::get32(page+8,4); memcpy(&decoded.minimumCoastVelocity,&bits,4);
+  if (!recovery::validStateMachineSettings(decoded)) return fail(ConfigError::Corrupt);
+  settings=decoded; error_=ConfigError::None; return true;
 }
 bool ConfigurationStore::saveStateMachine(const recovery::StateMachineSettings &settings,bool disarmed) {
   if (!disarmed) return fail(ConfigError::Armed);
-  if (!std::isfinite(settings.minimumCoastVelocity) || settings.minimumCoastVelocity<0 || settings.minimumCoastVelocity>100000) return fail(ConfigError::InvalidConfiguration);
+  if (!recovery::validStateMachineSettings(settings)) return fail(ConfigError::InvalidConfiguration);
   uint8_t page[FlashLayout::PageBytes],check[FlashLayout::PageBytes]; memset(page,255,sizeof(page));
   binary::put(page,0x4d534650,4); page[4]=1; page[5]=settings.bistage;
   uint32_t bits; memcpy(&bits,&settings.minimumCoastVelocity,4); binary::put(page+8,bits,4);
@@ -54,7 +72,7 @@ bool ConfigurationStore::saveOrientation(uint8_t axis, bool disarmed) {
 bool ConfigurationStore::clear(bool disarmed) {
   if (!disarmed) return fail(ConfigError::Armed);
   uint8_t page[FlashLayout::PageBytes];
-  for (const auto address:{Begin,OrientationAddress,MachineAddress}) {
+  for (const auto address:{Begin,OrientationAddress,MachineAddress,AirbrakeAddress}) {
     if (!flash_.eraseSector(address)) return fail(ConfigError::Io);
     for (uint32_t offset=0;offset<FlashLayout::SectorBytes;offset+=sizeof(page)) {
       if (!flash_.read(address+offset,page,sizeof(page))) return fail(ConfigError::Io);
@@ -71,7 +89,7 @@ using binary::crc;
 constexpr uint32_t Magic = 0x47464350, Commit = 0x54494D43, Page = FlashLayout::PageBytes, PayloadOffset = 512;
 constexpr uint16_t Version = ConfigurationStore::FormatVersion;
 static_assert(sizeof(float) == 4 && std::numeric_limits<float>::is_iec559, "Requires IEEE-754 binary32");
-static_assert(37 + recovery::MaxRules * (58 + recovery::MaxConditions * 19 + recovery::MaxAssignments * 6)
+static_assert(39 + recovery::MaxConditions * 19 + recovery::MaxRules * (58 + recovery::MaxConditions * 19 + recovery::MaxAssignments * 6)
               <= FlashLayout::SectorBytes - PayloadOffset, "Supported configuration must fit one sector");
 struct Writer {
   uint8_t *data; std::size_t capacity, pos = 0; bool ok = true;
@@ -103,7 +121,7 @@ const char *ConfigurationStore::errorName(ConfigError e) {
 }
 bool ConfigurationStore::encode(const recovery::Configuration &c, uint8_t *out, std::size_t capacity, std::size_t &length) {
   length = 0;
-  if (!out || c.ruleCount > recovery::MaxRules) return false;
+  if (!out || c.ruleCount > recovery::MaxRules || c.airbrakes.conditionCount > recovery::MaxConditions) return false;
   Writer w(out, capacity);
   w.integer(uint32_t(c.ruleCount), 1);
   for (const auto &p : c.pyros) w.integer(p.pulseMs, 4);
@@ -126,6 +144,12 @@ bool ConfigurationStore::encode(const recovery::Configuration &c, uint8_t *out, 
       const auto &a = r.assignments[j]; w.integer(static_cast<uint8_t>(a.kind), 1);
       w.integer(a.channel, 1); w.integer(a.delayMs, 4);
     }
+  }
+  w.integer(c.airbrakes.channelMask,1); w.integer(uint32_t(c.airbrakes.conditionCount),1);
+  for (std::size_t j=0;j<c.airbrakes.conditionCount;++j) {
+    const auto &v=c.airbrakes.conditions[j];
+    w.integer(uint8_t(v.kind),1); w.integer(uint8_t(v.comparison),1); w.integer(v.phases,1);
+    w.floating(v.value); w.floating(v.upper); w.integer(v.elapsedMs,4); w.integer(v.reference,4);
   }
   if (!w.ok) return false;
   length = w.pos; return true;
@@ -154,6 +178,13 @@ bool ConfigurationStore::decode(const uint8_t *bytes, std::size_t length, recove
       auto &a = rule.assignments[j]; a.kind = static_cast<recovery::OutputKind>(r.integer(1));
       a.channel = uint8_t(r.integer(1)); a.delayMs = r.integer(4);
     }
+  }
+  c.airbrakes.channelMask=uint8_t(r.integer(1)); c.airbrakes.conditionCount=r.integer(1);
+  if (c.airbrakes.channelMask>15 || c.airbrakes.conditionCount>recovery::MaxConditions) return false;
+  for (std::size_t j=0;j<c.airbrakes.conditionCount;++j) {
+    auto &v=c.airbrakes.conditions[j]; v.kind=static_cast<recovery::ConditionKind>(r.integer(1));
+    v.comparison=static_cast<recovery::Comparison>(r.integer(1)); v.phases=uint8_t(r.integer(1));
+    v.value=r.floating(); v.upper=r.floating(); v.elapsedMs=r.integer(4); v.reference=r.integer(4);
   }
   if (!r.ok || r.pos != length) return false;
   out = c; return true;

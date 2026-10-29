@@ -259,7 +259,7 @@ Manual commands at USB 115200: `status`, `probe`, `at AT`, `at AT+VERSION`, `at 
 `at AT+NAMB`, `name set "Perpetual"`. To diagnose a different UART state, use `baud 9600`
 (MCU only), `gate low|high`, `eol crlf|cr|lf|none`. `--scan` automates six local rates, both
 control levels and four endings using read-only AT commands, stopping at an exact ACK.
-The normal working setting is **9600, 8N1, CRLF, MCU TX GP4 / RX GP5, PWRC low**.
+MAIN now expects **230400, 8N1, CRLF, MCU TX GP4 / RX GP5**; diagnostics start at 9600 and require `baud 230400` for a migrated module. PWRC low selects AT mode. See the UART migration/recovery procedure in [USB](../technical/USB.md#jdy-34-uart-configuration-and-recovery).
 
 `at AT+LADDR`, `at AT+STAT` and `at AT+BTMODE` identify the module, current channels and mode.
 Match the reported MAC to the paired device before testing a radio COM port. PWRC low enables

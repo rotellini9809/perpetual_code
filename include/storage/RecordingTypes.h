@@ -1,5 +1,6 @@
 #pragma once
 #include "configuration/RecoveryConfiguration.h"
+#include "control/AirbrakeStatus.h"
 #include "hardware/SensorSource.h"
 #include "shared/FlightTypes.h"
 #include <array>
@@ -18,6 +19,7 @@ struct FlightEntry {
 // Matches the legacy CSV field order without magnetometer fields. No output events.
 struct FlightSample {
   uint32_t timeMs = 0;
+  control::AirbrakeStatus airbrakes;
   std::array<float, 14> values; // See Field for explicit units and ordering.
   recovery::FlightPhase phase = recovery::FlightPhase::Pad;
   recovery::AbortReason abortReason = recovery::AbortReason::None;
@@ -33,6 +35,8 @@ enum class OutputMode : uint8_t { Physical = 0, Virtual = 1 };
 // Immutable per-flight snapshot, captured before recording begins.
 struct FlightCalibration {
   recovery::StateMachineSettings machine;
+  uint32_t airbrakeLawVersion=0;
+  bool airbrakesEnabled=false;
   bool available = false, sensorAxes = false, gyroCalibrated = false;
   uint8_t upAxis = 0;
   float referenceAltitude = 0, gyroBias[3] = {}, accelBias[3] = {};

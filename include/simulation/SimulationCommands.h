@@ -5,6 +5,7 @@
 class SimulationCommands : public CommandExtension {
 public:
   explicit SimulationCommands(simulation::SimulationSession &session) : session_(session) {}
+  flight::RuntimeStatus status() const { return session_.status(); }
   bool active() const { return session_.active(); }
   void refreshRecording() { session_.refreshRecording(); }
   bool dispatch(const char *, const char *, bool, uint32_t, char *, std::size_t) override;

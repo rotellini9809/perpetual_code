@@ -187,6 +187,9 @@ Le uscite gia attive completano la loro azione: gli impulsi pyro gia alti
 arrivano alla scadenza, quelli ancora in attesa/settling sono cancellati. Un servo
 che ha ricevuto il comando mantiene il PWM; non esiste feedback meccanico di fine
 movimento. La chiusura della sessione o un disarmo esplicito interrompono le uscite.
+I canali riservati agli [aerofreni](AIRBRAKES.md) seguono la chiusura continua allo 0%
+in ABORT; al disarmo restano chiusi con PWM mantenuto fino al rilascio esplicito.
+La descrizione di completamento sopra riguarda le uscite delle regole ordinarie.
 Il comando di disarmo e consentito anche in ABORT; non fa uscire la stessa macchina
 verso altri stati di volo e non cancella il log.
 

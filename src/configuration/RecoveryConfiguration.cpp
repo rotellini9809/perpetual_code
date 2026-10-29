@@ -53,7 +53,7 @@ ValidationResult validate(const Configuration &config, const ValidationLimits &l
   if (limits.minServoUs == 0 || limits.minServoUs >= limits.maxServoUs ||
       limits.maxPyroPulseMs == 0 || limits.maxTimingMs == 0)
     return failure(ValidationError::InvalidLimits);
-  if (config.ruleCount == 0) return failure(ValidationError::EmptyPlan);
+  if (config.ruleCount == 0 && !config.airbrakes.channelMask) return failure(ValidationError::EmptyPlan);
   if (config.ruleCount > MaxRules) return failure(ValidationError::TooManyRules);
 
   // Check all counts/IDs before following any dependency or indexing an array.
@@ -100,6 +100,20 @@ ValidationResult validate(const Configuration &config, const ValidationLimits &l
       if (assigned[kind][channel]) return failure(ValidationError::DuplicateOutput, Field::Assignment, r.id, j);
       assigned[kind][channel] = true;
     }
+  }
+  const auto &air=config.airbrakes;
+  if (air.channelMask>15 || air.conditionCount>MaxConditions || (air.channelMask && !air.conditionCount))
+    return failure(ValidationError::InvalidConditionCount);
+  for (std::size_t j=0;j<air.conditionCount;++j) {
+    const auto &c=air.conditions[j];
+    if (!validCondition(c,limits.maxTimingMs)) return failure(ValidationError::InvalidCondition,Field::Condition,0,j);
+    if (c.kind==ConditionKind::TimeSinceRule && (!c.reference || findRule(config,c.reference)==MaxRules))
+      return failure(ValidationError::InvalidReference,Field::Condition,0,j);
+  }
+  for (unsigned i=0;i<ChannelCount;++i) if (air.channelMask&(1u<<i)) {
+    if (assigned[1][i]) return failure(ValidationError::DuplicateOutput,Field::Servo,0,i);
+    const auto &servo=config.servos[i];
+    if (!servo.calibrated || servo.initialUs==servo.finalUs) return failure(ValidationError::InvalidServoSettings,Field::Servo,0,i);
   }
   std::array<uint8_t, MaxRules> colors{};
   for (std::size_t i = 0; i < config.ruleCount; ++i)

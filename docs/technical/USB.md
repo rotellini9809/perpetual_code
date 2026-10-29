@@ -4,13 +4,13 @@ MAIN exposes USB serial at 115200. Commands end with LF or CRLF; the monitor's s
 filter sends a line on Enter. There are no unsolicited debug prints.
 
 The same service/handlers also run on the JDY-34 transparent link through hardware UART1,
-MCU TX GP4 / RX GP5, **9600 8N1**. USB is checked every loop, independently of Bluetooth.
+MCU TX GP4 / RX GP5, **230400 8N1**. USB is checked every loop, independently of Bluetooth.
 There is no wait for either connection and no periodic USB throttle. Each endpoint has its
 own framing, retry cache and pending reply. Existing PC runners can use the outgoing Windows
 SPP port (COM11 on this PC) instead of COM9; their PC-side baud setting does not change the
 module-to-MCU UART rate. BLE terminal operation is not yet verified.
 
-`bluetooth status` returns `ready`, `connected`, `error` and UART `baud`; it is also available
+`bluetooth status` returns `ready`, `connected`, `error` and UART `baud` and cumulative MCU `uart_rx_overflows`; it is also available
 over USB when radio startup fails. Boot nonblockingly queries AT/version, single-link mode 1,
 notifications enabled and the eight-channel connection snapshot. PWRC stays low during these
 queries and high for transparent traffic. Boot never changes module settings/names or writes
@@ -82,7 +82,7 @@ for availability instead. There are no app sleep/wake buttons.
 
 Sleep returns BUSY during arming/runs, drafts, servo preview, recording/finalization, pending
 responses or a bulk flight transfer. The transfer guard lasts five seconds after the last
-successful `flights config`/`flights read` chunk, including a finished or cancelled download.
+successful `flights config`/`flights read`/`flights packed` chunk, including a finished or cancelled download.
 Transport ownership can instead return CONTROL_BUSY. No deferred sleep is scheduled.
 
 Active arming/runs, drafts, previews and recording/finalization restart the idle interval until
@@ -194,9 +194,9 @@ to recognize link notifications but additional application requests during a rep
 Receive work is limited to 64 bytes per endpoint per loop. Send one command and wait for its
 **complete** response. Host flooding is not guaranteed lossless. Detailed config inspection is
 paged by rule/condition/output to keep each reply bounded. JSON strings escape names; non-finite
-values render as null with validity flags rather than invalid JSON numbers. The 9600-baud UART
-limits throughput to roughly 960 bytes/s before command/response overhead; USB is preferable
-for large flight downloads.
+values render as null with validity flags rather than invalid JSON numbers. The UART
+has a theoretical 23040 bytes/s payload ceiling at 230400 8N1, before radio and
+command/response overhead; USB remains preferable for the fastest downloads.
 
 ## Control ownership and connection checks
 
@@ -292,3 +292,70 @@ BUSY until the worker releases ownership; HIL timing and atomic progress remain 
 Preflight/arming commands report shared lifecycle state. Onboard simulation can explicitly
 select physical outputs; normal flight uses the same executor after real readiness checks. Manual
 channel tests remain unavailable.
+
+### Compact flight download
+
+Firmware codec: `communication/PackedFlightCodec.h`; the flights handler owns
+selection, guards and transfer lifetime. Shared recording status fragments live in
+`communication/RecordingReply.h`; routing policy lives in `communication/CommandPolicy.h`.
+
+The app downloads `flights packed <sequence> <block> <offset>`. Each JSON reply
+contains sequence, block, offset, first sample index, block_count, count, crc32,
+and data (strict Base64). At most 9 samples and 448 encoded bytes fit each reply;
+no larger serial buffers or unsolicited streaming are required. The old `read`
+command remains available for diagnostics. App and firmware must both be updated.
+The current format is sample v3/header v6; older flight memory needs an explicit
+`flights format`. See [Airbrakes](AIRBRAKES.md) for the coordinated format change.
+
+Payload encoding: start with nineteen zero 32-bit words for each reply. For each
+sample, read a little-endian uint32 mask; for each set bit in ascending order,
+read a little-endian uint32 and XOR it with the previous word at that index.
+Unchanged words retain their previous value. The reconstructed 76 bytes use the
+sample-v3 layout (bits 0..18; higher mask bits are rejected). CRC-32/ISO-HDLC covers the encoded bytes before Base64; the
+client validates length, mask boundaries, checksum, sample ordering and identity.
+This preserves all stored float32 bits and missing values without decimal rounding.
+Cancellation still consumes the current reply before stopping and removes partial
+export files. Bluetooth's board-to-module UART is now 230400 baud; compression reduces
+traffic in addition to this baud increase. The PC SPP port's baud is independent.
+
+### JDY-34 UART configuration and recovery
+
+MAIN expects a module configured to 230400 baud (AT+BAUDA on verified JDY-34
+SPP-BLE V1.52). This is a persistent module setting, not a Windows COM setting.
+Boot only reads module settings and never rewrites baud. Older modules left at
+9600 need an explicit diagnostic migration; old MAIN builds expecting 9600 cannot
+communicate with a migrated module. USB remains available regardless of UART baud.
+
+BLUETOOTH_NAME_TEST starts its local UART at 9600. Via USB, use `baud 230400` to
+reach a migrated module, `gate low`, and read `at AT+VERSION` / `at AT+BAUD`.
+`module baud 600000`, `module baud 230400` or `module baud 9600` verifies the known module version and
+that all eight radio channels are disconnected, writes the explicit setting,
+switches the local UART and reads back the baud. Do not repeat a setter merely
+because an acknowledgment was lost: query at the new and old rates first.
+Reflash MAIN after diagnostics. A factory reset of flight configuration does not
+change the separate Bluetooth module setting.
+
+
+The JDY-34 V1.52 manual does not specify the internal UART-to-radio buffer size
+or expose an occupancy query. Its statement that UART writes have no byte-count
+limit is not a buffer capacity guarantee. Our 256-byte UART FIFO setting belongs
+to the MCU. `uart_rx_overflows` counts MCU receive overflow events only; it cannot
+observe overflow inside the radio module. Bounded replies and one outstanding
+request limit queued data, while checksums detect damaged received payloads;
+neither establishes long-range losslessness without testing.
+
+A bench trial at 600000 baud with MTU=0 completed two 5001-sample SPP downloads
+in 51.594 and 51.938 seconds; both CSV hashes matched an independent USB download
+and MCU RX overflows stayed zero. The earlier 230400 baseline took 53.42 seconds.
+This small difference does not establish a useful baud-related speedup, and does
+not qualify range/interference behavior. MAIN and the module were restored to
+230400; protocol/round-trip overhead should be measured before raising baud again.
+
+Airbrake configuration commands share ordinary draft ownership and mutation guards;
+see [Airbrakes](AIRBRAKES.md#configuration-commands) for grammar and continuous semantics.
+
+`config airbrakes [on/off]` reads or persists the independent enable setting.
+`airbrake status` is a passive read that does not wake hardware or acquire control;
+its bounded reply includes enabled, active, physical, channel_mask, flags,
+failed_conditions and four nullable opening_pct values. No sensor acquisition is
+performed by that read. Other airbrake commands retain normal draft ownership.

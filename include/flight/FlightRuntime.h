@@ -1,5 +1,6 @@
 #pragma once
 #include "flight/RunController.h"
+#include "control/AirbrakeController.h"
 #include "storage/RecordingSink.h"
 #include "navigation/SensorPipeline.h"
 #include "shared/Timing.h"
@@ -13,6 +14,7 @@ struct FrameResult {
   RunEvaluation events;
 };
 struct RuntimeStatus {
+  control::AirbrakeStatus airbrakes;
   bool active = false, timingValid = false;
   storage::OutputMode outputMode = storage::OutputMode::Virtual;
   bool outputsActive = false;
@@ -65,6 +67,9 @@ private:
   const char *process(const sensors::Reading &input, FrameResult &result);
   void save(const sensors::Reading &input, const FrameResult &result);
   void recordingFault(storage::RecorderError error);
+  bool applyAirbrakes();
+  control::AirbrakeController airbrakes_;
+  uint32_t lastControlUs_=0;
   ConfigurationService &config_;
   RunController &run_;
   Clock clock_;

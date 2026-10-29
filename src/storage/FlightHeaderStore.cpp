@@ -1,3 +1,4 @@
+#include "configuration/StateMachineValidation.h"
 #include "storage/FlightHeaderStore.h"
 #include "storage/BinaryEncoding.h"
 #include "storage/VerifiedPage.h"
@@ -14,7 +15,7 @@ using binary::extendCrc;
 using binary::CrcInitial;
 constexpr uint32_t Magic = 0x52444850, HeaderCommit = 0x43444850, StartMagic = 0x54534850, StartCommit = 0x43534850;
 constexpr uint32_t ConfigOffset = 512, Page = FlashLayout::PageBytes;
-constexpr uint16_t HeaderVersion = 4, StartVersion = 1;
+constexpr uint16_t HeaderVersion = 6, StartVersion = 1;
 static_assert(recovery::MaxAssignments >= 2 * recovery::ChannelCount, "Header must hold every physical output");
 static_assert(64 + recovery::MaxAssignments * 8 <= 252, "Mapping table exceeds descriptor page");
 constexpr uint32_t CalibrationOffset=160, CalibrationEnd=192;
@@ -23,7 +24,7 @@ void putFloat(uint8_t *p,float value) { uint32_t bits; memcpy(&bits,&value,4); p
 float getFloat(const uint8_t *p) { uint32_t bits=get32(p,4); float value; memcpy(&value,&bits,4); return value; }
 bool validCalibration(const FlightCalibration &c) {
   if (!c.available) return !c.sensorAxes && !c.gyroCalibrated;
-  if (!std::isfinite(c.machine.minimumCoastVelocity) || c.machine.minimumCoastVelocity<0 || c.machine.minimumCoastVelocity>100000) return false;
+  if (!recovery::validStateMachineSettings(c.machine)) return false;
   if (!std::isfinite(c.referenceAltitude) || (c.gyroCalibrated && !c.sensorAxes)) return false;
   if (c.sensorAxes) {
     if (c.upAxis>=6) return false;
@@ -102,7 +103,7 @@ bool FlightHeaderStore::create(uint32_t address, const recovery::Configuration &
   memset(page_, 255, Page); put(page_, Magic, 4); put(page_ + 4, HeaderVersion, 2); put(page_ + 6, Page, 2);
   put(page_ + 8, layout.headerBytes, 4); put(page_ + 12, ConfigOffset, 4); put(page_ + 16, layout.configBytes, 4);
   put(page_ + 20, ConfigurationStore::FormatVersion, 2); page_[22] = uint8_t(sensor); page_[23] = uint8_t(output); page_[24] = uint8_t(frame);
-  page_[25] = 2; page_[26] = layout.slotCount;
+  page_[25] = 3; page_[26] = layout.slotCount;
   put(page_ + 28, layout.tableOffset, 4); put(page_ + 32, SlotBytes, 2); put(page_ + 36, address, 4); put(page_ + 40, layout.headerBytes, 4);
   put(page_ + 44, layout.summaryOffset, 4);
   for (unsigned i = 0; i < layout.slotCount; ++i) {
@@ -111,6 +112,7 @@ bool FlightHeaderStore::create(uint32_t address, const recovery::Configuration &
   }
   page_[CalibrationOffset]=calibration.available ? uint8_t(1 | (calibration.sensorAxes ? 2 : 0) | (calibration.gyroCalibrated ? 4 : 0)) : 0;
   if (calibration.available) {
+    put(page_+200,calibration.airbrakeLawVersion,4); page_[204]=calibration.airbrakesEnabled;
     page_[192]=calibration.machine.bistage; putFloat(page_+196,calibration.machine.minimumCoastVelocity);
     putFloat(page_+164,calibration.referenceAltitude);
     if (calibration.sensorAxes) {
@@ -140,7 +142,7 @@ bool FlightHeaderStore::load(uint32_t address) {
   if (!committed(check_, HeaderCommit, checksum)) return fail(HeaderError::Incomplete);
   if (get32(page_, 4) != Magic || get32(page_ + 6, 2) != Page) return fail(HeaderError::Corrupt);
   const auto version=get32(page_+4,2);
-  if (version != HeaderVersion || get32(page_ + 20, 2) != ConfigurationStore::FormatVersion || page_[25] != 2) return fail(HeaderError::UnsupportedVersion);
+  if (version != HeaderVersion || get32(page_ + 20, 2) != ConfigurationStore::FormatVersion || page_[25] != 3) return fail(HeaderError::UnsupportedVersion);
   FlightHeaderLayout layout;
   layout.headerBytes = get32(page_ + 8, 4); layout.configBytes = get32(page_ + 16, 4);
   layout.tableOffset = get32(page_ + 28, 4); layout.slotCount = page_[26];
@@ -161,10 +163,12 @@ bool FlightHeaderStore::load(uint32_t address) {
     auto &c=header_.calibration; const auto flags=page_[160];
     if (flags!=0 && flags!=1 && flags!=3 && flags!=7) return fail(HeaderError::Corrupt);
     c.available=flags&1; c.sensorAxes=flags&2; c.gyroCalibrated=flags&4;
-    if (!erased(page_+200,52) || !erased(page_+193,3) || !erased(page_+162,2)) return fail(HeaderError::Corrupt);
-    if (!c.available) { if (!erased(page_+161,CalibrationEnd-161) || !erased(page_+192,8)) return fail(HeaderError::Corrupt); }
+    if (!erased(page_+205,47) || !erased(page_+193,3) || !erased(page_+162,2)) return fail(HeaderError::Corrupt);
+    if (!c.available) { if (!erased(page_+161,CalibrationEnd-161) || !erased(page_+192,13)) return fail(HeaderError::Corrupt); }
     else {
       if (page_[192]>1) return fail(HeaderError::Corrupt);
+      if (page_[204]>1) return fail(HeaderError::Corrupt);
+      c.airbrakesEnabled=page_[204]; c.airbrakeLawVersion=get32(page_+200,4);
       c.machine.bistage=page_[192]; c.machine.minimumCoastVelocity=getFloat(page_+196);
       c.referenceAltitude=getFloat(page_+164);
       if (c.sensorAxes) {

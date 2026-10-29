@@ -81,8 +81,8 @@ void run() {
   for (auto byte : flash.bytes) fingerprint = (fingerprint ^ byte) * UINT64_C(0x100000001B3);
   // Fixed image with zero channel delays, directory, header,
   // summary reservation, historical start timestamps and sample blocks.
-  if (fingerprint != UINT64_C(0x3000346afdd6427f)) std::cerr << "Storage image fingerprint: 0x" << std::hex << fingerprint << std::dec << '\n';
-  assert(fingerprint == UINT64_C(0x3000346afdd6427f));
+  if (fingerprint != UINT64_C(0x5af89f6fd720024f)) std::cerr << "Storage image fingerprint: 0x" << std::hex << fingerprint << std::dec << '\n';
+  assert(fingerprint == UINT64_C(0x5af89f6fd720024f));
   std::cout << "Storage encoding tests passed: known CRC vector, incremental CRC, endian widths and unchanged full storage image.\n";
 }
 } // namespace test_storage_encoding
@@ -226,6 +226,7 @@ struct MemoryFlash : FlashDevice {
 FlightSample sample(uint32_t t) {
   FlightSample s; s.timeMs = t; s.phase = recovery::FlightPhase::Coast;
   s.batteryMv=t ? 8240 : UINT16_MAX;
+  s.airbrakes.channelMask=3; s.airbrakes.flags=3; s.airbrakes.opening={{2500,10000,65535,65535}};
   for (unsigned i = 0; i < 14; ++i) s.values[i] = float(i) + 0.125f;
   s.values[FlightSample::AltitudeM] = 12000.5f; // No old int16 altitude clipping.
   s.values[FlightSample::PressureHpa] = 1013.25f;
@@ -242,30 +243,32 @@ void run() {
   assert(flash.bytes == pristine && flash.writes == 0);
   assert(writer.begin(7, 0x15000, 4096));
   assert(!writer.begin(8, 0x16000, 4096) && writer.error() == SampleError::Active);
-  for (unsigned i = 0; i < 11; ++i) assert(writer.append(sample(i)));
+  for (unsigned i = 0; i < 9; ++i) assert(writer.append(sample(i)));
   assert(flash.writes == 0 && writer.committedSamples() == 0);
-  assert(!writer.append(sample(11)) && writer.error() == SampleError::BufferFull);
-  assert(writer.flush() && writer.committedSamples() == 11 && writer.committedBytes() == 1024);
+  assert(!writer.append(sample(9)) && writer.error() == SampleError::BufferFull);
+  assert(writer.flush() && writer.committedSamples() == 9 && writer.committedBytes() == 1024);
   assert(flash.writes == 4);
   SampleBlock block;
   assert(writer.readBlock(0x15000, 7, 0, block));
-  assert(block.count == 11 && block.firstSample == 0 && block.samples[10].timeMs == 10);
+  assert(block.count == 9 && block.firstSample == 0 && block.samples[8].timeMs == 8);
   assert(block.samples[0].values[FlightSample::AltitudeM] == 12000.5f);
+  assert(block.samples[0].airbrakes.opening[0]==2500 && block.samples[0].airbrakes.opening[1]==10000 && block.samples[0].airbrakes.flags==3);
+  assert(flash.bytes[0x15000+32+64]==0xC4 && flash.bytes[0x15000+32+65]==9);
   assert(block.samples[0].batteryMv==UINT16_MAX && block.samples[1].batteryMv==8240);
-  assert(flash.bytes[0x15000+32+64+61]==0x30 && flash.bytes[0x15000+32+64+62]==0x20); // 8240 mV, little endian.
-  assert(flash.bytes[0x15000+32+64+63]==0 && FlightSampleStore::RecordBytes==64);
+  assert(flash.bytes[0x15000+32+76+61]==0x30 && flash.bytes[0x15000+32+76+62]==0x20); // 8240 mV, little endian.
+  assert(flash.bytes[0x15000+32+76+63]==0 && FlightSampleStore::RecordBytes==76);
   // Golden little-endian layout and float encoding, independent of round-trip decoding.
   assert(flash.bytes[0x15000] == 'P' && flash.bytes[0x15001] == 'S');
-  assert(flash.bytes[0x15008] == 7 && flash.bytes[0x15014] == 11);
+  assert(flash.bytes[0x15008] == 7 && flash.bytes[0x15014] == 9);
   assert(flash.bytes[0x15024] == 0 && flash.bytes[0x15025] == 0 && flash.bytes[0x15026] == 0 && flash.bytes[0x15027] == 0x3E);
   const auto stable = flash;
-  assert(!writer.append(sample(10)) && writer.error() == SampleError::Timestamp);
-  auto invalid = sample(11); invalid.phase = static_cast<recovery::FlightPhase>(99);
+  assert(!writer.append(sample(8)) && writer.error() == SampleError::Timestamp);
+  auto invalid = sample(9); invalid.phase = static_cast<recovery::FlightPhase>(99);
   assert(!writer.append(invalid));
   auto missing = sample(UINT32_MAX); missing.values[0] = std::numeric_limits<float>::infinity();
   assert(writer.append(missing)); assert(writer.finish());
   assert(writer.readBlock(0x15400, 7, 1, block));
-  assert(block.count == 1 && block.firstSample == 11 && block.samples[0].timeMs == UINT32_MAX);
+  assert(block.count == 1 && block.firstSample == 9 && block.samples[0].timeMs == UINT32_MAX);
   assert(std::isnan(block.samples[0].values[0]));
   assert(!writer.append(sample(12)) && writer.error() == SampleError::Inactive);
   assert(!writer.begin(8, 0x15000, 4096) && writer.error() == SampleError::NotErased);
@@ -286,7 +289,7 @@ void run() {
     try { w.flush(); } catch (const Cut &) {}
     f.budget = -1;
     FlightSampleStore reader(f); SampleBlock recovered;
-    assert(reader.readBlock(0x15000, 7, 0, recovered) && recovered.count == 11);
+    assert(reader.readBlock(0x15000, 7, 0, recovered) && recovered.count == 9);
     const bool valid = reader.readBlock(0x16000, 8, 0, recovered);
     if (valid) assert(recovered.count == 1 && recovered.samples[0].timeMs == 100);
     else assert(reader.error() == SampleError::Empty || reader.error() == SampleError::Incomplete);

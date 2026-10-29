@@ -22,6 +22,7 @@ public:
   bool validTime(RunMode mode, uint32_t time) const;
   RunEvaluation evaluate(RunMode mode, uint32_t time, const recovery::FlightSnapshot &snapshot);
   bool landingWindowExpired(RunMode mode) const { return active(mode) && landed_ && progress(mode).timeMs-landedAt_>=15000; }
+  uint8_t airbrakeConditions(uint32_t time, const recovery::FlightSnapshot &snapshot) const { return engine_.airbrakeConditions(time,snapshot); }
   void closeStarts() { if (active()) engine_.closeStarts(); }
 private:
   ConfigurationService *settings_ = nullptr;

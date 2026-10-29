@@ -14,9 +14,15 @@ COMPARISONS = ['<', '>', '<=', '>=']
 class Plan:
     servos: list = field(default_factory=lambda: [dict(calibrated=False, initial_us=0, final_us=0) for _ in range(4)])
     rules: list = field(default_factory=list)
+    airbrakes: dict = field(default_factory=lambda: dict(channel_mask=0,conditions=[]))
 
     def clone(self):
         return deepcopy(self)
+
+    def airbrake_channel(self, channel): return bool(self.airbrakes['channel_mask'] & (1<<(channel-1)))
+
+    def servo_channels(self):
+        return {i for i in range(1,5) if self.airbrake_channel(i) or self.assigned('servo',i)}
 
     def assigned(self, kind, channel):
         return next((r for r in self.rules for a in r['outputs'] if a['kind']==kind and a['channel']==channel), None)
@@ -42,7 +48,12 @@ def next_rule_id(plan, baseline=None):
 def condition_text(c, rules=()):
     kind = c['type']
     if kind == 'apogee': return 'Apogeo rilevato'
-    if kind == 'phase': return 'Fase: '+str(c.get('phase', 'descent'))
+    if kind == 'phase':
+        phase=str(c.get('phase','descent'))
+        if phase.isdigit():
+            names={1:'BOOST 1 / normale',2:'COAST 1 / normale',3:'DESCENT',5:'BOOST 2',6:'COAST 2'}
+            phase=' o '.join(name for i,name in names.items() if int(phase)&(1<<i))
+        return 'Fase: '+phase
     if kind in ('altitude','speed'):
         return f'{"Quota" if kind=="altitude" else "|Velocità verticale|"} {c["comparison"]} {c["value"]:g} {"m" if kind=="altitude" else "m/s"}'
     if kind in ('altitude_range','speed_range'):
@@ -108,6 +119,8 @@ def read_plan(client):
     for i in range(4):
         servo = read(f'servo show {i+1}')
         plan.servos[i] = {key:servo[key] for key in ('calibrated','initial_us','final_us')}
+    air = read('airbrake show')
+    plan.airbrakes = dict(channel_mask=air['channel_mask'],conditions=[decode_condition(read(f'airbrake show {i}')) for i in range(air['conditions'])])
     for rule_id in meta['rule_ids']:
         r = read(f'rule show {rule_id}')
         if 'delay_ms' not in r:
@@ -131,7 +144,8 @@ def removal_order(plan):
 
 
 def plan_commands(base, local):
-    commands = [f'rule remove {i}' for i in removal_order(base)]
+    commands = [f'airbrake remove {i}' for i in reversed(range(len(base.airbrakes['conditions'])))]
+    commands += [f'rule remove {i}' for i in removal_order(base)]
     if len(local.rules)>8: raise ValueError('Massimo 8 regole')
     ids = [integer(r['id'],1) for r in local.rules]
     if len(set(ids)) != len(ids): raise ValueError('Gli ID delle regole devono essere distinti')
@@ -141,7 +155,7 @@ def plan_commands(base, local):
             commands.append(f'servo set {i+1} {integer(servo["initial_us"],1)} {integer(servo["final_us"],1)}')
     for r in local.rules:
         commands.extend([f'rule add {r["id"]} {quoted(r["name"])}', f'rule delay {r["id"]} {integer(r["delay_ms"])}'])
-    assigned = {}
+    assigned = {('servo',i):'Aerofreni' for i in range(1,5) if local.airbrake_channel(i)}
     for r in local.rules:
         if len(r['conditions'])>8 or len(r['outputs'])>8: raise ValueError('Massimo 8 condizioni e 8 uscite per regola')
         commands += [f'condition add {r["id"]} {encode_condition(c)}' for c in r['conditions']]
@@ -152,6 +166,10 @@ def plan_commands(base, local):
                 raise ValueError(f'{a["kind"].upper()} {a["channel"]} già assegnato alla regola «{assigned[key]}». Ogni canale può appartenere a una sola regola.')
             assigned[key] = r['name']
             commands.append(f'output assign {r["id"]} {a["kind"]} {a["channel"]} {integer(a.get("delay_ms",0))}')
+    mask=integer(local.airbrakes['channel_mask'])
+    if mask>15 or len(local.airbrakes['conditions'])>8: raise ValueError('Invalid airbrake rule')
+    commands += [f'airbrake channels {mask}']
+    commands += [f'airbrake add {encode_condition(c)}' for c in local.airbrakes['conditions']]
     for command in commands: validate_command(command)
     return commands
 

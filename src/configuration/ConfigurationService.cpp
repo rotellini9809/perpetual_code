@@ -1,3 +1,4 @@
+#include "configuration/StateMachineValidation.h"
 #include "configuration/ConfigurationService.h"
 #include "configuration/ActuatorPolicy.h"
 #include <cstring>
@@ -5,11 +6,12 @@
 void ConfigurationService::boot(bool storageReady) {
   if (runLocked_) return;
   storageReady_ = storageReady; drafting_ = false; appliedValid_ = false;
-  upAxis_=0; orientationReady_=false; machine_={}; machineReady_=false;
+  upAxis_=0; orientationReady_=false; machine_={}; machineReady_=false; airbrakesEnabled_=false; airbrakesReady_=false;
   if (!storageReady) { loadError_ = storage::ConfigError::Io; return; }
   appliedValid_ = store_.load(applied_, limits_); loadError_ = store_.error();
   orientationReady_=store_.loadOrientation(upAxis_);
   machineReady_=store_.loadStateMachine(machine_);
+  airbrakesReady_=store_.loadAirbrakes(airbrakesEnabled_);
 }
 
 const char *ConfigurationService::factoryReset() {
@@ -19,16 +21,25 @@ const char *ConfigurationService::factoryReset() {
   appliedValid_=false; drafting_=false; orientationReady_=false; machineReady_=false;
   if (!store_.clear(disarmed_)) { loadError_=store_.error(); storageReady_=false; return "STORAGE_ERROR"; }
   upAxis_=0; orientationReady_=false;
-  machine_={}; machineReady_=true;
+  machine_={}; machineReady_=true; airbrakesEnabled_=false; airbrakesReady_=true;
   applied_={}; draft_={}; loadError_=storage::ConfigError::Missing;
   return nullptr;
 }
 
+const char *ConfigurationService::setAirbrakes(bool enabled) {
+  if (runLocked_) return "BUSY";
+  if (!disarmed_) return "ARMED";
+  if (drafting_) return "DRAFT_ACTIVE";
+  if (!storageReady_) return "STORAGE_ERROR";
+  bool verified=false; airbrakesReady_=false;
+  if (!store_.saveAirbrakes(enabled,disarmed_) || !store_.loadAirbrakes(verified) || verified!=enabled) return "STORAGE_ERROR";
+  airbrakesEnabled_=verified; airbrakesReady_=true; return nullptr;
+}
 const char *ConfigurationService::setStateMachine(const recovery::StateMachineSettings &settings) {
   if (runLocked_) return "BUSY";
   if (!disarmed_) return "ARMED";
   if (drafting_) return "DRAFT_ACTIVE";
-  if (!std::isfinite(settings.minimumCoastVelocity) || settings.minimumCoastVelocity<0 || settings.minimumCoastVelocity>100000) return "INVALID_ARGUMENT";
+  if (!recovery::validStateMachineSettings(settings)) return "INVALID_ARGUMENT";
   if (!storageReady_) return "STORAGE_ERROR";
   machineReady_=false; recovery::StateMachineSettings verified;
   if (!store_.saveStateMachine(settings,disarmed_) || !store_.loadStateMachine(verified) ||
@@ -150,6 +161,9 @@ const char *ConfigurationService::removeRule(recovery::RuleId id, recovery::Rule
   if (referencingRule) *referencingRule = 0;
   if (const char *error = editError()) return error;
   auto *r = findRule(id); if (!r) return "INVALID_ARGUMENT";
+  for (std::size_t j=0;j<draft_.airbrakes.conditionCount;++j)
+    if (draft_.airbrakes.conditions[j].kind==recovery::ConditionKind::TimeSinceRule && draft_.airbrakes.conditions[j].reference==id)
+      return "RULE_REFERENCED";
   for (std::size_t i = 0; i < draft_.ruleCount; ++i)
     for (std::size_t j = 0; j < draft_.rules[i].conditionCount; ++j) {
       const auto &c = draft_.rules[i].conditions[j];
@@ -205,4 +219,29 @@ const char *ConfigurationService::unassignOutput(recovery::RuleId id, recovery::
     r->assignments[--r->assignmentCount] = {}; return nullptr;
   }
   return "INVALID_ARGUMENT";
+}
+
+const char *ConfigurationService::setAirbrakeChannels(uint32_t mask) {
+  if (const char *error=editError()) return error;
+  if (mask>15) return "INVALID_ARGUMENT";
+  draft_.airbrakes.channelMask=uint8_t(mask); return nullptr;
+}
+const char *ConfigurationService::addAirbrakeCondition(const recovery::Condition &c) {
+  if (const char *error=editError()) return error;
+  auto &a=draft_.airbrakes;
+  if (a.conditionCount>=recovery::MaxConditions || !editableCondition(c)) return "INVALID_ARGUMENT";
+  a.conditions[a.conditionCount++]=c; return nullptr;
+}
+const char *ConfigurationService::replaceAirbrakeCondition(std::size_t index,const recovery::Condition &c) {
+  if (const char *error=editError()) return error;
+  auto &a=draft_.airbrakes;
+  if (index>=a.conditionCount || !editableCondition(c)) return "INVALID_ARGUMENT";
+  a.conditions[index]=c; return nullptr;
+}
+const char *ConfigurationService::removeAirbrakeCondition(std::size_t index) {
+  if (const char *error=editError()) return error;
+  auto &a=draft_.airbrakes;
+  if (index>=a.conditionCount) return "INVALID_ARGUMENT";
+  for (std::size_t i=index+1;i<a.conditionCount;++i) a.conditions[i-1]=a.conditions[i];
+  a.conditions[--a.conditionCount]={}; return nullptr;
 }

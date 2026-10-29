@@ -19,7 +19,7 @@ SENSORS = [*NAVIGATION, 'src/navigation/SensorPipeline.cpp',
 STORAGE = ['src/storage/' + name + '.cpp' for name in
            ('FlightDirectory', 'FlightHeaderStore', 'FlightSampleStore', 'FlightSummaryStore',
             'FlightRecorder', 'QueuedRecorder')]
-RUNTIME = [*CONFIG, *SENSORS, *STORAGE,
+RUNTIME = [*CONFIG, *SENSORS, *STORAGE, 'src/control/AirbrakeLaw.cpp',
            *('src/flight/' + name + '.cpp' for name in ('RunController', 'FlightRuntime', 'ArmingController', 'OutputExecutor')),
            *('src/communication/' + name + '.cpp' for name in ('CommandService', 'CommandRouter', 'ArmingCommands')),
            *('src/simulation/' + name + '.cpp' for name in

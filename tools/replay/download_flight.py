@@ -1,5 +1,8 @@
 """Download a retained flight as CSV and configuration/output-start metadata JSON."""
 import argparse
+import base64
+import binascii
+import zlib
 from concurrent.futures import CancelledError
 import csv
 import json
@@ -13,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import device_client as transport
 FIELDS = ['t_ms', 'accelX', 'accelY', 'accelZ', 'gyroX', 'gyroY', 'gyroZ', 'pressure',
-          'temp', 'z_est', 'vz_est', 'roll', 'pitch', 'yaw', 'az_est', 'state', 'battery_v', 'abort_reason']
+          'temp', 'z_est', 'vz_est', 'roll', 'pitch', 'yaw', 'az_est', 'state', 'battery_v', 'abort_reason', *[f'airbrake_{i}_pct' for i in range(1,5)], 'airbrake_flags', 'airbrake_failed_conditions', 'airbrake_channel_mask']
 STATUS = {1: 'recording', 2: 'completed', 3: 'interrupted', 4: 'stopped_full', 5: 'invalidated', 6: 'CORRUPT'}
 
 
@@ -30,7 +33,7 @@ def configuration(payload):
         return values[0] if len(values) == 1 else values
 
     count = read('B')
-    if not 1 <= count <= 8:
+    if not 0 <= count <= 8:
         raise ValueError('Invalid rule count')
     result = {'pyros': [{'channel': i+1, 'pulse_ms': read('I')} for i in range(4)], 'servos': [], 'rules': []}
     for i in range(4):
@@ -55,9 +58,45 @@ def configuration(payload):
             kind, channel, delay = read('BBI')
             rule['outputs'].append(dict(kind='pyro' if kind == 0 else 'servo', channel=channel, delay_ms=delay))
         result['rules'].append(rule)
+    channels,conditions=read('BB')
+    if channels>15 or conditions>8 or (channels and not conditions): raise ValueError('Invalid airbrake rule')
+    air=dict(channel_mask=channels,logic='and',conditions=[])
+    for _ in range(conditions):
+        kind,comparison,phases,value,upper,elapsed,reference=read('BBBffII')
+        air['conditions'].append(dict(kind=kind,comparison=comparison,phase_mask=phases,value=value if math.isfinite(value) else None,
+                                      upper=upper if math.isfinite(upper) else None,elapsed_ms=elapsed,reference=reference))
+    result['airbrakes']=air
     if offset != len(payload):
         raise ValueError('Extra bytes in configuration snapshot')
     return result
+
+
+def unpack_samples(response):
+    """Decode bounded, checksummed little-endian sample records without float rounding."""
+    count=response.get('count')
+    if type(count) is not int or not 1<=count<=9 or not isinstance(response.get('data'),str) or len(response['data'])>600:
+        raise RuntimeError('Invalid packed sample dimensions')
+    try: payload=base64.b64decode(response['data'],validate=True)
+    except (ValueError,binascii.Error) as error: raise RuntimeError('Invalid packed sample encoding') from error
+    if len(payload)>448 or type(response.get('crc32')) is not int or zlib.crc32(payload)!=response['crc32']:
+        raise RuntimeError('Packed sample checksum/length mismatch')
+    rows=[]; offset=0; words=[0]*19
+    for _ in range(count):
+        if offset+4>len(payload): raise RuntimeError('Truncated packed sample mask')
+        mask=struct.unpack_from('<I',payload,offset)[0]; offset+=4
+        if mask>>19: raise RuntimeError('Invalid packed sample mask')
+        for word in range(19):
+            if mask & (1<<word):
+                if offset+4>len(payload): raise RuntimeError('Truncated packed sample word')
+                words[word]^=struct.unpack_from('<I',payload,offset)[0]; offset+=4
+        stamp,*fields=struct.unpack('<I14fBHB4HHBB',struct.pack('<19I',*words))
+        values=fields[:14]; phase,battery,reason=fields[14:17]; openings=fields[17:21]; flags,failed,channels=fields[21:]
+        if channels>15 or flags & ~511 or any((u>10000 if channels&(1<<i) else u!=65535) for i,u in enumerate(openings)):
+            raise RuntimeError('Invalid airbrake sample')
+        if any(math.isinf(value) for value in values): raise RuntimeError('Invalid packed sample value')
+        rows.append([stamp,*[None if math.isnan(value) else value for value in values],phase,None if battery==65535 else battery/1000,reason,*[None if u==65535 else u/100 for u in openings],flags,failed,channels])
+    if offset!=len(payload): raise RuntimeError('Extra packed sample bytes')
+    return rows
 
 
 def sequence_text(sequence):
@@ -91,7 +130,9 @@ def _download(client,sequence,destination,progress,cancelled,owned):
     if destination == metadata_path or destination.exists() or metadata_path.exists():
         raise FileExistsError('CSV/metadata destination already exists or overlaps')
     info = request(f'flights info {sequence}', timeout=600)
-    if info.get('config_version') != 2:
+    if info.get('sample_transport') != 'xor32-v2':
+        raise ValueError('Aggiorna il firmware della scheda per usare il download ottimizzato')
+    if info.get('config_version') != 3:
         raise ValueError('Unsupported configuration export format; upload current MAIN firmware')
     response = request(f'flights summary {sequence}')
     calibration_response=request(f'flights calibration {sequence}')
@@ -158,12 +199,12 @@ def _download(client,sequence,destination,progress,cancelled,owned):
         for block in range(info['blocks']):
             offset = 0
             while True:
-                response = request(f'flights read {sequence} {block} {offset}')
-                rows = response['rows']
+                response = request(f'flights packed {sequence} {block} {offset}')
+                rows = unpack_samples(response)
                 total = response['block_count']
                 if response.get('sequence') != sequence or response['block'] != block or response['offset'] != offset or response['first'] != count:
                     raise RuntimeError('Unexpected sample chunk identity/order')
-                if not 1 <= total <= 11 or not 1 <= len(rows) <= 2 or offset+len(rows) > total:
+                if not 1 <= total <= 9 or not 1 <= len(rows) <= 9 or offset+len(rows) > total:
                     raise RuntimeError('Invalid sample chunk dimensions')
                 for row in rows:
                     if len(row) != len(FIELDS) or not isinstance(row[0], int) or not 0 <= row[0] <= 0xFFFFFFFF or row[15] not in range(8) or row[17] not in range(3):
@@ -182,7 +223,7 @@ def _download(client,sequence,destination,progress,cancelled,owned):
         raise RuntimeError('Stored sample count mismatch; partial CSV retained')
     metadata = dict(sequence=sequence, status=STATUS[info['status']], sample_count=count,
                     sensor_mode=info['sensor_mode'], output_mode=info['output_mode'], frame=info['frame'],
-                    configuration=snapshot, configuration_version=2, configuration_hex=payload.hex(), output_starts=starts,
+                    configuration=snapshot, configuration_version=3, configuration_hex=payload.hex(), output_starts=starts,
                     recording_summary=summary, calibration=calibration, abort=abort)
     checkpoint()
     with metadata_path.open('x', encoding='utf-8') as target:

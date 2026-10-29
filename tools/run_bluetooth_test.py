@@ -144,7 +144,7 @@ def main():
         with serial.Serial(args.port, 115200, timeout=.1, write_timeout=2) as board:
             report['initial_status'] = request(board, 'status', 'BT_TEST status ')
             request(board, 'gate ' + args.at_gate, 'AT_GATE ')
-            for baud in (9600, 115200, 19200, 38400, 57600, 4800):
+            for baud in (230400, 600000, 9600, 115200, 19200, 38400, 57600, 4800):
                 request(board, f'baud {baud}', 'LOCAL_BAUD ')
                 answer = query(board, 'AT')
                 report['attempts'].append({'baud': baud, **answer})

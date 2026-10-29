@@ -42,7 +42,7 @@ flight header and is not reused for another arming. Mounting uses an explicitly 
 | 0x100..0x1FF | Completion page, programmed last |
 | 0x200 onward | Payload, padded to 256-byte pages |
 
-Header: magic 0x47464350 at 0 (u32), version 2 at 4 (u16), payload byte length at 8 (u32),
+Header: magic 0x47464350 at 0 (u32), version 3 at 4 (u16), payload byte length at 8 (u32),
 payload CRC at 12 (u32), header CRC over bytes 0..251 at 252 (u32). Completion page: magic
 0x54494D43 at 0, header CRC at 4, payload CRC at 8 and payload length at 12 (all u32). All
 metadata is checked before bounded decoding.
@@ -65,12 +65,16 @@ Payload field order:
    firmware wrote zero here. The offline downloader exports this field as `delay_ms` from
    each frozen recording snapshot.
 
+7. Continuous airbrake rule: servo channel mask (u8, bits 0..3), condition count (u8),
+   followed by that many conditions with the same 19-byte encoding. Mask zero disables
+   control; enabled rules require 1..8 AND conditions. See [Airbrakes](AIRBRAKES.md).
+
 Kind/comparison/phase encodings follow the explicit current declarations in
 `RecoveryConfiguration.h`; changing their numeric meanings requires a format version change.
 Tagged irrelevant fields are retained, but never evaluated by the configuration store. Extra
 payload bytes and excessive counts are rejected.
 
-Current maximum structural payload is 2,101 bytes (all arrays at capacity, before global
+Current maximum structural payload is 2,255 bytes (all arrays at capacity, before global
 channel-ownership validation). The largest semantically possible plan is smaller because there
 are only eight uniquely assignable physical channels. The codec buffer is 4,096 bytes, guarded
 by a compile-time single-sector size check; the reserved region remains 16 KiB. This
@@ -116,7 +120,7 @@ are nonzero uint64 values; exhaustion fails without wrapping. Each bank has 64 s
 is 48 retained flights.
 The RAM ordering of entries is not their stable identity. See [transactions](STORAGE.md#directory-transactions).
 
-## Recording header v4
+## Recording header v6
 
 `plan(config, limits, layout)` validates the complete plan and computes layout without flash
 access. It reserves exactly one slot per assigned output, ordered by rule order and assignment
@@ -138,7 +142,7 @@ Header regions are:
 |---|---|
 | 0 | 256-byte descriptor |
 | 256 | Separate descriptor/configuration commit page |
-| 512 | Configuration codec-v2 payload, padded to a 256-byte boundary with FF |
+| 512 | Configuration codec-v3 payload, padded to a 256-byte boundary with FF |
 | `tableOffset` | One 512-byte output slot for each assigned channel |
 | after table | Always-reserved 512-byte final summary |
 | after reserved slots | Erased padding through the next 4 KiB boundary |
@@ -149,16 +153,16 @@ Descriptor fields:
 | Offset | Width | Meaning |
 |---|---|---|
 | 0 | 4 | Magic 0x52444850 |
-| 4 | 2 | Header version 4 |
+| 4 | 2 | Header version 6 |
 | 6 | 2 | Descriptor bytes 256 |
 | 8 | 4 | Total header reservation bytes |
 | 12 | 4 | Configuration offset 512 |
 | 16 | 4 | Actual configuration payload bytes |
-| 20 | 2 | Configuration codec version 2 |
+| 20 | 2 | Configuration codec version 3 |
 | 22 | 1 | Sensor mode: 0 hardware, 1 simulation |
 | 23 | 1 | Output mode: 0 physical, 1 virtual |
 | 24 | 1 | Frame: 0 sensor axes, 1 logged calibrated body |
-| 25 | 1 | Sample block format version 2 |
+| 25 | 1 | Sample block format version 3 |
 | 26 | 1 | Assigned-output slot count |
 | 28 | 4 | Output-table offset |
 | 32 | 2 | Slot bytes 512 |
@@ -166,7 +170,7 @@ Descriptor fields:
 | 40 | 4 | Sample-data offset, equal to header reservation bytes |
 | 44 | 4 | Summary offset, exactly after output slots |
 | 64 | count x 8 | Output mappings: uint32 rule, uint8 kind, uint8 channel, FF x 2 |
-| 160 | 40 | Per-flight calibration and state-machine snapshot; [fields below](#per-flight-calibration-snapshot-header-v4) |
+| 160 | 45 | Per-flight calibration and state-machine snapshot; [fields below](#per-flight-calibration-snapshot-header-v6) |
 | 252 | 4 | Immutable CRC |
 
 Unspecified bytes are FF. Output kind is 0 pyro or 1 servo; channels are one-based. The
@@ -178,7 +182,7 @@ page is programmed once between erases. Creation is acknowledged only after deco
 normal read path.
 
 The header omits a flight ID, firmware ID, launch pressure, ranges and nominal rate. The
-sequence remains directory/block bookkeeping. Current header v4 always reserves the final
+sequence remains directory/block bookkeeping. The airbrake law version is frozen separately. Current header v6 always reserves the final
 summary; v1/v2/unknown headers are rejected without migration. Layout equations are:
 
 ```text
@@ -213,19 +217,21 @@ Slot state is Empty=0, Pending=1 (RAM only), Recorded=2, Invalid=3. Timestamp ze
 UINT32_MAX are valid. Empty/Invalid never prove the actuator did not operate. An individual
 damaged slot does not invalidate other slots or immutable metadata.
 
-## Samples and blocks v2
+## Samples and blocks v3
 
 `FlightSample` preserves the agreed CSV order:
 
 ```text
-t_ms,accelX,accelY,accelZ,gyroX,gyroY,gyroZ,pressure,temp,z_est,vz_est,roll,pitch,yaw,az_est,state,battery_v
+t_ms,accelX,accelY,accelZ,gyroX,gyroY,gyroZ,pressure,temp,z_est,vz_est,roll,pitch,yaw,az_est,state,battery_v,abort_reason,airbrake_1_pct,airbrake_2_pct,airbrake_3_pct,airbrake_4_pct,airbrake_flags,airbrake_failed_conditions,airbrake_channel_mask
 ```
 
-Samples have 64 bytes: uint32 little-endian milliseconds at offset 0, fourteen IEEE-754 binary32
+Samples have 76 bytes: uint32 little-endian milliseconds at offset 0, fourteen IEEE-754 binary32
 values at offsets 4..59 in the listed order, phase uint8 at 60, battery uint16 millivolts at
 61..62 and abort reason at 63 (0 none, 1 velocity median, 2 tilt). Battery FFFF means
-unavailable; zero means a measured 0 V. The record remains 64 bytes, but block version 2 and
-recording-header version 4 are required; old recordings are rejected, not migrated.
+unavailable; zero means a measured 0 V. Offsets 64..71 contain four u16 commanded openings (0..10000 = 0..100%; FFFF = unassigned).
+Offsets 72..73 contain u16 control flags, 74 the failed-condition bitmask and 75 the servo
+channel mask. [Airbrakes](AIRBRAKES.md#logging) defines flags and transition interpretation.
+Block version 3 and recording-header version 6 are required; old recordings are rejected, not migrated.
 Timestamp zero is valid; accepted timestamps strictly increase without uint32 rollover.
 Phase mapping is 0 PAD, 1 BOOST/BOOST 1, 2 COAST/COAST 1, 3 DESCENT, 4 LANDED,
 5 BOOST 2, 6 COAST 2, 7 ABORT. The frozen machine setting disambiguates stage-one labels.
@@ -237,8 +243,8 @@ saturated measurement. No precision-reducing quantization is applied. The source
 component does not infer it.
 
 Output starts use the independently committed FlightHeaderStore table, as required by the flash
-design. There are no output events, deployment flags, magnetometer fields or rule-trigger
-records in samples.
+design. Airbrake state and commanded openings are sampled continuously. Normal output starts remain
+in their independent table; samples do not contain their trigger/event journal.
 
 | Fields | Stored/exported unit |
 |---|---|
@@ -264,28 +270,28 @@ page is programmed once between erases. Integers are little-endian.
 | Body offset | Width | Meaning |
 |---|---|---|
 | 0 | 4 | Magic 0x4B425350 |
-| 4 | 2 | Block version 2 |
-| 6 | 2 | Sample size 64 |
+| 4 | 2 | Block version 3 |
+| 6 | 2 | Sample size 76 |
 | 8 | 8 | Nonzero recording sequence, bound to directory ownership |
 | 16 | 4 | Zero-based block index |
-| 20 | 2 | Sample count 1..11 |
+| 20 | 2 | Sample count 1..9 |
 | 22 | 2 | Reserved FF |
 | 24 | 4 | First sample ordinal within recording |
 | 28 | 4 | Physical block address |
-| 32 | count x 64 | Encoded samples |
+| 32 | count x 76 | Encoded samples |
 | after samples | remaining | FF padding |
 | 764 | 4 | CRC-32/ISO-HDLC over body bytes 0..763 |
 
 Commit page: magic 0x4D435350 at offset 0, body CRC at 4, its uint32 complement at 8; remaining
 bytes are FF. Body pages are programmed and readback-verified before commit. The committed block
-is decoded and checked before advancing writer counters. A full block uses 704 payload bytes for
-11 samples: about 93.1 physical bytes per sample including block overhead. Explicit partial
+is decoded and checked before advancing writer counters. A full block uses 684 payload bytes for
+9 samples: about 113.8 physical bytes per sample including block overhead. Explicit partial
 flushes cost more space. Four blocks fit one erase sector. This is the current uncompressed
 encoding.
 
 The logging adapter converts pressure Pa to hPa and Euler radians to degrees. The source-frame
 convention is frozen in the header; it is not inferred from the sample. Final partial blocks
-contain their actual count. Four blocks fit one sector; 1 MiB holds 1024 blocks / 11,264
+contain their actual count. Four blocks fit one sector; 1 MiB holds 1024 blocks / 9,216
 samples, before header reservation.
 
 ## Final summary v1
@@ -321,21 +327,21 @@ unclosed directory entry does not turn that entry into Completed after a restart
 
 ## Compatibility
 
-Component versions are independent: configuration codec is v2 and recording header is v4;
-sample blocks are v2; directory/start/summary remain v1. Only configuration codec v2 is read and written;
+Component versions are independent: configuration codec is v3 and recording header is v6;
+sample blocks are v3; directory/start/summary remain v1. Only configuration codec v3 is read and written;
 older packages and snapshots are rejected. There is no conversion or legacy decoder.
-No automatic erase or migration writes occur at boot. `flights info` reports `config_version:2`
+No automatic erase or migration writes occur at boot. `flights info` reports `config_version:3`
 and `flights config` exports that codec.
 Directory status values are Recording=1, Completed=2, Interrupted=3,
 StoppedFull=4, Invalidated=5, Corrupt=6. Firmware that only accepts 1..5 cannot mount a bank
 containing Corrupt and must not autoformat it. The frozen whole-image FNV64 regression value is
-`0x3000346afdd6427f` (current fixture uses zero channel delays).
+`0x5af89f6fd720024f` (current fixture uses zero channel delays).
 
-## Per-flight calibration snapshot (header v4)
+## Per-flight calibration snapshot (header v6)
 
-Descriptor bytes 160..199 store the immutable startup calibration, covered by the same
+Descriptor bytes 160..204 store the immutable startup calibration, covered by the same
 CRC and commit as the configuration snapshot. Old header versions are unsupported;
-use explicit `flights format` to start with the new format. The rule codec remains v2.
+use explicit `flights format` to start with the new format. The rule codec is v3.
 
 | Descriptor offset | Width | Meaning |
 |---|---|---|
@@ -348,6 +354,8 @@ use explicit `flights format` to start with the new format. The rule codec remai
 | 192 | 1 | Bistage selected: 0 normal, 1 bistage |
 | 193 | 3 | Reserved FF |
 | 196 | 4 | Minimum COAST 1 velocity, float32 m/s |
+| 200 | 4 | Compiled airbrake law version, u32 |
+| 204 | 1 | Airbrakes enabled at startup, strictly 0/1 |
 
 Unavailable snapshots use flags 0 and FF in all remaining snapshot bytes. When input is
 already calibrated BODY data, axis and bias fields remain FF and export as null, rather
@@ -359,7 +367,7 @@ in the flight JSON sidecar. No current device settings are consulted when displa
 ## Board mounting record
 
 The second sector of the configuration reservation (0x002000) contains the orientation,
-independent of the unchanged v2 rule package at 0x001000. Its first 256-byte page stores
+independent of the v3 rule package at 0x001000. Its first 256-byte page stores
 magic 0x544E524F at 0 (u32), version 1 at 4 (u8), signed axis enum at 5 (u8:
 +X, -X, +Y, -Y, +Z, -Z = 0..5), and CRC32 of bytes 0..251 at 252 (u32).
 Other bytes remain FF. Saving erases only this sector and programs one verified page.
@@ -375,3 +383,19 @@ at 4 (u8), bistage 0/1 at 5, minimum COAST 1 velocity at 8 (float32 m/s), and CR
 invalid records prevent run readiness until rewritten. Saves erase/program/read back this
 sector. Factory reset erases it; flight-memory format preserves it. No calibration
 reservation or retained flight extent is touched by a mode change.
+
+Descriptor offset 200 (u32) freezes `AirbrakeLawVersion` when calibration is available;
+205..251 remain FF. Offset 204 freezes the saved enable flag (0/1).
+Unavailable calibration retains FF at 192..204. The immutable configuration
+snapshot includes the airbrake channel mask and AND conditions. Airbrakes do not allocate
+once-only output-start slots; their continuous state belongs to sample records.
+
+## Airbrake device enable record
+
+The fourth configuration sector (0x004000) stores the independent enable setting.
+Its first page uses magic 0x52424150 at offset 0 (u32), version 1 at 4 (u8), enabled
+0/1 at 5 (u8), and CRC32 over 0..251 at 252 (u32); reserved bytes are FF. An erased
+record defaults to disabled. Invalid records block run readiness until explicitly
+saved again. Saving erases only this sector and verifies its programmed page.
+Factory reset erases this record; formatting flights preserves it. The configuration
+codec remains v3, so existing channel/rule plans can be reapplied without conversion.

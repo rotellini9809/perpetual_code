@@ -10,10 +10,12 @@ QDir.addSearchPath('perpetual',str(ASSETS))
 
 
 def fill_table(widget,rows):
-    selected=widget.currentRow(); widget.setRowCount(len(rows))
+    if widget.rowCount()!=len(rows): widget.setRowCount(len(rows))
     for i,values in enumerate(rows):
-        for j,text in enumerate(values): widget.setItem(i,j,QTableWidgetItem(str(text)))
-    if 0<=selected<len(rows): widget.selectRow(selected)
+        for j,value in enumerate(values):
+            text=str(value); item=widget.item(i,j)
+            if item is None: widget.setItem(i,j,QTableWidgetItem(text))
+            elif item.text()!=text: item.setText(text); item.setToolTip('')
 
 
 def label(text='', name=None):
@@ -27,6 +29,13 @@ def button(text, callback=None, kind=None):
     if kind: widget.setObjectName(kind)
     if callback: widget.clicked.connect(lambda:callback())
     return widget
+
+
+def create_page(title,subtitle,widget=None):
+    widget=widget if widget is not None else QWidget(); widget.setObjectName('canvas')
+    layout=QVBoxLayout(widget); layout.setContentsMargins(0,0,0,0); layout.setSpacing(18)
+    layout.addWidget(label(title,'title')); sub=label(subtitle,'subtitle'); sub.setWordWrap(True); layout.addWidget(sub)
+    return widget,layout
 
 
 def card(title=None):

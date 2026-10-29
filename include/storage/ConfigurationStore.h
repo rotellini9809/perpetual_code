@@ -10,7 +10,7 @@ public:
   static constexpr uint32_t Begin = FlashLayout::ConfigurationBegin;
   static constexpr uint32_t Bytes = FlashLayout::ConfigurationBytes;
   static constexpr std::size_t MaxPayload = 4096;
-  static constexpr uint16_t FormatVersion = 2;
+  static constexpr uint16_t FormatVersion = 3;
   explicit ConfigurationStore(FlashDevice &flash) : flash_(flash) {}
   // Output is assigned only after integrity, version and semantic validation.
   bool load(recovery::Configuration &output, const recovery::ValidationLimits &limits);
@@ -20,6 +20,8 @@ public:
   bool clear(bool disarmed);
   bool loadStateMachine(recovery::StateMachineSettings &settings);
   bool saveStateMachine(const recovery::StateMachineSettings &settings, bool disarmed);
+  bool loadAirbrakes(bool &enabled);
+  bool saveAirbrakes(bool enabled, bool disarmed);
   bool loadOrientation(uint8_t &axis);
   bool saveOrientation(uint8_t axis, bool disarmed);
   ConfigError error() const { return error_; }

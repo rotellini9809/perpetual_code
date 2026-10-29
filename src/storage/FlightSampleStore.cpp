@@ -20,10 +20,18 @@ void encode(const FlightSample &s, uint8_t *p) {
     put(p + 4 + i*4, bits, 4);
   }
   p[60] = uint8_t(s.phase); p[63]=uint8_t(s.abortReason);
-  put(p + 61, s.batteryMv, 2); // Reserved-field extension: FFFF in existing flights means missing.
+  put(p + 61, s.batteryMv, 2);
+  for (unsigned i=0;i<4;++i) put(p+64+2*i,s.airbrakes.opening[i],2);
+  put(p+72,s.airbrakes.flags,2); p[74]=s.airbrakes.failedConditions; p[75]=s.airbrakes.channelMask;
 }
 bool decode(const uint8_t *p, FlightSample &s) {
   if (p[60] > uint8_t(recovery::FlightPhase::Abort) || p[63] > uint8_t(recovery::AbortReason::Tilt)) return false;
+  s.airbrakes.flags=uint16_t(get64(p+72,2)); s.airbrakes.failedConditions=p[74]; s.airbrakes.channelMask=p[75];
+  if (s.airbrakes.channelMask>15 || (s.airbrakes.flags & ~511u)) return false;
+  for (unsigned i=0;i<4;++i) {
+    const auto value=uint16_t(get64(p+64+2*i,2)); s.airbrakes.opening[i]=value;
+    if ((s.airbrakes.channelMask&(1u<<i)) ? value>10000 : value!=65535) return false;
+  }
   s.abortReason=static_cast<recovery::AbortReason>(p[63]);
   s.batteryMv = uint16_t(get64(p + 61, 2));
   s.timeMs = uint32_t(get64(p, 4)); s.phase = static_cast<recovery::FlightPhase>(p[60]);
@@ -34,6 +42,8 @@ bool decode(const uint8_t *p, FlightSample &s) {
   return true;
 }
 }
+
+void FlightSampleStore::encodeSample(const FlightSample &sample, uint8_t *record) { encode(sample,record); }
 
 const char *FlightSampleStore::errorName(SampleError e) {
   switch (e) {
@@ -74,7 +84,7 @@ bool FlightSampleStore::flush() {
   if (!buffered_) { error_ = SampleError::None; return true; }
   const uint32_t address = start_ + blocks_ * BlockBytes;
   memset(body_, 255, sizeof(body_));
-  put(body_, Magic, 4); put(body_ + 4, 2, 2); put(body_ + 6, RecordBytes, 2);
+  put(body_, Magic, 4); put(body_ + 4, 3, 2); put(body_ + 6, RecordBytes, 2);
   put(body_ + 8, sequence_, 8); put(body_ + 16, blocks_, 4); put(body_ + 20, buffered_, 2);
   put(body_ + 24, committedSamples_, 4); put(body_ + 28, address, 4);
   for (unsigned i = 0; i < buffered_; ++i) encode(pending_[i], body_ + 32 + i*RecordBytes);
@@ -104,7 +114,7 @@ bool FlightSampleStore::readBlock(uint32_t address, uint64_t sequence, uint32_t 
   const uint32_t checksum = uint32_t(get64(body_ + BodyBytes - 4, 4));
   if (get64(page_, 4) != Commit || get64(page_ + 4, 4) != checksum || get64(page_ + 8, 4) != uint32_t(~checksum) || !erased(page_ + 12, 244))
     return fail(SampleError::Incomplete);
-  if (get64(body_, 4) != Magic || get64(body_ + 4, 2) != 2 || get64(body_ + 6, 2) != RecordBytes || crc(body_, BodyBytes - 4) != checksum)
+  if (get64(body_, 4) != Magic || get64(body_ + 4, 2) != 3 || get64(body_ + 6, 2) != RecordBytes || crc(body_, BodyBytes - 4) != checksum)
     return fail(SampleError::Corrupt);
   if (get64(body_ + 8, 8) != sequence || get64(body_ + 16, 4) != index || get64(body_ + 28, 4) != address) return fail(SampleError::Identity);
   const auto count = uint16_t(get64(body_ + 20, 2));

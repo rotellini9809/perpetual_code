@@ -56,11 +56,17 @@ struct Rule {
   std::size_t assignmentCount = 0;
   std::array<Assignment, MaxAssignments> assignments{};
 };
+struct AirbrakeRule {
+  uint8_t channelMask = 0; // Reserved servo channels; zero disables the feature.
+  std::size_t conditionCount = 0;
+  std::array<Condition, MaxConditions> conditions{}; // Continuous AND, no trigger latch/delay.
+};
 struct Configuration {
   std::array<PyroSettings, ChannelCount> pyros{};
   std::array<ServoSettings, ChannelCount> servos{};
   std::size_t ruleCount = 0;
   std::array<Rule, MaxRules> rules{};
+  AirbrakeRule airbrakes;
 };
 
 // Board/application policy supplied explicitly; these are not recommended flight values.
