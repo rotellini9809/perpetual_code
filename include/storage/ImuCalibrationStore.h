@@ -18,7 +18,10 @@ public:
   bool load();
   bool save(const ImuCalibrationRecord &record);
   bool approve(ImuApproval approval);
+  // After use (a flight or a reset while armed): invalidate and revoke the factory identity for good.
   bool invalidate();
+  // A custom calibration that fails before any use: drop only it; identity returns if still allowed.
+  bool discard();
   bool identityAllowed() const { return identityAllowed_; }
   bool needsCalibration() const { return present_ && (record_.approval==ImuApproval::Invalid || (record_.identity && !identityAllowed_)); }
   bool present() const { return present_; }
@@ -29,9 +32,11 @@ private:
   bool write(unsigned page, const ImuCalibrationRecord &record);
   FlashDevice &flash_;
   ImuCalibrationRecord record_;
-  bool loadIdentityPolicy(bool pristine);
+  // One byte in its own sector, never erased by the application: erased (0xFF) as delivered means
+  // the factory identity is allowed; written to 0x00 by a failed post-Boost verification, forever.
+  bool loadIdentityPolicy();
   bool revokeIdentity();
-  bool identityAllowed_ = false, policyReady_ = false, policyReadable_ = false;
+  bool identityAllowed_ = false, policyReadable_ = false;
   bool present_ = false;
   unsigned next_ = 0;
 };

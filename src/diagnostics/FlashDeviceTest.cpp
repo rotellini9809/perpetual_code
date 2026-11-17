@@ -83,9 +83,10 @@ void runDiagnostics() {
   softwareProbe();
   Serial.print("Hardware matching reads: "); Serial.print(matches); Serial.print('/'); Serial.println(reads);
   Serial.println("An ID match verifies identification only, not memory integrity.");
-  Serial.println("=== END: r + Enter repeats ID checks; w + Enter tests last 4KiB sector ===");
+  Serial.println("=== END: r + Enter repeats ID checks; w + Enter tests the last flight-data sector ===");
   Serial.println("w saves/restores that sector in RAM; power loss can destroy its original contents.");
-  Serial.println("ERASE ALL + Enter erases and verifies the entire 16MiB device, including settings and flights.");
+  Serial.println("w never touches the IMU identity policy sector (0xFFF000), which nothing may erase.");
+  Serial.println("ERASE ALL + Enter erases the entire 16MiB device: settings, flights and the IMU identity policy.");
 }
 void eraseAll() {
   inactiveOutputs();
@@ -105,7 +106,9 @@ void eraseAll() {
   Serial.println("=== FULL FLASH ERASE VERIFIED: 16777216 bytes ===");
 }
 void runStorageTest() {
-  constexpr uint32_t address = FlashLogger::Capacity - FlashLogger::SectorSize;
+  // Last flight-data sector: the following one holds the IMU identity policy and is never erased here.
+  constexpr uint32_t address = storage::FlashLayout::DataEnd - FlashLogger::SectorSize;
+  static_assert(address + FlashLogger::SectorSize <= storage::FlashLayout::IdentityPolicyBegin, "Test sector overlaps the policy");
   static uint8_t backup[FlashLogger::SectorSize];
   static uint8_t expected[FlashLogger::SectorSize];
   static bool backupAtRisk = false;
@@ -114,7 +117,7 @@ void runStorageTest() {
     Serial.println("Previous restore failed. Test blocked to preserve the RAM backup; do not reboot.");
     return;
   }
-  Serial.println("\n=== FLASH storage test: ONLY 0xFFF000..0xFFFFFF ===");
+  Serial.println("\n=== FLASH storage test: ONLY 0xFFE000..0xFFEFFF (last flight-data sector) ===");
   if (!logger.initialize(FLASH_CLOCK_HZ)) {
     Serial.print("INIT FAILED: "); Serial.println(FlashLogger::errorName(logger.lastError())); return;
   }
@@ -132,7 +135,7 @@ void runStorageTest() {
                   logger.lastError() == FlashLogger::Error::Bounds;
   boundsOk = boundsOk && !logger.program(0xFFFFFFFFu, verify, 1) &&
              logger.lastError() == FlashLogger::Error::Bounds;
-  boundsOk = boundsOk && !logger.eraseSector(address + 1) &&
+  boundsOk = boundsOk && !logger.eraseSector(FlashLogger::Capacity) &&
              logger.lastError() == FlashLogger::Error::Bounds;
   boundsOk = boundsOk && !logger.eraseSector(address - 1) &&
              logger.lastError() == FlashLogger::Error::Alignment;

@@ -478,11 +478,12 @@ void run() {
   // Unsupported wrapped extents are rejected before mutation; adjacent extents remain valid.
   MemoryFlash boundary; FlightDirectory contiguous(boundary); assert(contiguous.format());
   const auto boundaryBefore=boundary.bytes;
-  e=flight(1,0xFFF000); e.allocatedBytes=8192;
+  const uint32_t last=FlashLayout::DataEnd-4096, previous=last-4096; // Final data sectors (the IMU policy follows).
+  e=flight(1,last); e.allocatedBytes=8192;
   assert(!contiguous.update(e) && contiguous.error()==DirectoryError::InvalidEntry && boundary.bytes==boundaryBefore);
   e.allocatedBytes=4096; assert(contiguous.update(e)); e.status=FlightStatus::Completed; assert(contiguous.update(e));
-  next=flight(2,0xFFE000); assert(contiguous.update(next)); next.status=FlightStatus::Completed; assert(contiguous.update(next));
-  assert(!contiguous.update(flight(3,0xFFF000)));
+  next=flight(2,previous); assert(contiguous.update(next)); next.status=FlightStatus::Completed; assert(contiguous.update(next));
+  assert(!contiguous.update(flight(3,last)));
   // Even CRC-valid wrapped metadata must fail mounting without changing bytes.
   auto incompatibleExtent=boundary;
   auto *extent=incompatibleExtent.bytes.data()+FlashLayout::DirectoryA+FlightDirectory::SlotBytes;

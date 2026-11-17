@@ -81,8 +81,9 @@ void run() {
   for (auto byte : flash.bytes) fingerprint = (fingerprint ^ byte) * UINT64_C(0x100000001B3);
   // Fixed image with zero channel delays, directory, header,
   // summary reservation, historical start timestamps and sample blocks.
-  if (fingerprint != UINT64_C(0x6d9c4c302cee3f5c)) std::cerr << "Storage image fingerprint: 0x" << std::hex << fingerprint << std::dec << '\n';
-  assert(fingerprint == UINT64_C(0x6d9c4c302cee3f5c));
+  // The data area ends one sector early: the last sector holds the IMU identity policy.
+  if (fingerprint != UINT64_C(0xf31c31c6e2e60699)) std::cerr << "Storage image fingerprint: 0x" << std::hex << fingerprint << std::dec << '\n';
+  assert(fingerprint == UINT64_C(0xf31c31c6e2e60699));
   std::cout << "Storage encoding tests passed: known CRC vector, incremental CRC, endian widths and unchanged full storage image.\n";
 }
 } // namespace test_storage_encoding

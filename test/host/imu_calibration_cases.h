@@ -72,6 +72,7 @@ void run() {
   assert(store.approve(storage::ImuApproval::Verified));
   flash.tear=true; assert(!store.approve(storage::ImuApproval::InUse)); flash.tear=false;
   assert(reboot.load() && !reboot.verified()); // Never fall back to an earlier approval.
+  assert(reboot.identityAllowed()); // A torn write is not a failed verification: identity stays allowed.
   assert(reboot.needsCalibration() && !reboot.approve(storage::ImuApproval::Verified));
   assert(reboot.save(measured));
   assert(store.load() && store.verified());
@@ -94,12 +95,31 @@ void run() {
   assert(factory.load() && !factory.identityAllowed());
   factoryFlash.eraseSector(0); // Even lost coefficient records cannot resurrect factory identity.
   assert(!factory.load() && !factory.identityAllowed());
+  // Only the policy byte decides: unreadable coefficients do not revoke the identity...
   CalibrationFlash unknownFlash; unknownFlash.bytes[0]=0;
   storage::ImuCalibrationStore unknown(unknownFlash);
-  assert(!unknown.load() && !unknown.identityAllowed());
+  assert(!unknown.load() && unknown.identityAllowed());
+  // ...while any value other than the erased one counts as revoked, and is never rewritten as allowed.
+  CalibrationFlash damagedPolicy; damagedPolicy.policy[0]=0x5A; storage::ImuCalibrationStore damagedStore(damagedPolicy);
+  assert(!damagedStore.load() && !damagedStore.identityAllowed() && damagedPolicy.policy[0]==0x5A);
+  // A revocation interrupted by a reset (Invalid saved, byte not yet written) is completed at load.
+  CalibrationFlash interruptedFlash; storage::ImuCalibrationStore interrupted(interruptedFlash);
+  assert(!interrupted.load() && interrupted.save(identity) && interrupted.approve(storage::ImuApproval::Invalid));
+  assert(interruptedFlash.policy[0]==255); storage::ImuCalibrationStore resumed(interruptedFlash);
+  assert(resumed.load() && !resumed.identityAllowed() && interruptedFlash.policy[0]==0);
   CalibrationFlash unreadableFlash; unreadableFlash.failRead=true;
   storage::ImuCalibrationStore unreadable(unreadableFlash);
   assert(!unreadable.load() && !unreadable.identityAllowed());
+  // A custom calibration that fails before any use is dropped; identity is still allowed.
+  CalibrationFlash customFlash; storage::ImuCalibrationStore custom(customFlash);
+  auto attempt=measured; attempt.approval=storage::ImuApproval::Required; attempt.identity=false; // Saved, never verified.
+  assert(!custom.load() && custom.identityAllowed() && custom.save(attempt) && !custom.verified());
+  assert(custom.discard() && custom.identityAllowed() && custom.verified() && custom.record().identity);
+  for (unsigned i=0;i<3;++i) assert(custom.record().bias[i]==0 && custom.record().scale[i]==1);
+  assert(!custom.needsCalibration());
+  // Without identity, a failed custom calibration must be redone.
+  factory.load(); // Coefficients were erased above; the revoked identity stays revoked.
+  assert(!factory.identityAllowed() && factory.save(attempt) && factory.discard() && factory.needsCalibration());
   // Wrong position retries; a stable correctly oriented but biased measurement fails.
   storage::ImuCalibrationRecord shifted; shifted.bias[0]=.8f;
   collector.begin(true,identity); assert(collector.capture(0)); feed(collector,2,identity);

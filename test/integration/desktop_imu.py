@@ -69,7 +69,7 @@ def check_imu(app,wait,native):
             assert 'Da ricalibrare' in page.state_label.text() and 'disabilitata definitivamente' in page.state_label.text()
             imu.update(imu_calibration_state='identity',imu_calibration_reason='IDENTITY',last_error='None',revision=0,identity_allowed=True)
             controller.command('imu status'); wait(lambda:not s.foreground)
-            assert 'Identit?' in page.state_label.text() and page.begin_button.isEnabled()
+            assert 'Identità (predefinita)' in page.state_label.text() and page.begin_button.isEnabled()
             # An old connection's approval must not survive disconnect/reconnect.
             controller.disconnect(); wait(lambda:controller.connection is None)
             assert not s.imu_calibration

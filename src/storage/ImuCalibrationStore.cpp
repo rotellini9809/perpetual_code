@@ -23,7 +23,7 @@ bool decode(const uint8_t *p, ImuCalibrationRecord &r) {
 }
 }
 bool ImuCalibrationStore::load() {
-  present_=false; identityAllowed_=policyReady_=policyReadable_=false; next_=0; record_={};
+  present_=false; identityAllowed_=policyReadable_=false; next_=0; record_={};
   bool damaged=false;
   for (unsigned n=0;n<FlashLayout::CalibrationBytes/256;++n) {
     uint8_t page[256];
@@ -36,8 +36,10 @@ bool ImuCalibrationStore::load() {
   }
   // A torn approval write must never fall back to an older Verified record.
   if (damaged && present_) record_.approval=ImuApproval::Invalid;
-  loadIdentityPolicy(next_==0);
-  if (present_ && record_.approval==ImuApproval::Invalid) revokeIdentity();
+  loadIdentityPolicy();
+  // Only a persisted Invalid record comes from invalidate(): finish a revocation interrupted by a reset.
+  // A torn write (damaged) is not a failed verification and never revokes the identity.
+  if (present_ && !damaged && record_.approval==ImuApproval::Invalid) revokeIdentity();
   return present_;
 }
 bool ImuCalibrationStore::write(unsigned n,const ImuCalibrationRecord &r) {
@@ -59,8 +61,7 @@ bool ImuCalibrationStore::save(const ImuCalibrationRecord &r) {
   if (!r.revision || unsigned(r.approval)>3 || (r.identity && !identityAllowed_)) return false;
   for (unsigned i=0;i<3;++i)
     if (!std::isfinite(r.bias[i]) || std::fabs(r.bias[i])>2 || !std::isfinite(r.scale[i]) || r.scale[i]<.8f || r.scale[i]>1.2f) return false;
-  if (!policyReadable_) loadIdentityPolicy(false);
-  if (!policyReadable_ || (!identityAllowed_ && !revokeIdentity())) return false;
+  if (!policyReadable_ && !loadIdentityPolicy() && !policyReadable_) return false; // Unknown policy: do not write.
   // Explicit idle operation. Loss of power during erase leaves calibration unavailable.
   present_=false;
   if (!flash_.eraseSector(FlashLayout::CalibrationBegin)) return false;
@@ -79,38 +80,25 @@ bool ImuCalibrationStore::approve(ImuApproval approval) {
   if (!write(page,r)) { record_.approval=ImuApproval::Invalid; return false; }
   record_=r; return true;
 }
-// Policy occupies its own sector: no erase path can turn a revoked bit back on.
-bool ImuCalibrationStore::loadIdentityPolicy(bool pristine) {
-  constexpr uint32_t PolicyMagic=0x50444950;
-  uint8_t page[256],revoked=0;
-  const auto address=FlashLayout::IdentityPolicyBegin;
-  if (!flash_.read(address,page,sizeof(page)) || !flash_.read(address+256,&revoked,1)) return false;
-  bool blank=true;
-  for (unsigned offset=0;offset<FlashLayout::SectorBytes;offset+=256) {
-    uint8_t chunk[256];
-    if (!flash_.read(address+offset,chunk,sizeof(chunk))) return false;
-    for (auto byte:chunk) blank=blank && byte==255;
-  }
-  if (blank) {
-    binary::put(page,PolicyMagic,4); page[4]=1; page[5]=pristine ? 1 : 0;
-    binary::put(page+252,binary::crc(page,252),4);
-    uint8_t check[256];
-    if (!flash_.program(address,page,sizeof(page)) || !flash_.read(address,check,sizeof(check)) ||
-        std::memcmp(page,check,sizeof(page))) return false;
-  }
+bool ImuCalibrationStore::loadIdentityPolicy() {
+  uint8_t value=0;
+  if (!flash_.read(FlashLayout::IdentityPolicyBegin,&value,1)) return false;
   policyReadable_=true;
-  policyReady_=binary::get32(page,4)==PolicyMagic && page[4]==1 && page[5]<=1 &&
-               binary::get32(page+252,4)==binary::crc(page,252);
-  identityAllowed_=policyReady_ && page[5]==1 && revoked==255;
+  identityAllowed_=value==255; // Anything but the erased value (0x00, or damage) counts as revoked.
   return identityAllowed_;
 }
 bool ImuCalibrationStore::revokeIdentity() {
   identityAllowed_=false;
-  if (!policyReadable_) return false;
-  if (!policyReady_) return true; // Unknown occupied sector is never overwritten or accepted.
   const uint8_t revoked=0; uint8_t check=255;
-  const auto address=FlashLayout::IdentityPolicyBegin+256;
+  const auto address=FlashLayout::IdentityPolicyBegin;
   return flash_.program(address,&revoked,1) && flash_.read(address,&check,1) && check==0;
+}
+bool ImuCalibrationStore::discard() {
+  if (!present_) return true;
+  if (!identityAllowed_) return approve(ImuApproval::Invalid); // Nothing to fall back to: recalibrate.
+  ImuCalibrationRecord identity; identity.identity=true; identity.approval=ImuApproval::Verified;
+  identity.revision=record_.revision==UINT32_MAX ? record_.revision : record_.revision+1;
+  return save(identity);
 }
 bool ImuCalibrationStore::invalidate() {
   const bool saved=approve(ImuApproval::Invalid);
