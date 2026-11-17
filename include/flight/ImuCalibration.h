@@ -14,6 +14,7 @@ public:
   bool collecting() const { return collecting_; }
   bool complete() const { return verification_ ? (mask_ & 5)==5 : mask_==63; }
   bool verification() const { return verification_; }
+  bool failed() const { return failed_; }
   unsigned mask() const { return mask_; }
   unsigned face() const { return face_; }
   unsigned samples() const { return samples_; }
@@ -23,7 +24,7 @@ public:
   bool result(storage::ImuCalibrationRecord &record) const;
 private:
   void resetWindow();
-  bool active_=false,collecting_=false,verification_=false,have_=false;
+  bool active_=false,collecting_=false,verification_=false,have_=false,failed_=false;
   unsigned mask_=0,face_=0,samples_=0;
   uint64_t lastTime_=0,lastSequence_=0,startTime_=0;
   double sum_[3]={},square_[3]={};

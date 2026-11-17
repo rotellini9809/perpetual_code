@@ -4,6 +4,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap,QTransform
 from PySide6.QtWidgets import QWidget,QVBoxLayout,QGridLayout,QComboBox,QSizePolicy,QGraphicsOpacityEffect
 from .widgets import ASSETS,label,button,row
+from .i18n import t
 
 AXES=('+X','-X','+Y','-Y','+Z','-Z')
 
@@ -13,7 +14,7 @@ class OrientationPanel(QWidget):
         super().__init__(); self.controller=controller; self._observed=None; self.setObjectName('orientationPanel')
         layout=QGridLayout(self); layout.setContentsMargins(0,0,0,0); layout.setHorizontalSpacing(32); layout.setVerticalSpacing(8)
         layout.setColumnStretch(1,1)
-        self.direction=label('PUNTA DEL RAZZO  '+chr(8593),'eyebrow'); self.direction.setAlignment(Qt.AlignCenter)
+        self.direction=label(t('ROCKET NOSE  ↑'),'eyebrow'); self.direction.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.direction,0,0)
         self.image=label(); self.image.setFixedSize(200,220); self.image.setAlignment(Qt.AlignCenter)
         self.image_opacity=QGraphicsOpacityEffect(self.image); self.image.setGraphicsEffect(self.image_opacity)
@@ -21,13 +22,13 @@ class OrientationPanel(QWidget):
         self.z_artwork=QPixmap(str(ASSETS/'board-orientation-z-reference.jpg')).scaled(200,220,Qt.KeepAspectRatio,Qt.SmoothTransformation)
         self._previews={}; layout.addWidget(self.image,1,0)
         details=QVBoxLayout(); details.setSpacing(12)
-        text=label('Seleziona l'+chr(8217)+'asse del sensore rivolto verso la punta del razzo.','settingsDescription')
+        text=label(t('Select the sensor axis that points toward the rocket nose.'),'settingsDescription')
         text.setWordWrap(True); details.addWidget(text)
-        self.axis=QComboBox(); self.axis.addItem(chr(8212),None)
+        self.axis=QComboBox(); self.axis.addItem('—',None)
         for axis in AXES: self.axis.addItem(axis,axis)
-        self.axis.setAccessibleName('Asse del sensore rivolto verso la punta del razzo')
+        self.axis.setAccessibleName(t('Sensor axis pointing toward the rocket nose'))
         self.axis.setFixedWidth(150); self.axis.currentIndexChanged.connect(self._axis_changed)
-        self.save=button('Salva orientamento',lambda:controller.save_orientation(self.axis.currentData()),'saveAction')
+        self.save=button(t('Save orientation'),lambda:controller.save_orientation(self.axis.currentData()),'saveAction')
         self.save.setSizePolicy(QSizePolicy.Fixed,QSizePolicy.Fixed); self.save.setMinimumHeight(42)
         details.addLayout(row(self.axis,self.save,None))
         self.saved=label('','hint'); self.saved.setWordWrap(True); details.addWidget(self.saved)
@@ -48,7 +49,7 @@ class OrientationPanel(QWidget):
             artwork=self.z_artwork if key[0] else self.artwork
             self._previews[key]=artwork.transformed(QTransform().rotate(rotation)).scaled(200,220,Qt.KeepAspectRatio,Qt.SmoothTransformation)
         self.image.setPixmap(self._previews[key])
-        self.image.setAccessibleName('Anteprima orientamento '+axis if illustrated else 'Orientamento non selezionato')
+        self.image.setAccessibleName(t('Orientation preview {axis}',axis=axis) if illustrated else t('Orientation not selected'))
         self.image_opacity.setOpacity(1 if illustrated else .25)
         self.render(self.controller.state,update_selection=False)
 
@@ -63,11 +64,11 @@ class OrientationPanel(QWidget):
         supported=orientation.get('supported') is not False
         ready=orientation.get('orientation_ready',False)
         selected=self.axis.currentData()
-        self.saved.setText(('Salvato sulla scheda: '+orientation['up_axis']) if ready else
-                           'Orientamento: '+chr(8212)+' da impostare per armare.' if s.connected and orientation else 'Collega la scheda per leggere l'+chr(8217)+'orientamento.')
+        self.saved.setText(t('Saved on the board: {axis}',axis=orientation['up_axis']) if ready else
+                           t('Orientation: — to set before arming.') if s.connected and orientation else t('Connect the board to read the orientation.'))
         if s.connected and selected in AXES and (not ready or selected!=orientation.get('up_axis')):
-            self.saved.setText('Anteprima non salvata.'+(' Sulla scheda: '+orientation['up_axis'] if ready else ' Salva per impostare l'+chr(8217)+'orientamento.'))
-        if s.connected and not supported: self.saved.setText('Aggiorna il firmware della scheda per impostare l'+chr(8217)+'orientamento.')
+            self.saved.setText(t('Unsaved preview.')+(t(' On the board: {axis}',axis=orientation['up_axis']) if ready else t(' Save to set the orientation.')))
+        if s.connected and not supported: self.saved.setText(t('Update the board firmware to set the orientation.'))
         editable=(supported and s.editable and not s.dirty and not s.staged and not s.sim.get('active') and
                   not s.status.get('sensor_hil_active'))
         self.axis.setEnabled(editable)

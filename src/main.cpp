@@ -84,6 +84,17 @@ CommandSession usbSession(router, CommandRouter::Source::Usb);
 CommandSession bluetoothSession(router, CommandRouter::Source::Bluetooth);
 CommandEndpoint usbEndpoint(usbSession), bluetoothEndpoint(bluetoothSession);
 bluetooth::Jdy34Link bluetoothLink;
+// `bluetooth name` from either transport; the radio driver performs it once the reply is sent.
+class LinkNaming : public BluetoothNaming {
+public:
+  const char *requestName(const char *suffix, char *name, std::size_t capacity) override {
+    const char *error = bluetoothLink.requestName(suffix);
+    if (!error) bluetooth::Jdy34Link::boardName(suffix,name,capacity);
+    return error;
+  }
+} bluetoothNaming;
+uint32_t bluetoothUartBaud = bluetooth::Jdy34Link::UartBaud;
+uint32_t bluetoothQuietSince = 0; // Last time a reply or AT request was still being sent.
 CommandService::Status commandStatus;
 bool usbConnected = false;
 bool bluetoothGate = false;
@@ -171,8 +182,17 @@ void pollBluetooth() {
   }
   // Arduino-Pico UART reports writable as 0/1, not FIFO free space. Feed AT
   // requests one writable byte at a time, exactly like application responses.
+  // Start a rename only after its accepting reply reached the phone or PC: the module still has to
+  // transmit the bytes over the air after they leave the UART, and the rename then drops the link.
+  if (bluetoothEndpoint.pending() || bluetoothQuery) bluetoothQuietSince = millis();
+  else if (bluetoothLink.renamePending() && uint32_t(millis()-bluetoothQuietSince) >= 500) { Serial2.flush(); bluetoothLink.startRename(millis()); }
   if (!bluetoothQuery) {
     bluetoothQuery = bluetoothLink.poll(millis()); bluetoothQueryOffset = 0;
+  }
+  // Setup of a factory module switches between 230400 and 9600; requests are complete by then.
+  if (bluetoothLink.uartBaud() != bluetoothUartBaud && !bluetoothQuery) {
+    Serial2.flush(); Serial2.end(); bluetoothUartBaud = bluetoothLink.uartBaud(); Serial2.begin(bluetoothUartBaud);
+    commandStatus.bluetoothBaud = bluetoothUartBaud;
   }
   if (bluetoothQuery && Serial2.availableForWrite() > 0) {
     if (Serial2.write(uint8_t(bluetoothQuery[bluetoothQueryOffset]))) ++bluetoothQueryOffset;
@@ -184,6 +204,9 @@ void pollBluetooth() {
   commandStatus.bluetoothReady = bluetoothLink.ready();
   commandStatus.bluetoothConnected = bluetoothLink.connected();
   commandStatus.bluetoothError = bluetoothLink.error();
+  commandStatus.bluetoothName = bluetoothLink.name();
+  commandStatus.bluetoothRename = bluetoothLink.renameState(); commandStatus.bluetoothConfigured = bluetoothLink.configured();
+  commandStatus.bluetoothStage = bluetoothLink.stageName();
   if (bluetoothLink.connected()) sendPending(Serial2, bluetoothEndpoint);
 }
 
@@ -198,6 +221,7 @@ void setup() {
   statusPixel.begin(); statusPixel.setBrightness(40); // Same normal brightness for all modes, including rainbow.
   statusLed.update(millis(),LedMode::Disarmed);
   router.setPower(power,transportBusy);
+  router.setBluetooth(bluetoothNaming);
   delay(10);
   const bool flashReady = flash.initialize(FLASH_CLOCK_HZ);
   commandStatus.flashJedec = flash.readJEDEC();

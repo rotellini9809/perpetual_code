@@ -2,6 +2,7 @@
 from dataclasses import dataclass
 import re
 import sys
+from .i18n import t
 
 
 @dataclass(frozen=True)
@@ -11,10 +12,12 @@ class Port:
     identity: str = ''
     description: str = ''
     automatic: bool = False
+    name: str = '' # Paired Bluetooth name, so several boards can be told apart.
 
     @property
     def label(self):
-        return {'usb':'USB','bluetooth':'Bluetooth','serial':'Seriale'}[self.transport]+' · '+self.device
+        kind={'usb':'USB','bluetooth':'Bluetooth','serial':t('Serial')}[self.transport]
+        return ' · '.join(part for part in (kind,self.name,self.device) if part)
 
 
 def bluetooth_name(address):
@@ -40,7 +43,7 @@ def describe_port(info, name_reader=bluetooth_name):
         outgoing=bool(address and address!='000000000000' and '00001101-' in hwid)
         name=name_reader(address) if outgoing else ''
         recognized=not name or any(word in name.casefold() for word in ('perpetual','jdy-34','jdy34'))
-        return Port(device,'bluetooth','bluetooth:'+address if outgoing else '',description,outgoing and recognized)
+        return Port(device,'bluetooth','bluetooth:'+address if outgoing else '',description,outgoing and recognized,name)
     if info.vid is not None:
         serial=info.serial_number or device
         # This firmware uses native RP2350 USB CDC, not an arbitrary USB/UART adapter.

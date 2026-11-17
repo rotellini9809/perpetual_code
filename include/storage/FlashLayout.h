@@ -11,7 +11,9 @@ struct FlashLayout {
   static constexpr uint32_t CalibrationBegin = 0, CalibrationBytes = SectorBytes;
   static constexpr uint32_t ConfigurationBegin = 0x001000, ConfigurationBytes = 0x004000;
   static constexpr uint32_t DirectoryA = 0x005000, DirectoryB = 0x00D000, DirectoryBankBytes = 0x008000;
-  static constexpr uint32_t DataBegin = 0x015000, DataEnd = Capacity;
+  // One-time identity eligibility; never erased by application maintenance.
+  static constexpr uint32_t IdentityPolicyBegin = Capacity - SectorBytes;
+  static constexpr uint32_t DataBegin = 0x015000, DataEnd = IdentityPolicyBegin;
   static constexpr bool dataRange(uint32_t address, uint32_t bytes) {
     return address >= DataBegin && address <= DataEnd && bytes <= DataEnd - address;
   }

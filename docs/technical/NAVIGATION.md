@@ -140,8 +140,11 @@ does not replace that future motion-consistency policy.
 
 Persistent accelerometer calibration contains additive biases and per-axis scales in
 sensor coordinates; it does not fit a cross-axis matrix. The dedicated 4 KiB sector at
-0x000000..0x000FFF stores coefficients and their paired approval. Missing calibration
-or required verification blocks physical arm, while simulation remains independent.
+0x000000..0x000FFF stores coefficients and their paired approval. Without a saved calibration, physical arming uses identity correction (zero bias, unit
+scale). An unsuccessful six-face attempt does not save its candidate or replace an existing
+record. The first physical arm persists identity before reserving approval, so the same
+post-Boost/reset verification lifecycle applies. A saved record requiring verification
+still blocks physical arm; simulation remains independent.
 Gravity is part of specific force, not an accelerometer bias to remove while stationary.
 
 `SensorCalibration` is the RAM snapshot passed to `SensorPipeline::begin()`. Its `configured`
@@ -167,7 +170,7 @@ No arbitrary rotation matrix is exposed. This supports axis-aligned installation
 installation needs a later extension. Rotation around the rocket's length is a chosen coordinate
 convention, sufficient for current vertical navigation and phase detection, not a measured
 physical roll reference for future directional control. Mounting is a device setting separate
-from bias calibration; it is persisted separately from deployment rules via `config orientation [+X|-X|+Y|-Y|+Z|-Z]` and selected in the desktop Impostazioni page. Normal physical arming passes this saved axis into the calibration/pipeline snapshot; simulation and logged BODY replays retain their source convention.
+from bias calibration; it is persisted separately from deployment rules via `config orientation [+X|-X|+Y|-Y|+Z|-Z]` and selected in the desktop Settings page. Normal physical arming passes this saved axis into the calibration/pipeline snapshot; simulation and logged BODY replays retain their source convention.
 
 ### Recovery System reference and current integration
 

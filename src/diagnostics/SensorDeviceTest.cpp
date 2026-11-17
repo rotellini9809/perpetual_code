@@ -113,6 +113,55 @@ void initDriver() {
   lastRead = lastReport = millis();
   driverStatus();
 }
+void baroChecks() {
+  streaming = false;
+  if (!device.baroOk()) {
+    Serial.println("BARO checks skipped: run i first; barometer must be READY.");
+    return;
+  }
+  Serial.println("=== BARO read-only checks: 20 rounds, interleaved speeds, production CS=PULLUP ===");
+  Serial.println("Raw six-byte bursts use Bosch conversion P=raw/64 Pa. Reads are not synchronized to data-ready; repeats/changes alone are not errors.");
+  Probe p{100000, device.baroSpiMode(), false, 0};
+  const uint8_t baselineOsr = readRegister(CS_BARO, BMP5_REG_OSR_CONFIG, p);
+  const uint8_t baselineOdr = readRegister(CS_BARO, BMP5_REG_ODR_CONFIG, p);
+  const uint32_t speeds[] = {100000, 500000, 1000000};
+  unsigned badIds[3] = {}, configDiffs[3] = {};
+  float minimum[3] = {}, maximum[3] = {};
+  Serial.printf("Baseline OSR=0x%02X ODR=0x%02X (comparison baseline, not proof of correct configuration)\n", baselineOsr, baselineOdr);
+  for (unsigned round = 0; round < 20; ++round) {
+    for (unsigned step = 0; step < 3; ++step) {
+      const unsigned index = round % 2 ? 2-step : step;
+      p.hz = speeds[index];
+      const uint8_t id = readRegister(CS_BARO, BMP5_REG_CHIP_ID, p);
+      const uint8_t osr = readRegister(CS_BARO, BMP5_REG_OSR_CONFIG, p);
+      const uint8_t odr = readRegister(CS_BARO, BMP5_REG_ODR_CONFIG, p);
+      uint8_t bytes[6];
+      probeSpi.beginTransaction(SPISettings(p.hz, MSBFIRST, p.mode));
+      deselect(false);
+      digitalWrite(CS_BARO, LOW); pinMode(CS_BARO, OUTPUT); delayMicroseconds(2);
+      probeSpi.transfer(BMP5_REG_TEMP_DATA_XLSB | 0x80);
+      for (auto &byte : bytes) byte = probeSpi.transfer(0);
+      deselect(false); probeSpi.endTransaction();
+      const uint32_t rawP = uint32_t(bytes[3]) | (uint32_t(bytes[4]) << 8) | (uint32_t(bytes[5]) << 16);
+      const float pressure = rawP / 64.0f;
+      const bool idOk = validId(CS_BARO, id);
+      const bool configOk = osr == baselineOsr && odr == baselineOdr;
+      badIds[index] += !idOk; configDiffs[index] += !configOk;
+      if (!round || pressure < minimum[index]) minimum[index] = pressure;
+      if (!round || pressure > maximum[index]) maximum[index] = pressure;
+      Serial.printf("BARO CHECK round=%u Hz=%lu ID=%02X OSR=%02X ODR=%02X bytes=", round+1, (unsigned long)p.hz, id, osr, odr);
+      for (auto byte : bytes) { hexByte(byte); Serial.print(' '); }
+      Serial.printf("rawP=%lu P=%.3fPa ID_OK=%u CFG_SAME=%u\n", (unsigned long)rawP, pressure, idOk, configOk);
+    }
+    delay(25);
+  }
+  for (unsigned index = 0; index < 3; ++index)
+    Serial.printf("BARO SUMMARY Hz=%lu bad_ID=%u/20 config_diff=%u/20 P_min=%.3f P_max=%.3f span=%.3fPa\n",
+        (unsigned long)speeds[index], badIds[index], configDiffs[index], minimum[index], maximum[index], maximum[index]-minimum[index]);
+  Serial.println("Ranges include all raw reads, even invalid IDs/configurations. Stable wrong pressure does not distinguish sensor damage, obstruction or electrical faults.");
+  imuSeen = baroSeen = false; imuFresh = baroFresh = 0;
+  lastRead = lastReport = millis();
+}
 void diagnostics() {
   streaming = false;
   Serial.println("\n=== SENSOR_TEST: hardware SPI1 diagnostics ===");
@@ -123,7 +172,10 @@ void diagnostics() {
   Serial.println("CS=HIGH drives unselected pins high; CS=PULLUP matches production driver. Five independent ID reads per row.");
   Probe bestBaro, bestImu;
   deselect(true); probeSpi.begin(false); delay(10);
-  for (bool driven : {true, false}) {
+  for (unsigned pass = 0; pass < 2; ++pass) {
+  Serial.println(pass == 0 ? "CS ORDER forward: HIGH then PULLUP" : "CS ORDER reverse: PULLUP then HIGH (no reset between passes)");
+  for (unsigned selection = 0; selection < 2; ++selection) {
+    const bool driven = pass == 0 ? selection == 0 : selection == 1;
     for (uint32_t hz : {100000u, 500000u, 1000000u}) {
       for (uint8_t mode : {uint8_t(SPI_MODE0), uint8_t(SPI_MODE3)}) {
         for (uint8_t cs : {CS_BARO, CS_IMU}) {
@@ -146,13 +198,14 @@ void diagnostics() {
       }
     }
   }
+  }
   snapshot(bestBaro, CS_BARO); snapshot(bestImu, CS_IMU);
   Serial.printf("Best valid IDs per setting: BARO=%u/5 IMU=%u/5\n", bestBaro.matches, bestImu.matches);
   Serial.println("00/FF alone cannot identify the fault. Pull-dependent IDs suggest undriven MISO/selection issues.");
   Serial.println("Mode/speed/CS-dependent results suggest timing, wiring or selection sensitivity; a valid ID alone is not a sensor self-test.");
   Serial.println("If both fail, inspect shared supply/SPI wiring and a possible MISO bus conflict; if only one fails, inspect its CS/solder joints/supply.");
   initDriver();
-  Serial.println("=== END: r=repeat scan+init | i=retry driver init | s=status | v=toggle live samples | h=help (then Enter) ===");
+  Serial.println("=== END: r=repeat both scan orders+init | i=retry driver init | s=status | v=live | b=BARO speed/config/raw checks | h=help (then Enter) ===");
 }
 void liveReport() {
   const auto &s = device.sample();
@@ -177,9 +230,10 @@ void loop() {
       case 'r': diagnostics(); break;
       case 'i': initDriver(); break;
       case 's': driverStatus(); break;
+      case 'b': baroChecks(); break;
       case 'v': streaming = !streaming; imuFresh = baroFresh = 0; lastReport = millis();
         Serial.println(streaming ? "Live samples ON (2 reports/s)" : "Live samples OFF"); break;
-      case 'h': Serial.println("r scan+init | i init | s status | v live on/off; use LF/CRLF. No arming/output commands."); break;
+      case 'h': Serial.println("r both scan orders+init | i init | s status | v live on/off | b BARO speed/config/raw checks (stops live); use LF/CRLF. No arming/output commands."); break;
       default: break;
     }
   }

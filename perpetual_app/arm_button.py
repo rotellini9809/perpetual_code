@@ -2,6 +2,7 @@
 from PySide6.QtCore import Qt,QEvent,QTimer,QElapsedTimer,QVariantAnimation,QEasingCurve,QRectF,Signal
 from PySide6.QtGui import QColor,QFont,QLinearGradient,QPainter,QPainterPath,QPen
 from PySide6.QtWidgets import QPushButton,QStyle,QStyleOptionButton,QStylePainter,QDialog,QVBoxLayout
+from .i18n import t
 
 
 class ArmButton(QPushButton):
@@ -11,7 +12,7 @@ class ArmButton(QPushButton):
     def __init__(self,callback=None,*,hold_ms=1500,preview=False):
         super().__init__('ARM'); self.setObjectName('armFlight'); self.setMinimumSize(180,50)
         self.setAutoDefault(False); self.setAutoRepeat(False); self.setCursor(Qt.PointingHandCursor)
-        self.setAccessibleName('ARM'); self.setAccessibleDescription('Tieni premuto il pulsante o il tasto Spazio per 1,5 secondi; rilascia per annullare.')
+        self.setAccessibleName('ARM'); self.setAccessibleDescription(t('Hold the button or the Space key for 1.5 seconds; release to cancel.'))
         self._hold_ms=hold_ms; self._preview=preview; self._disarming=False
         self.setProperty('disarming',False)
         self._source=None; self._key=None; self._press_mode=None; self._holding=False; self._submitted=False; self._progress=0.0
@@ -138,10 +139,10 @@ class ArmButton(QPushButton):
             p.drawRoundedRect(box.adjusted(inset,inset,-inset,-inset),6,6); p.restore()
         title=self.text(); subtitle=''
         if self._holding:
-            title='MANTIENI PREMUTO'; subtitle=f'{self._progress*self._hold_ms/1000:.1f} / {self._hold_ms/1000:.1f} s'
+            title=t('KEEP HOLDING'); subtitle=f'{self._progress*self._hold_ms/1000:.1f} / {self._hold_ms/1000:.1f} s'
         elif self._submitted:
-            title='INVIO RICHIESTA…'; subtitle='In attesa della scheda'
-        elif self.isEnabled(): subtitle='Tieni premuto · 1,5 s'
+            title=t('SENDING REQUEST…'); subtitle=t('Waiting for the board')
+        elif self.isEnabled(): subtitle=t('Hold · 1.5 s')
         p.setPen(self.palette().buttonText().color()); font=QFont(self.font())
         if subtitle:
             if self._holding or self._submitted: font.setPixelSize(12)
@@ -156,14 +157,14 @@ class ArmButtonPreview(QDialog):
     """Isolated, temporary animation test. Creates no controller or device connection."""
     def __init__(self):
         from .widgets import ASSETS,button,card,label,row
-        super().__init__(); self.setWindowTitle('Perpetual · Anteprima ARM / DISARM'); self.setObjectName('canvas')
+        super().__init__(); self.setWindowTitle(t('Perpetual · ARM / DISARM preview')); self.setObjectName('canvas')
         self.setStyleSheet((ASSETS/'style.qss').read_text(encoding='utf-8')); self.resize(520,300)
         box=QVBoxLayout(self); box.setContentsMargins(20,20,20,20)
-        frame,body=card('Anteprima del pulsante ARM / DISARM'); box.addWidget(frame)
-        hint=label('ARM verde: tieni premuto per 1,5 secondi. Diventa DISARM rosso: tieni premuto altri 1,5 secondi per disarmare. Questa anteprima non comanda la scheda.','hint')
+        frame,body=card(t('ARM / DISARM button preview')); box.addWidget(frame)
+        hint=label(t('Green ARM: hold for 1.5 seconds. It becomes red DISARM: hold another 1.5 seconds to disarm. This preview does not command the board.'),'hint')
         hint.setWordWrap(True); body.addWidget(hint)
         self.arm_button=ArmButton(preview=True); body.addLayout(row(None,self.arm_button,None))
-        hint=label('Rilascia prima del termine per annullare. Puoi usare anche il tasto Spazio.','hint'); hint.setWordWrap(True); body.addWidget(hint)
-        box.addLayout(row(None,button('Chiudi anteprima',self.close)))
+        hint=label(t('Release before the end to cancel. You can also use the Space key.'),'hint'); hint.setWordWrap(True); body.addWidget(hint)
+        box.addLayout(row(None,button(t('Close preview'),self.close)))
 
     def close_from_terminal(self): self.close()

@@ -3,11 +3,12 @@
 #include "navigation/SensorPipeline.h"
 
 namespace storage {
-enum class ImuApproval : uint8_t { Required, Verified, InUse };
+enum class ImuApproval : uint8_t { Required, Verified, InUse, Invalid };
 struct ImuCalibrationRecord {
   uint32_t revision = 0;
   float bias[3] = {}, scale[3] = {1,1,1};
   ImuApproval approval = ImuApproval::Required;
+  bool identity = false;
 };
 // Dedicated sector: full coefficient record followed by append-only approval records.
 // InUse is written before arming, so resets cannot resurrect a consumed approval.
@@ -17,6 +18,9 @@ public:
   bool load();
   bool save(const ImuCalibrationRecord &record);
   bool approve(ImuApproval approval);
+  bool invalidate();
+  bool identityAllowed() const { return identityAllowed_; }
+  bool needsCalibration() const { return present_ && (record_.approval==ImuApproval::Invalid || (record_.identity && !identityAllowed_)); }
   bool present() const { return present_; }
   bool verified() const { return present_ && record_.approval==ImuApproval::Verified; }
   const ImuCalibrationRecord &record() const { return record_; }
@@ -25,6 +29,9 @@ private:
   bool write(unsigned page, const ImuCalibrationRecord &record);
   FlashDevice &flash_;
   ImuCalibrationRecord record_;
+  bool loadIdentityPolicy(bool pristine);
+  bool revokeIdentity();
+  bool identityAllowed_ = false, policyReady_ = false, policyReadable_ = false;
   bool present_ = false;
   unsigned next_ = 0;
 };

@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 import math
 
 from device_client import validate_command
+from .i18n import t
 
 CONDITION_TYPES = ['phase', 'apogee', 'altitude', 'altitude_range', 'speed', 'speed_range',
                    'since_launch_ms', 'since_apogee_ms', 'since_rule_ms']
@@ -33,7 +34,7 @@ def rule_label(rules, identity):
         if rule['id'] == identity:
             name = rule['name']
             return f'{name} ({i+1})' if sum(r['name']==name for r in rules)>1 else name
-    return 'Regola non disponibile'
+    return t('Rule not available')
 
 
 def next_rule_id(plan, baseline=None):
@@ -47,19 +48,19 @@ def next_rule_id(plan, baseline=None):
 
 def condition_text(c, rules=()):
     kind = c['type']
-    if kind == 'apogee': return 'Apogeo rilevato'
+    if kind == 'apogee': return t('Apogee detected')
     if kind == 'phase':
         phase=str(c.get('phase','descent'))
         if phase.isdigit():
-            names={1:'BOOST 1 / normale',2:'COAST 1 / normale',3:'DESCENT',5:'BOOST 2',6:'COAST 2'}
-            phase=' o '.join(name for i,name in names.items() if int(phase)&(1<<i))
-        return 'Fase: '+phase
+            names={1:t('BOOST 1 / normal'),2:t('COAST 1 / normal'),3:'DESCENT',5:'BOOST 2',6:'COAST 2'}
+            phase=t(' or ').join(name for i,name in names.items() if int(phase)&(1<<i))
+        return t('Phase: ')+phase
     if kind in ('altitude','speed'):
-        return f'{"Quota" if kind=="altitude" else "|Velocità verticale|"} {c["comparison"]} {c["value"]:g} {"m" if kind=="altitude" else "m/s"}'
+        return f'{t("Altitude") if kind=="altitude" else t("|Vertical speed|")} {c["comparison"]} {c["value"]:g} {"m" if kind=="altitude" else "m/s"}'
     if kind in ('altitude_range','speed_range'):
-        return f'{"Quota" if kind=="altitude_range" else "|Velocità verticale|"}: {c["value"]:g} … {c["upper"]:g} {"m" if kind=="altitude_range" else "m/s"}'
-    reference = {'since_launch_ms':'lancio','since_apogee_ms':'apogeo','since_rule_ms':f'regola «{rule_label(rules,c.get("reference"))}»'}[kind]
-    return f'Da {reference}: {c["elapsed_ms"]} ms'
+        return f'{t("Altitude") if kind=="altitude_range" else t("|Vertical speed|")}: {c["value"]:g} … {c["upper"]:g} {"m" if kind=="altitude_range" else "m/s"}'
+    reference = {'since_launch_ms':t('launch'),'since_apogee_ms':t('apogee'),'since_rule_ms':t('rule «{name}»',name=rule_label(rules,c.get('reference')))}[kind]
+    return t('Since {reference}: {elapsed} ms',reference=reference,elapsed=c['elapsed_ms'])
 
 
 def decode_condition(reply):
@@ -76,12 +77,12 @@ def decode_condition(reply):
 
 def encode_condition(c):
     kind = c['type']
-    if kind not in CONDITION_TYPES: raise ValueError('Tipo di condizione sconosciuto')
+    if kind not in CONDITION_TYPES: raise ValueError('Unknown condition type')
     if kind == 'apogee': return kind
     if kind == 'phase': return f'phase {c["phase"]}'
     if kind in ('altitude','speed'):
         allowed = ('<','>') if kind=='altitude' else ('<=','>=')
-        if c['comparison'] not in allowed: raise ValueError('Confronto non supportato')
+        if c['comparison'] not in allowed: raise ValueError('Unsupported comparison')
         return f'{kind} {c["comparison"]} {number(c["value"])}'
     if kind in ('altitude_range','speed_range'): return f'{kind} {number(c["value"])} {number(c["upper"])}'
     if kind == 'since_rule_ms': return f'{kind} {integer(c["reference"],1)} {integer(c["elapsed_ms"])}'
@@ -89,17 +90,17 @@ def encode_condition(c):
 
 
 def integer(value, minimum=0):
-    if type(value) is not int or not minimum <= value <= 0xFFFFFFFF: raise ValueError('Numero intero fuori intervallo')
+    if type(value) is not int or not minimum <= value <= 0xFFFFFFFF: raise ValueError('Integer out of range')
     return value
 
 
 def number(value):
-    if not isinstance(value,(int,float)) or not math.isfinite(value): raise ValueError('Valore numerico non valido')
+    if not isinstance(value,(int,float)) or not math.isfinite(value): raise ValueError('Invalid numeric value')
     return format(value,'.9g')
 
 
 def quoted(name):
-    if not name.strip() or len(name)>47: raise ValueError('Nome regola richiesto: massimo 47 caratteri ASCII')
+    if not name.strip() or len(name)>47: raise ValueError('Rule name required: at most 47 ASCII characters')
     return '"'+name.replace('\\','\\\\').replace('"','\\"')+'"'
 
 
@@ -111,9 +112,9 @@ def read_plan(client):
     view = meta['view']
     def read(command):
         result = client.request(command)
-        if result['view'] != view: raise RuntimeError('Configurazione cambiata durante la lettura: ricaricare')
+        if result['view'] != view: raise RuntimeError('Configuration changed while reading: reload')
         if command.startswith('output show ') and 'delay_ms' not in result:
-            raise RuntimeError('Firmware non aggiornato: carica MAIN per usare i ritardi dei canali.')
+            raise RuntimeError('Firmware not updated: load MAIN to use channel delays.')
         return result
     plan = Plan()
     for i in range(4):
@@ -124,7 +125,7 @@ def read_plan(client):
     for rule_id in meta['rule_ids']:
         r = read(f'rule show {rule_id}')
         if 'delay_ms' not in r:
-            raise RuntimeError('Firmware non aggiornato: carica MAIN per usare il ritardo della regola.')
+            raise RuntimeError('Firmware not updated: load MAIN to use the rule delay.')
         plan.rules.append(dict(id=rule_id,name=r['name'],delay_ms=r['delay_ms'],
             conditions=[decode_condition(read(f'condition show {rule_id} {i}')) for i in range(r['conditions'])],
             outputs=[{key:a[key] for key in ('kind','channel','delay_ms')} for a in
@@ -138,7 +139,7 @@ def removal_order(plan):
     while remaining:
         referenced = {c['reference'] for r in remaining.values() for c in r['conditions'] if c['type']=='since_rule_ms'}
         free = [i for i in remaining if i not in referenced]
-        if not free: raise ValueError('Dipendenze cicliche nella configurazione letta')
+        if not free: raise ValueError('Circular dependencies in the configuration read')
         for i in free: order.append(i); del remaining[i]
     return order
 
@@ -146,24 +147,24 @@ def removal_order(plan):
 def plan_commands(base, local):
     commands = [f'airbrake remove {i}' for i in reversed(range(len(base.airbrakes['conditions'])))]
     commands += [f'rule remove {i}' for i in removal_order(base)]
-    if len(local.rules)>8: raise ValueError('Massimo 8 regole')
+    if len(local.rules)>8: raise ValueError('At most 8 rules')
     ids = [integer(r['id'],1) for r in local.rules]
-    if len(set(ids)) != len(ids): raise ValueError('Gli ID delle regole devono essere distinti')
+    if len(set(ids)) != len(ids): raise ValueError('Rule IDs must be distinct')
     for i, servo in enumerate(local.servos):
         if servo != base.servos[i]:
-            if not servo['calibrated']: raise ValueError('La rimozione degli estremi servo non è disponibile')
+            if not servo['calibrated']: raise ValueError('Removing servo endpoints is not available')
             commands.append(f'servo set {i+1} {integer(servo["initial_us"],1)} {integer(servo["final_us"],1)}')
     for r in local.rules:
         commands.extend([f'rule add {r["id"]} {quoted(r["name"])}', f'rule delay {r["id"]} {integer(r["delay_ms"])}'])
-    assigned = {('servo',i):'Aerofreni' for i in range(1,5) if local.airbrake_channel(i)}
+    assigned = {('servo',i):'Airbrakes' for i in range(1,5) if local.airbrake_channel(i)}
     for r in local.rules:
-        if len(r['conditions'])>8 or len(r['outputs'])>8: raise ValueError('Massimo 8 condizioni e 8 uscite per regola')
+        if len(r['conditions'])>8 or len(r['outputs'])>8: raise ValueError('At most 8 conditions and 8 outputs per rule')
         commands += [f'condition add {r["id"]} {encode_condition(c)}' for c in r['conditions']]
         for a in r['outputs']:
-            if a['kind'] not in ('servo','pyro') or not 1 <= a['channel'] <= 4: raise ValueError('Canale non valido')
+            if a['kind'] not in ('servo','pyro') or not 1 <= a['channel'] <= 4: raise ValueError('Invalid channel')
             key = (a['kind'],a['channel'])
             if key in assigned:
-                raise ValueError(f'{a["kind"].upper()} {a["channel"]} già assegnato alla regola «{assigned[key]}». Ogni canale può appartenere a una sola regola.')
+                raise ValueError(f'{a["kind"].upper()} {a["channel"]} is already assigned to rule «{assigned[key]}». Each channel can belong to only one rule.')
             assigned[key] = r['name']
             commands.append(f'output assign {r["id"]} {a["kind"]} {a["channel"]} {integer(a.get("delay_ms",0))}')
     mask=integer(local.airbrakes['channel_mask'])
@@ -180,15 +181,15 @@ def stage_plan(client, base, local):
     control = client.request('control status')
     meta = client.request('config draft')
     if meta['available']:
-        if control['owner'] != control['transport']: raise RuntimeError('Bozza della scheda occupata da un altro collegamento')
+        if control['owner'] != control['transport']: raise RuntimeError('Board draft held by another connection')
         client.request('config discard')
     current, _, view = read_plan(client)
     if view != 'applied' or current != base:
-        raise RuntimeError('La configurazione della scheda è cambiata. Ricaricare prima di applicare la bozza locale.')
+        raise RuntimeError('The board configuration has changed. Reload before applying the local draft.')
     client.request('config begin')
     frozen, _, view = read_plan(client)
     if view != 'draft' or frozen != (base or Plan()):
         client.request('config discard')
-        raise RuntimeError('La configurazione è cambiata prima di riservare la bozza: ricaricare')
+        raise RuntimeError('The configuration changed before the draft was reserved: reload')
     for command in commands: client.request(command)
     return client.request('config validate')

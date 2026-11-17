@@ -10,12 +10,25 @@ own framing, retry cache and pending reply. Existing PC runners can use the outg
 SPP port (COM11 on this PC) instead of COM9; their PC-side baud setting does not change the
 module-to-MCU UART rate. BLE terminal operation is not yet verified.
 
-`bluetooth status` returns `ready`, `connected`, `error` and UART `baud` and cumulative MCU `uart_rx_overflows`; it is also available
-over USB when radio startup fails. Boot nonblockingly queries AT/version, single-link mode 1,
-notifications enabled and the eight-channel connection snapshot. PWRC stays low during these
-queries and high for transparent traffic. Boot never changes module settings/names or writes
-their values to flash. Incompatible settings or missing replies leave Bluetooth unavailable;
-USB and the flight loop keep running. A module restart notification repeats this startup.
+`bluetooth status` returns `ready`, `connected`, `error`, UART `baud`, cumulative MCU `uart_rx_overflows`,
+the module `name` read at startup, the last `rename` result (`None`, `PENDING`, `ACTIVE`, `OK` or a failure
+code), `configured` (a factory module was set up this power-up) and `stage` (the current startup step, or the
+one that failed); it is also available over USB when radio startup fails. Boot nonblockingly queries AT/version, single-link mode 1, notifications enabled,
+the SPP name and the eight-channel connection snapshot. PWRC stays low during these queries and high
+for transparent traffic. A module that answers at 230400 is never reconfigured at boot. A module that
+is silent at 230400 but answers at the factory 9600 as a JDY-34 with no radio link is set up once per
+power-up (names `Perpetual`/`Perpetual_BLE`, `BTMODE1`, `ENLOG1`, `BAUDA`), restarted and then checked
+like any other module. The module sometimes ignores a request (the first after a quiet period, or one shortly after a restart),
+so queries are repeated: the startup `AT` for about 4 s, other queries 3 times. Writes and resets are
+sent once. Incompatible settings or replies still missing leave Bluetooth unavailable; USB and the flight
+loop keep running. A module restart notification (`+START=OK`) repeats this startup, also after a failed one.
+
+`bluetooth name <suffix|default>` renames the module to `Perpetual-<suffix>` (1-4 letters, digits or `-`)
+or back to `Perpetual`; the BLE name is the same plus `_BLE`, within the module's 18-byte limit. It is
+accepted from USB or Bluetooth while disarmed and idle. After the accepting reply is sent, MAIN writes
+and reads back both names with PWRC low, then restarts the module (`AT+RESET`) because names only apply
+after a restart: a Bluetooth link drops for a few seconds. Errors: `INVALID_NAME`, `BLUETOOTH_NOT_READY`,
+`BUSY`; a write that cannot be read back reports `NAME_NOT_VERIFIED` in `rename` and the link recovers.
 
 `ping`, `info`, `status`, `sensors`, `help` have readable replies without IDs. Prefix any request with
 `@<uint32>` for a single compact LF-terminated JSON reply, for example `@42 status`.
@@ -334,10 +347,11 @@ traffic in addition to this baud increase. The PC SPP port's baud is independent
 ### JDY-34 UART configuration and recovery
 
 MAIN expects a module configured to 230400 baud (AT+BAUDA on verified JDY-34
-SPP-BLE V1.52). This is a persistent module setting, not a Windows COM setting.
-Boot only reads module settings and never rewrites baud. Older modules left at
-9600 need an explicit diagnostic migration; old MAIN builds expecting 9600 cannot
-communicate with a migrated module. USB remains available regardless of UART baud.
+SPP-BLE V1.52, [manual](../datasheets/JDY-34%20High%20Speed%20Dual-mode%20Bluetooth%20User%20Manual-V1.3.pdf)).
+This is a persistent module setting, not a Windows COM setting. A new board needs no manual step:
+MAIN sets up a factory module at 9600 by itself (see `bluetooth status` above). Modules left at
+other rates (for example 600000) are not touched and still need the diagnostic below.
+USB remains available regardless of UART baud.
 
 BLUETOOTH_NAME_TEST starts its local UART at 9600. Via USB, use `baud 230400` to
 reach a migrated module, `gate low`, and read `at AT+VERSION` / `at AT+BAUD`.

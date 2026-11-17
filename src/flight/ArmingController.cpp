@@ -70,8 +70,8 @@ Preflight ArmingController::preflight(FlightMode mode, bool record, PhysicalChec
   if (!config_.configValid()) p.block(ArmBlocker::ConfigInvalid);
   if (mode==FlightMode::Physical && !config_.orientationReady()) p.block(ArmBlocker::OrientationNotReady);
   if (mode==FlightMode::Physical) {
-    if (!imuStore_ || !imuStore_->present()) p.block(ArmBlocker::ImuCalibrationMissing);
-    else if (!imuStore_->verified() && !approvalReserved_) p.block(ArmBlocker::ImuVerificationRequired);
+    if (!imuStore_ || (!imuStore_->present() && !imuStore_->identityAllowed()) || imuStore_->needsCalibration()) p.block(ArmBlocker::ImuCalibrationMissing);
+    else if (imuStore_->present() && !imuStore_->verified() && !approvalReserved_) p.block(ArmBlocker::ImuVerificationRequired);
   }
   if (!config_.disarmed()) p.block(ArmBlocker::NotDisarmed);
   if ((record || mode == FlightMode::Physical) && (!recorder_ || !recorder_->initialized())) p.block(ArmBlocker::StorageNotReady);
@@ -144,6 +144,13 @@ const char *ArmingController::arm(sensors::SensorSource &source, FlightMode mode
   if (mode == FlightMode::Simulation) return startRuntime(reference, device);
   if (!config_.acquireRun()) return "BUSY";
   reserved_ = true;
+  // First physical arm persists identity so the existing approval journal also
+  // tracks flights/resets when no custom accelerometer calibration was saved.
+  if (!imuStore_->present()) {
+    storage::ImuCalibrationRecord identity;
+    identity.revision=1; identity.approval=storage::ImuApproval::Verified; identity.identity=true;
+    if (!imuStore_->save(identity)) { error_="IMU_CALIBRATION_IO"; stop(); return error_; }
+  }
   if (!imuStore_->approve(storage::ImuApproval::InUse)) {
     error_="IMU_CALIBRATION_IO"; stop(); return error_;
   }
@@ -159,6 +166,10 @@ PollResult ArmingController::poll(FrameResult &result) {
     }
     sensors::Reading r;
     if (source_->poll(r)) imuCalibration_.add(r);
+    if (imuCalibration_.failed()) {
+      imuError_=imuStore_->invalidate() ? "IMU_VERIFICATION_FAILED" : "IMU_CALIBRATION_IO";
+      cancelImuCalibration(); return {};
+    }
     if (imuCalibration_.complete()) {
       storage::ImuCalibrationRecord record;
       if (!imuCalibration_.result(record)) imuError_="IMU_CALIBRATION_INVALID";
@@ -205,11 +216,15 @@ unsigned ArmingController::stop(storage::RecordingEnd reason) {
   return pending;
 }
 const char *ArmingController::imuCalibrationState() const {
-  if (!imuStore_ || !imuStore_->present()) return "absent";
+  if (!imuStore_) return "absent";
+  if (!imuStore_->present()) return imuStore_->identityAllowed() ? "identity" : "absent";
+  if (imuStore_->needsCalibration()) return "invalid";
   return (imuStore_->verified() || approvalReserved_) && !boostConsumed_ ? "verified" : "required";
 }
 const char *ArmingController::imuCalibrationReason() const {
-  if (!imuStore_ || !imuStore_->present()) return "MISSING";
+  if (!imuStore_) return "MISSING";
+  if (imuStore_->needsCalibration()) return "VERIFICATION_FAILED";
+  if (!imuStore_->present()) return imuStore_->identityAllowed() ? "IDENTITY" : "MISSING";
   if (boostConsumed_) return "AFTER_BOOST";
   if (imuStore_->record().approval==storage::ImuApproval::InUse && !approvalReserved_) return "FLIGHT_OR_RESET";
   return !std::strcmp(imuCalibrationState(),"verified") ? "None" : "NOT_VERIFIED";
@@ -221,7 +236,7 @@ const char *ArmingController::beginImuCalibration(sensors::SensorSource &source,
       (recorder_ && recorder_->busy()) || (outputs_ && (outputs_->owner() || outputs_->hasPreview()))) return "BUSY";
   if (!config_.disarmed()) return "ARMED";
   if (config_.hasDraft()) return "DRAFT_ACTIVE";
-  if (verify && !imuStore_->present()) return "IMU_CALIBRATION_MISSING";
+  if (verify && (!imuStore_->present() || imuStore_->needsCalibration())) return "IMU_CALIBRATION_MISSING";
   if (!clock_ || source.convention()!=sensors::FrameConvention::SensorAxes) return "INVALID_ARGUMENT";
   if (!config_.acquireDeviceOperation()) return "BUSY";
   reserved_=true; source_=&source; source_->start();

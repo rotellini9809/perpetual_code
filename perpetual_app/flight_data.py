@@ -24,11 +24,11 @@ def load_flight(path):
         return value if math.isfinite(value) else None
     with path.open(newline='',encoding='utf-8-sig') as source:
         reader = csv.DictReader(source)
-        if not {'t_ms','z_est','vz_est'} <= set(reader.fieldnames or []): raise ValueError('CSV non compatibile: servono t_ms, z_est e vz_est')
+        if not {'t_ms','z_est','vz_est'} <= set(reader.fieldnames or []): raise ValueError('Incompatible CSV: t_ms, z_est and vz_est are required')
         previous = -1
         for row in reader:
             stamp = int(row['t_ms'])
-            if stamp <= previous: raise ValueError('Tempi del CSV non crescenti')
+            if stamp <= previous: raise ValueError('CSV times are not increasing')
             previous = stamp; total+=1
             if first is None: first=stamp
             last=stamp
@@ -43,7 +43,7 @@ def load_flight(path):
             if 'airbrake_flags' in row:
                 flags=int(row['airbrake_flags']); failed=int(row['airbrake_failed_conditions']); mask=int(row['airbrake_channel_mask'])
                 if not 0<=flags<=511 or not 0<=failed<=255 or not 0<=mask<=15 or any(u is not None and not 0<=u<=100 for u in openings):
-                    raise ValueError('Dati aerofreni non validi nel CSV')
+                    raise ValueError('Invalid airbrake data in the CSV')
                 air_mask|=mask; air_rows.append((stamp/1000,*openings))
                 observed=(flags,failed,mask)
                 if observed!=previous_air:
@@ -51,7 +51,7 @@ def load_flight(path):
             name=PHASES[phase] if phase is not None else None
             if not phases or phases[-1][1]!=name: phases.append((stamp/1000,name))
     valid=[r for r in rows if r[1] is not None and r[2] is not None]
-    if not valid: raise ValueError('Nessun campione valido nel CSV')
+    if not valid: raise ValueError('No valid samples in the CSV')
     metadata = {}
     if path.with_suffix('.json').exists(): metadata=json.loads(path.with_suffix('.json').read_text(encoding='utf-8'))
     if (metadata.get('calibration') or {}).get('bistage'):
@@ -70,7 +70,7 @@ def load_flight(path):
     if air_rows and (len(air_rows)-1)%air_step: air_plot.append(air_rows[-1])
     air_phases=[]
     for event in air_transitions:
-        name='Controllo abilitato' if event['flags']&2 else 'ABORT' if event['flags']&16 else 'Controllo non attivo'
+        name='Control enabled' if event['flags']&2 else 'ABORT' if event['flags']&16 else 'Control not active' # Translated when drawn.
         if not air_phases or air_phases[-1][1]!=name: air_phases.append((event['time'],name))
     airbrakes=dict(rows=air_plot,transitions=air_transitions,phases=air_phases,channel_mask=air_mask)
     simulated_battery = metadata.get('sensor_mode') == 1

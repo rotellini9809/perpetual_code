@@ -43,6 +43,10 @@ public:
     uint32_t bluetoothBaud = 9600, bluetoothRxOverflows = 0;
     bool bluetoothReady = false, bluetoothConnected = false;
     const char *bluetoothError = "NOT_INITIALIZED";
+    const char *bluetoothName = ""; // Module SPP name read at startup; BLE adds "_BLE".
+    const char *bluetoothRename = "None"; // None, PENDING, ACTIVE, OK or the failure code.
+    bool bluetoothConfigured = false; // A factory module was set up during this power-up.
+    const char *bluetoothStage = ""; // Startup step, or the step that failed.
   };
   // Consume one byte; true means one LF-terminated reply is ready.
   // Caller must deliver that reply before feeding more bytes.

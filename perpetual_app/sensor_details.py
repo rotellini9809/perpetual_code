@@ -5,6 +5,7 @@ from PySide6.QtCore import Qt,QPointF,QRectF
 from PySide6.QtGui import QColor,QPainter,QPainterPath,QPen
 from PySide6.QtWidgets import QDialog,QVBoxLayout,QGridLayout,QWidget
 from .widgets import label,card,row
+from .i18n import t
 
 
 def finite(value): return type(value) in (int,float) and math.isfinite(value)
@@ -58,10 +59,10 @@ class SensorPlot(QWidget):
 
     def __init__(self):
         super().__init__(); self.setMinimumSize(320,170)
-        self.series=[]; self.extent=(0,0); self.empty='In attesa delle misure'
+        self.series=[]; self.extent=(0,0); self.empty=t('Waiting for measurements'); self.unavailable=False
 
-    def set_data(self,series,extent,empty):
-        self.series=series; self.extent=extent; self.empty=empty; self.update()
+    def set_data(self,series,extent,empty,unavailable=False):
+        self.series=series; self.extent=extent; self.empty=empty; self.unavailable=unavailable; self.update()
 
     def paintEvent(self,event):
         painter=QPainter(self); painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -85,7 +86,7 @@ class SensorPlot(QWidget):
                 text=f'{value:.4g}' if abs(value)>=1e6 else f'{value:.3f}'.rstrip('0').rstrip('.')
                 painter.drawText(QRectF(0,pos(x0,value).y()-9,70,18),Qt.AlignRight,text)
         if not values:
-            if self.empty=='Non disponibile': painter.setPen(QColor('#c43d3d'))
+            if self.unavailable: painter.setPen(QColor('#c43d3d'))
             painter.drawText(box,Qt.AlignCenter,self.empty); return
         for index,series in enumerate(self.series):
             painter.setPen(QPen(QColor(self.colors[index]),2))
@@ -102,27 +103,27 @@ class SensorPlot(QWidget):
 
 
 class SensorDetails(QDialog):
-    channels=(('accel_mps2','Accelerazione · m/s²',3,'imu_ready','IMU'),
-              ('gyro_radps','Velocità angolare · rad/s',3,'imu_ready','IMU'),
-              ('pressure_pa','Pressione · Pa',1,'baro_ready','Barometro'))
+    channels=(('accel_mps2','Acceleration · m/s²',3,'imu_ready'), # Titles are translated when shown.
+              ('gyro_radps','Angular rate · rad/s',3,'imu_ready'),
+              ('pressure_pa','Pressure · Pa',1,'baro_ready'))
 
     def __init__(self,controller,parent=None):
         super().__init__(parent); self.controller=controller; self.history=SensorHistory(); self._connected=False
-        self.setWindowTitle('Perpetual · Dettagli sensori'); self.resize(1040,650)
+        self.setWindowTitle(t('Perpetual · Sensor details')); self.resize(1040,650)
         self.setMinimumSize(760,620)
         layout=QVBoxLayout(self); layout.setContentsMargins(22,18,22,18); layout.setSpacing(12)
-        heading=QVBoxLayout(); heading.addWidget(label('Sensori in tempo reale','title'))
+        heading=QVBoxLayout(); heading.addWidget(label(t('Live sensors'),'title'))
         self.message=label('','hint'); self.message.setWordWrap(True); heading.addWidget(self.message); self.message.hide()
-        temperature=QVBoxLayout(); caption=label('TEMPERATURA','eyebrow'); caption.setAlignment(Qt.AlignRight)
+        temperature=QVBoxLayout(); caption=label(t('TEMPERATURE'),'eyebrow'); caption.setAlignment(Qt.AlignRight)
         self.temperature=label('—','metric'); self.temperature.setAlignment(Qt.AlignRight)
-        self.temperature.setToolTip('Media mobile degli ultimi 5 secondi')
+        self.temperature.setToolTip(t('Moving average of the last 5 seconds'))
         temperature.addWidget(caption); temperature.addWidget(self.temperature)
         top=row(); top.addLayout(heading,1); top.addLayout(temperature); layout.addLayout(top)
         grid=QGridLayout(); grid.setSpacing(12); layout.addLayout(grid,1); self.plots={}
         for index,(key,title,count,*_) in enumerate(self.channels):
-            panel,body=card(title); plot=SensorPlot(); self.plots[key]=plot; body.addWidget(plot,1)
+            panel,body=card(t(title)); plot=SensorPlot(); self.plots[key]=plot; body.addWidget(plot,1)
             grid.addWidget(panel,index//2,index%2,1,2 if count==1 else 1)
-        self.summary=label('Intervallo crescente fino a 60 s · poi scorre sull’ultimo minuto','hint'); layout.addWidget(self.summary)
+        self.summary=label(t('Window grows up to 60 s · then scrolls over the last minute'),'hint'); layout.addWidget(self.summary)
         controller.sensors_received.connect(self.receive); controller.connection_changed.connect(self.connection_changed)
 
     def showEvent(self,event):
@@ -137,13 +138,13 @@ class SensorDetails(QDialog):
         if connected and not self._connected: self.history.clear(); self._render({})
         self._connected=connected
         if not self.isVisible(): return
-        self.message.setText('' if connected else 'Disconnesso · acquisizione interrotta'); self.message.setVisible(not connected)
+        self.message.setText('' if connected else t('Disconnected · acquisition stopped')); self.message.setVisible(not connected)
         if not connected: self.temperature.setText('—')
 
     def receive(self,data):
         if not self.isVisible() or not self.controller.state.connected: return
         if 'uptime_ms' not in data:
-            self.message.setText('Aggiorna il firmware: manca il timestamp necessario ai grafici.'); self.message.show(); return
+            self.message.setText(t('Update the firmware: the timestamp needed for the plots is missing.')); self.message.show(); return
         if not self.history.append(data): return
         self.message.clear(); self.message.hide()
         self._render(data)
@@ -151,8 +152,9 @@ class SensorDetails(QDialog):
     def _render(self,data):
         value=self.history.temperature_average()
         self.temperature.setText(f'{value:.1f} °C' if value is not None else '—')
-        for key,_,count,ready,name in self.channels:
-            empty='Non disponibile' if data and not data.get(ready) else 'In attesa di campioni validi'
-            self.plots[key].set_data(self.history.series(key,count),self.history.extent,empty)
+        for key,_,count,ready in self.channels:
+            unavailable=bool(data) and not data.get(ready)
+            empty=t('Not available') if unavailable else t('Waiting for valid samples')
+            self.plots[key].set_data(self.history.series(key,count),self.history.extent,empty,unavailable)
         start,end=self.history.extent
-        self.summary.setText(f'{end-start:.1f} / 60 s · {len(self.history.samples)} letture · secondi dalla prima lettura')
+        self.summary.setText(t('{span} / 60 s · {count} readings · seconds since the first reading',span=f'{end-start:.1f}',count=len(self.history.samples)))

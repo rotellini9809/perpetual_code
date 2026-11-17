@@ -2,7 +2,6 @@
 import argparse
 import hashlib
 import math
-from pathlib import Path
 import struct
 from replay_navigation import ROOT,DEFAULT_INPUT,load_sensor_samples
 

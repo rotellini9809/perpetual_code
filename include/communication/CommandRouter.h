@@ -9,6 +9,14 @@
 #include "communication/CommandPolicy.h"
 
 // Routes siblings and owns the development-mode command policy.
+// Bluetooth module renaming, owned by MAIN's radio driver (absent in PC fixtures).
+class BluetoothNaming {
+public:
+  virtual ~BluetoothNaming() = default;
+  // nullptr when accepted; the module restarts once the accepting reply is sent.
+  virtual const char *requestName(const char *suffix, char *name, std::size_t capacity) = 0;
+};
+
 class CommandRouter : public CommandExtension {
 public:
   enum class Source { None, Usb, Bluetooth };
@@ -21,7 +29,9 @@ public:
   void disconnect(Source source = Source::Usb);
   void setPower(PowerManager &power, bool (*transportBusy)() = nullptr) { power_=&power; transportBusy_=transportBusy; }
   void pollPower();
+  void setBluetooth(BluetoothNaming &bluetooth) { bluetooth_=&bluetooth; }
 private:
+  BluetoothNaming *bluetooth_=nullptr;
   bool dispatchCommand(const char *command, const char *arguments, const protocol::CommandPolicy &policy, bool hasId, uint32_t id, char *output, std::size_t capacity);
   bool occupied() const;
   bool powerBusy() const;

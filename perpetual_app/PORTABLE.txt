@@ -1,26 +1,36 @@
-PERPETUAL · FLIGHT CONSOLE · PROTOTIPO 01
+PERPETUAL · FLIGHT CONSOLE · EARLY TEST BUILD
 
-Estrarre tutta la cartella e avviare Perpetual.exe.
-La cartella _internal deve rimanere accanto all'eseguibile.
-Python non serve sul PC di destinazione.
+This is an early test build for the Perpetual flight computer, not a stable release.
 
-Selezionare la porta della scheda USB o quella Bluetooth SPP in uscita.
-Chiudere Serial Monitor o altre applicazioni che occupano la stessa porta.
-La connessione è verificata dalle risposte della scheda, non dalla dashboard Bluetooth di Windows.
+START
+Extract the whole folder and run Perpetual.exe. Keep the _internal folder next to it.
+Python is not needed on the target PC. The build is not signed, so Windows SmartScreen
+may warn on first launch (More info -> Run anyway).
 
-Dashboard: stato e motivi di mancata readiness.
-Configurazione: canali e regole, bozza locale, Valida / Applica / Scarta.
-Test e simulazione: simulazione onboard virtuale di 25 secondi, registrazione opzionale.
-Voli: lettura elenco, download CSV + JSON e grafico locale della quota.
-Console: comandi manuali e risposte.
+LANGUAGE
+The app starts in English. Choose Italian in Settings -> Language; it applies after a restart.
+Error messages stay in English.
 
-Le funzioni non disponibili sulla scheda sono disabilitate. Preparazione/movimento servo,
-test fisici e simulazione con uscite fisiche non sono implementati in questo prototipo.
-I dati mostrati dipendono dalle risposte reali del firmware MAIN.
+CONNECTION
+At startup the app tries once to connect: USB first, then a paired outgoing Bluetooth SPP port.
+Use Connect to retry, or Manual port to pick a specific port.
+Close Serial Monitor and any other app that uses the same port.
+The link is confirmed by the board's replies, not by the Windows Bluetooth settings.
 
-La GUI non salva automaticamente la configurazione. Applica è un salvataggio esplicito.
-I CSV esistenti non vengono sovrascritti. Un download interrotto può lasciare un CSV parziale.
-La disconnessione termina i replay alimentati dal PC; la simulazione autonoma continua.
-Chiudendo l'app, i cambiamenti locali non applicati vanno persi.
+PAGES
+Dashboard: applied rules, sensors, preflight checks, pyro continuity, servo preparation and
+  ARM / DISARM (hold for 1.5 s). The board decides whether arming is allowed.
+Configuration: deployment rules, channels and IMU calibration. Changes stay in a local draft
+  until Validate and Apply; Discard drops them.
+Test and simulation: onboard simulation (Hoppino, or a 25 s two-boost profile in bistage mode),
+  with optional recording to memory and optional physical outputs.
+Recorded flights: read the flight list, download CSV + JSON, view the plots, or open a local CSV.
+Settings: board orientation, state machine, airbrakes, language, factory reset and memory format.
+Console: manual commands and the board's replies.
 
-Il pacchetto include i sorgenti dell'app in source e le informazioni sulle dipendenze in notices.
+GOOD TO KNOW
+Nothing is saved to the board automatically: Apply and each Save button are explicit.
+Downloading over existing files asks for confirmation. The files are replaced only when the
+download completes; a cancelled or failed download leaves them unchanged.
+Closing the app with unapplied local changes asks for confirmation; they are lost if you close.
+Numbers always use a decimal point.

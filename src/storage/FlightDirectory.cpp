@@ -133,7 +133,8 @@ bool FlightDirectory::mount() {
         bodyValid(headers[i], 0, get64(headers[i] + 8, 8)) && get64(headers[i] + 32, 4) <= MaxEntries &&
         get64(headers[i] + 40, 4) == FlashLayout::DirectoryA && get64(headers[i] + 44, 4) == FlashLayout::DirectoryB &&
         get64(headers[i] + 48, 4) == FlashLayout::DirectoryBankBytes && get64(headers[i] + 52, 4) == FlashLayout::DataBegin &&
-        get64(headers[i] + 56, 4) == FlashLayout::DataEnd;
+        (get64(headers[i] + 56, 4) == FlashLayout::DataEnd ||
+         get64(headers[i] + 56, 4) == FlashLayout::Capacity); // Previous boundary: entries still checked against the new end.
   }
   if (!valid[0] && !valid[1]) return fail(anyBytes ? DirectoryError::Corrupt : DirectoryError::Missing);
   if (valid[0] && valid[1] && get64(headers[0] + 8, 8) == get64(headers[1] + 8, 8)) return fail(DirectoryError::Corrupt);

@@ -34,9 +34,9 @@ def check_imu(app,wait,native):
         with patch.object(backend,'request',side_effect=request):
             controller.connect_port('IMU_FIXTURE'); wait(lambda:controller.state.base is not None and not controller.state.foreground)
             s=controller.state; page=window.configuration_page.imu_page
-            index=next(i for i in range(window.readiness_table.rowCount()) if window.readiness_table.item(i,0).data(Qt.ItemDataRole.UserRole)=='imu')
-            assert 'Assente' in window.readiness_table.item(index,0).text() and not window.arm_button.isEnabled()
-            window.open_preflight_item(index,0)
+            index=next(i for i in range(window.dashboard_page.readiness_table.rowCount()) if window.dashboard_page.readiness_table.item(i,0).data(Qt.ItemDataRole.UserRole)=='imu')
+            assert 'Assente' in window.dashboard_page.readiness_table.item(index,0).text() and not window.dashboard_page.arm_button.isEnabled()
+            window.dashboard_page.open_preflight_item(index,0)
             assert window.pages.currentIndex()==1 and window.configuration_page.tabs.currentWidget() is page
             assert page.begin_button.isEnabled() and not page.verify_button.isEnabled()
             page.begin_button.click(); wait(lambda:not s.foreground)
@@ -61,8 +61,15 @@ def check_imu(app,wait,native):
             controller._last_imu=0; controller._last_status=time.monotonic(); controller._want_events=False; controller.tick()
             wait(lambda:not controller._jobs)
             assert s.preflight['imu_calibration_state']=='verified' and 'Verificata' in page.state_label.text()
-            assert any('Calibrazione IMU: Verificata' in window.readiness_table.item(i,0).text() for i in range(window.readiness_table.rowCount()))
+            assert any('Calibrazione IMU: Verificata' in window.dashboard_page.readiness_table.item(i,0).text() for i in range(window.dashboard_page.readiness_table.rowCount()))
             assert page.capture_button.isHidden()
+            imu.update(imu_calibration_state='invalid',imu_calibration_reason='VERIFICATION_FAILED',last_error='IMU_VERIFICATION_FAILED',identity_allowed=False)
+            controller.command('imu status'); wait(lambda:not s.foreground)
+            assert page.begin_button.isEnabled() and not page.verify_button.isEnabled()
+            assert 'Da ricalibrare' in page.state_label.text() and 'disabilitata definitivamente' in page.state_label.text()
+            imu.update(imu_calibration_state='identity',imu_calibration_reason='IDENTITY',last_error='None',revision=0,identity_allowed=True)
+            controller.command('imu status'); wait(lambda:not s.foreground)
+            assert 'Identit?' in page.state_label.text() and page.begin_button.isEnabled()
             # An old connection's approval must not survive disconnect/reconnect.
             controller.disconnect(); wait(lambda:controller.connection is None)
             assert not s.imu_calibration

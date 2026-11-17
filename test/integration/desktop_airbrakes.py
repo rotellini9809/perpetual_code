@@ -53,20 +53,20 @@ def check_airbrakes(app,wait,native):
         config.rules_tree.setCurrentItem(config.rules_tree.topLevelItem(0)); config.remove_rule()
         assert s.local.airbrakes['channel_mask']==0 and s.dirty
         controller.edit_plan(s.base.clone())
-        assert window.servo_selection[0].isVisible() and 'Aerofreni' in window.servo_selection[0].text()
-        assert window.airbrake_summary.isHidden() and not window.airbrake_summary.text()
+        assert window.dashboard_page.servo_selection[0].isVisible() and 'Aerofreni' in window.dashboard_page.servo_selection[0].text()
+        assert window.dashboard_page.airbrake_summary.isHidden() and not window.dashboard_page.airbrake_summary.text()
         s.airbrake_status=dict(active=True,channel_mask=1,flags=3,failed_conditions=0,opening_pct=[37.5,None,None,None])
         s.status['arming_state']='armed'; window.render()
-        assert 'abilitato' in window.airbrake_summary.text() and not window.airbrake_summary.isHidden()
-        assert not window.prepare_servos_button.parentWidget().findChildren(QProgressBar)
+        assert 'abilitato' in window.dashboard_page.airbrake_summary.text() and not window.dashboard_page.airbrake_summary.isHidden()
+        assert not window.dashboard_page.prepare_servos_button.parentWidget().findChildren(QProgressBar)
         s.airbrake_status.update(flags=9,opening_pct=[0,None,None,None]); window.render()
-        assert 'Kalman non valida' in window.airbrake_summary.text()
+        assert 'Kalman non valida' in window.dashboard_page.airbrake_summary.text()
         s.status['arming_state']='disarmed'; s.airbrake_status['active']=False; window.render()
-        assert window.airbrake_summary.isHidden() and not window.airbrake_summary.text()
+        assert window.dashboard_page.airbrake_summary.isHidden() and not window.dashboard_page.airbrake_summary.text()
         controller.save_airbrakes(False); wait(lambda:not s.foreground)
         assert not s.error and not s.airbrakes['enabled'] and s.base.airbrakes['channel_mask']==1
         assert config.airbrake_button.isHidden()
-        assert not window.servo_selection[0].isEnabled() and window.servo_states[0].text()=='disabilitato'
+        assert not window.dashboard_page.servo_selection[0].isEnabled() and window.dashboard_page.servo_states[0].text()=='disabilitato'
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/'airbrakes.csv'
             with path.open('w',newline='',encoding='utf-8') as stream:

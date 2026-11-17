@@ -78,6 +78,7 @@ bool CommandService::dispatch(const Status &s, char *out, std::size_t cap) {
     protocol::Tokens t(p); protocol::Json data;
     data.add(",\"ready\":%s,\"connected\":%s,\"error\":\"%s\",\"baud\":%lu,\"uart_rx_overflows\":%lu",
              s.bluetoothReady ? "true" : "false", s.bluetoothConnected ? "true" : "false", s.bluetoothError, static_cast<unsigned long>(s.bluetoothBaud),static_cast<unsigned long>(s.bluetoothRxOverflows));
+    data.add(",\"name\":\"%s\",\"rename\":\"%s\",\"configured\":%s,\"stage\":\"%s\"",s.bluetoothName,s.bluetoothRename,s.bluetoothConfigured ? "true" : "false",s.bluetoothStage);
     return protocol::finish(command,data,t.valid && t.count == 1 && t.is(0,"status") ? nullptr : "INVALID_ARGUMENT",identified,id,out,cap);
   }
   const bool known = std::strcmp(command, "ping") == 0 || std::strcmp(command, "info") == 0 ||
@@ -118,7 +119,7 @@ bool CommandService::dispatch(const Status &s, char *out, std::size_t cap) {
   if (!identified) {
     if (std::strcmp(command, "ping") == 0) std::snprintf(out, cap, "PONG\n");
     else if (std::strcmp(command, "help") == 0) std::snprintf(out, cap,
-        "Commands: ping, info, status, sensors, help; sleep, wake; bluetooth status; control status; preflight [physical|simulation], arm, disarm (ds); imu status/begin/verify/capture <axis>/cancel; capabilities; config machine [normal|bistage <m/s>]; config show/begin/draft/validate/apply/discard/reset/orientation [+X|-X|+Y|-Y|+Z|-Z]; rule, condition, output, pyro, servo (servo arm [channel] prepares outputs; servo release releases held PWM); replay begin/sample/status/stop (estimates); hil begin/sample/status/stop/timing (sensors); sim begin [physical] [record]/status/stop/timing/events; flights status/init/recover/format/list/info/summary/calibration/config/read/delete/timing/failure; flights timing reset. LF/CRLF; @<uint32> for JSON.\n");
+        "Commands: ping, info, status, sensors, help; sleep, wake; bluetooth status, bluetooth name <suffix|default>; control status; preflight [physical|simulation], arm, disarm (ds); imu status/begin/verify/capture <axis>/cancel; capabilities; config machine [normal|bistage <m/s>]; config show/begin/draft/validate/apply/discard/reset/orientation [+X|-X|+Y|-Y|+Z|-Z]; rule, condition, output, pyro, servo (servo arm [channel] prepares outputs; servo release releases held PWM); replay begin/sample/status/stop (estimates); hil begin/sample/status/stop/timing (sensors); sim begin [physical] [record]/status/stop/timing/events; flights status/init/recover/format/list/info/summary/calibration/config/read/delete/timing/failure; flights timing reset. LF/CRLF; @<uint32> for JSON.\n");
     else if (std::strcmp(command, "info") == 0) std::snprintf(out, cap,
         "Perpetual | RP2350 | USB/Bluetooth command service v1 | Readiness: use preflight\n");
     else if (std::strcmp(command, "sensors") == 0) std::snprintf(out, cap,

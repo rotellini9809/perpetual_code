@@ -118,7 +118,7 @@ def download(client, sequence, destination, *, progress=None, cancelled=None, ov
         with tempfile.TemporaryDirectory(prefix='.flight-download-', dir=destination.parent) as folder:
             staged = Path(folder) / destination.name
             result = download(client, sequence, staged, progress=progress, cancelled=cancelled)
-            if cancelled and cancelled(): raise CancelledError('Download annullato')
+            if cancelled and cancelled(): raise CancelledError('Download cancelled')
             staged.with_suffix('.json').replace(metadata_path)
             staged.replace(destination)
             return result
@@ -131,7 +131,7 @@ def download(client, sequence, destination, *, progress=None, cancelled=None, ov
 
 def _download(client,sequence,destination,progress,cancelled,owned):
     def checkpoint():
-        if cancelled and cancelled(): raise CancelledError('Download annullato')
+        if cancelled and cancelled(): raise CancelledError('Download cancelled')
     def request(command,**kwargs):
         checkpoint()
         response=client.request(command,**kwargs)
@@ -145,7 +145,7 @@ def _download(client,sequence,destination,progress,cancelled,owned):
         raise FileExistsError('CSV/metadata destination already exists or overlaps')
     info = request(f'flights info {sequence}', timeout=600)
     if info.get('sample_transport') != 'xor32-v2':
-        raise ValueError('Aggiorna il firmware della scheda per usare il download ottimizzato')
+        raise ValueError('Update the board firmware to use the optimized download')
     if info.get('config_version') != 3:
         raise ValueError('Unsupported configuration export format; upload current MAIN firmware')
     response = request(f'flights summary {sequence}')

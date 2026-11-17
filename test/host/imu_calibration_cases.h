@@ -6,16 +6,24 @@ namespace test_imu_calibration {
 using namespace test_arming_controller;
 constexpr float G=9.80665f;
 struct CalibrationFlash : storage::FlashDevice {
-  uint8_t bytes[4096]; unsigned writes=0; bool tear=false,failRead=false;
-  CalibrationFlash() { std::memset(bytes,255,sizeof(bytes)); }
+  uint8_t bytes[4096],policy[4096]; unsigned writes=0; bool tear=false,failRead=false;
+  CalibrationFlash() { std::memset(bytes,255,sizeof(bytes)); std::memset(policy,255,sizeof(policy)); }
   bool read(uint32_t a,void *p,std::size_t n) override {
-    if (failRead || a+n>sizeof(bytes)) return false;
+    if (failRead) return false;
+    if (a>=storage::FlashLayout::IdentityPolicyBegin) {
+      a-=storage::FlashLayout::IdentityPolicyBegin;
+      if (a+n>sizeof(policy)) return false;
+      std::memcpy(p,policy+a,n); return true;
+    }
+    if (a+n>sizeof(bytes)) return false;
     std::memcpy(p,bytes+a,n); return true;
   }
   bool program(uint32_t a,const void *p,std::size_t n) override {
+    uint8_t *target=bytes;
+    if (a>=storage::FlashLayout::IdentityPolicyBegin) { a-=storage::FlashLayout::IdentityPolicyBegin; target=policy; }
     assert(a+n<=sizeof(bytes)); ++writes;
     const auto *b=static_cast<const uint8_t *>(p);
-    for (unsigned i=0;i<(tear?17:n);++i) bytes[a+i]&=b[i];
+    for (unsigned i=0;i<(tear?std::min<std::size_t>(17,n):n);++i) target[a+i]&=b[i];
     return !tear;
   }
   bool eraseSector(uint32_t a) override { assert(!a); ++writes; std::memset(bytes,255,sizeof(bytes)); return true; }
@@ -64,11 +72,39 @@ void run() {
   assert(store.approve(storage::ImuApproval::Verified));
   flash.tear=true; assert(!store.approve(storage::ImuApproval::InUse)); flash.tear=false;
   assert(reboot.load() && !reboot.verified()); // Never fall back to an earlier approval.
-  assert(reboot.approve(storage::ImuApproval::Verified));
+  assert(reboot.needsCalibration() && !reboot.approve(storage::ImuApproval::Verified));
+  assert(reboot.save(measured));
   assert(store.load() && store.verified());
   for (unsigned i=0;i<30;++i) assert(store.approve(i%2 ? storage::ImuApproval::Verified:storage::ImuApproval::InUse));
   assert(reboot.load() && reboot.verified()); // Journal compaction.
   flash.failRead=true; assert(!reboot.load() && !reboot.verified()); flash.failRead=false;
+
+  // The identity eligibility bit survives coefficient erases and journal compaction.
+  CalibrationFlash factoryFlash; storage::ImuCalibrationStore factory(factoryFlash);
+  assert(!factory.load() && factory.identityAllowed());
+  storage::ImuCalibrationRecord identity; identity.revision=1; identity.identity=true;
+  identity.approval=storage::ImuApproval::Verified;
+  assert(factory.save(identity) && factory.approve(storage::ImuApproval::InUse));
+  assert(factory.invalidate() && !factory.identityAllowed() && factory.needsCalibration());
+  storage::ImuCalibrationStore factoryReboot(factoryFlash);
+  assert(factoryReboot.load() && !factoryReboot.identityAllowed() && factoryReboot.needsCalibration());
+  assert(!factoryReboot.approve(storage::ImuApproval::Verified) && !factoryReboot.save(identity));
+  assert(factoryReboot.save(measured) && factoryReboot.verified());
+  for (unsigned i=0;i<30;++i) assert(factoryReboot.approve(i%2 ? storage::ImuApproval::Verified:storage::ImuApproval::InUse));
+  assert(factory.load() && !factory.identityAllowed());
+  factoryFlash.eraseSector(0); // Even lost coefficient records cannot resurrect factory identity.
+  assert(!factory.load() && !factory.identityAllowed());
+  CalibrationFlash unknownFlash; unknownFlash.bytes[0]=0;
+  storage::ImuCalibrationStore unknown(unknownFlash);
+  assert(!unknown.load() && !unknown.identityAllowed());
+  CalibrationFlash unreadableFlash; unreadableFlash.failRead=true;
+  storage::ImuCalibrationStore unreadable(unreadableFlash);
+  assert(!unreadable.load() && !unreadable.identityAllowed());
+  // Wrong position retries; a stable correctly oriented but biased measurement fails.
+  storage::ImuCalibrationRecord shifted; shifted.bias[0]=.8f;
+  collector.begin(true,identity); assert(collector.capture(0)); feed(collector,2,identity);
+  assert(!collector.failed()); feed(collector,0,shifted);
+  assert(collector.failed() && !collector.complete() && !collector.result(measured));
 
   MemoryFlash settingsFlash; storage::ConfigurationStore settingsStore(settingsFlash);
   auto plan=fixture(); plan.rules[0].assignmentCount=1;
@@ -80,6 +116,17 @@ void run() {
   Checks checks; checks.healthy(); Source source;
   auto p=controller.preflight(flight::FlightMode::Physical,true,&checks);
   assert(p.has(flight::ArmBlocker::ImuCalibrationMissing));
+  CalibrationFlash initialFlash; storage::ImuCalibrationStore initialStore(initialFlash);
+  assert(!initialStore.load() && initialStore.identityAllowed());
+  controller.setImuCalibrationStore(initialStore);
+  assert(controller.preflight(flight::FlightMode::Physical,true,&checks).ready());
+  assert(!strcmp(controller.imuCalibrationState(),"identity"));
+  assert(!controller.beginImuCalibration(source,false)); controller.cancelImuCalibration();
+  assert(!initialStore.present() && initialStore.identityAllowed());
+  assert(!controller.arm(source,flight::FlightMode::Physical,0,120,{},4096,&checks));
+  assert(initialStore.present() && initialStore.record().identity);
+  for (unsigned i=0;i<3;++i) assert(initialStore.record().bias[i]==0 && initialStore.record().scale[i]==1);
+  assert(!controller.disarm() && initialStore.verified());
   controller.setImuCalibrationStore(store); assert(controller.preflight(flight::FlightMode::Physical,true,&checks).ready());
   ArmingCommands commands(controller,source,checks);
   ConfigurationCommands configuration(config); EstimateReplayCommands estimates(config,run);
@@ -135,7 +182,20 @@ void run() {
   controller.stop(); controller.maintainImuApproval();
   assert(controller.preflight(flight::FlightMode::Physical,true,&checks).has(flight::ArmBlocker::ImuVerificationRequired));
   assert(!store.verified());
-  assert(store.approve(storage::ImuApproval::Verified));
+  // A failed post-Boost verification requires a new calibration, not another verification.
+  assert(!controller.beginImuCalibration(source,true));
+  truth.bias[0]+=.8f; acquireFace(0); truth.bias[0]-=.8f;
+  assert(!controller.active() && store.needsCalibration() && !store.identityAllowed());
+  assert(!strcmp(controller.imuError(),"IMU_VERIFICATION_FAILED"));
+  assert(!strcmp(controller.imuCalibrationState(),"invalid"));
+  assert(!strcmp(controller.beginImuCalibration(source,true),"IMU_CALIBRATION_MISSING"));
+  assert(controller.preflight(flight::FlightMode::Physical,true,&checks).has(flight::ArmBlocker::ImuCalibrationMissing));
+  assert(reboot.load() && reboot.needsCalibration() && !reboot.identityAllowed());
+  assert(!controller.beginImuCalibration(source,false));
+  for (unsigned face=0;face<6;++face) acquireFace(face);
+  assert(!store.needsCalibration() && !store.verified() && !store.identityAllowed());
+  assert(!controller.beginImuCalibration(source,true)); acquireFace(0); acquireFace(2);
+  assert(store.verified() && !store.identityAllowed());
   // Simulations, including physical outputs, must leave calibration approval untouched.
   const auto beforeSimulation=flash.writes;
   navigation::SensorCalibration simulation; simulation.configured=true;

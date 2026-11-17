@@ -9,7 +9,21 @@ python tools/run_tests.py --suite storage_recording storage_recovery
 python tools/run_tests.py --full                # Also replay, record and download all Hoppino samples
 python tools/run_tests.py --list
 python tools/run_tests.py --suite desktop        # Optional: requires perpetual_app/build.ps1 environment
+python tools/run_tests.py --area recorded_flights maintenance   # Only these desktop areas
+python tools/run_tests.py --timeout 300         # Per-run limit in seconds (default 120)
+python tools/run_tests.py --changed             # Only what uncommitted/new files affect (or --changed REF)
 ```
+
+`--changed` selects from git: C++ suites through the headers recorded by the last build
+(`g++ -MMD`), Python suites on any tool/test-script change, and desktop areas through
+`.pio/tests/desktop_map.json`, which every desktop run refreshes with the project files each
+area executed. Anything it cannot prove unaffected runs (no map yet, a new area, an app file no
+area has run, the test runner itself). Files no host test exercises are listed so they can be
+checked on the board.
+
+Every run has a time limit. A Python suite still running after `--timeout` seconds prints the
+stack of every thread, with the exact line where it was stuck, and is reported as `TIMEOUT`
+(a C++ executable is stopped 15 s later without a stack).
 
 The runner compiles/runs PC executables using g++ and Python. Uploading firmware does not run
 these tests. The default **12 groups** need no flight CSV; `--full` runs **14**, adding
@@ -19,6 +33,11 @@ An explicit `--suite recording` also runs that recorded-data group. The compatib
 The Qt area is opt-in with `--suite desktop` or `--desktop` (combine with `--full` for 15 groups).
 It uses the isolated desktop Python, keeping default checks free of Qt dependencies. Its native
 firmware fixture never opens a real COM port.
+The desktop group is split into independent areas, listed in
+[desktop_test.py](../../test/integration/desktop_test.py) (`--list`). Each area runs in its own
+process with a fresh window and firmware fixture, and is reported as `desktop/<area>`; shared
+fixture code lives in `desktop_support.py`. To debug one area without the runner:
+`.venv\Scripts\python.exe test/integration/desktop_test.py <area>`.
 
 | C++ file/group | Scenarios kept together |
 |---|---|

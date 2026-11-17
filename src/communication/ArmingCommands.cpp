@@ -39,6 +39,9 @@ bool ArmingCommands::dispatch(const char *command, const char *arguments, bool h
       physical_.imuCalibrationState(),physical_.imuCalibrationReason(),c.active()?"true":"false",c.collecting()?"true":"false",
       c.verification()?"true":"false",c.face(),c.mask(),c.samples(),flight::ImuCalibration::TargetSamples,physical_.imuError(),c.error(),
       double(c.norm()),double(c.noise()),static_cast<unsigned long>(store && store->present()?store->record().revision:0));
+    data.add(R"(,"identity_allowed":%s,"identity_active":%s)",
+        store && store->identityAllowed() ? "true" : "false",
+        store && (store->present() ? store->record().identity : store->identityAllowed()) ? "true" : "false");
     if (store && store->present()) {
       const auto &r=store->record();
       data.add(R"(,"bias_mps2":[%.6g,%.6g,%.6g],"scale":[%.6g,%.6g,%.6g])",double(r.bias[0]),double(r.bias[1]),double(r.bias[2]),double(r.scale[0]),double(r.scale[1]),double(r.scale[2]));

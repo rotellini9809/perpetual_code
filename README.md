@@ -7,24 +7,47 @@ sensor HIL, autonomous simulation with selectable outputs, idle hardware diagnos
 servo preparation and sensor/continuity/storage readiness; the IMU hardware issue is unresolved.**
 
 The **Qt desktop prototype** provides Dashboard, Configuration, Test/Simulation,
-Recorded Flights, Settings and Console. During development, launch it from source using
-[the desktop guide](docs/technical/DESKTOP.md). Portable ZIP packaging is deferred until the app is ready.
+Recorded Flights, Settings and Console. It starts in English; Italian can be chosen in
+Settings → Language (applied after a restart; error messages stay in English).
+During development, launch it from source using
+[the desktop guide](docs/technical/DESKTOP.md). An early portable Windows package can be built
+for testing (see [Package the desktop app](#package-the-desktop-app)).
 
 ## Build and start
 
 Start Perpetual App from the repository root in PowerShell:
 
 ```powershell
-.\.pio\perpetual_app_venv\Scripts\python.exe perpetual_app/main.py
+.\.venv\Scripts\python.exe perpetual_app/main.py
 ```
 
 This uses the app environment directly: no `Activate.ps1` or PowerShell execution-policy
 change is needed. On a fresh checkout, create the environment and install dependencies once:
 
 ```powershell
-python -m venv .pio/perpetual_app_venv
-.\.pio\perpetual_app_venv\Scripts\python.exe -m pip install -r perpetual_app/requirements.txt
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r perpetual_app/requirements.txt
 ```
+
+### Package the desktop app
+
+To build a portable Windows package (no Python needed on the target PC):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File perpetual_app/build.ps1 -Zip
+```
+
+The script creates `.venv` if needed, installs the pinned requirements (skip this step
+with `-SkipInstall`) and runs PyInstaller with [Perpetual.spec](perpetual_app/Perpetual.spec).
+It writes:
+
+- `.pio\desktop_dist\Perpetual\Perpetual.exe`: the app folder; keep the exe beside its `_internal` folder.
+  It also contains `README.txt` for the people who receive the package (from `perpetual_app/PORTABLE.txt`).
+- `.pio\desktop_dist\Perpetual-windows-x64.zip`: the same folder zipped for sharing.
+
+To use the package, extract the ZIP anywhere and run `Perpetual\Perpetual.exe`. The build is
+unsigned, so Windows SmartScreen may warn on first launch (More info → Run anyway).
+These packages are early test builds, not stable releases.
 
 Firmware dependencies are pinned in [platformio.ini](platformio.ini): exact Git commits
 for the RP2350 platform and Bosch/ST drivers, and NeoPixel 1.15.5. The pinned platform

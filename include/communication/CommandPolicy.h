@@ -39,6 +39,9 @@ inline CommandPolicy classifyCommand(const char *command, const Tokens &t) {
   if (imu) p.operational=!p.readOnly;
   p.maintenance=(config && t.is(0,"reset")) || (deviceSetting && t.count>1) || (flights && t.is(0,"format"));
   p.beginRun=arm || (run && t.is(0,"begin"));
+  if (!strcmp(command,"bluetooth") && t.is(0,"name")) { // Writes module memory and restarts the radio.
+    p.readOnly=false; p.mutation=true; p.maintenance=true;
+  }
   return p;
 }
 }

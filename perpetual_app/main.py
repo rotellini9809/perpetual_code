@@ -8,8 +8,9 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT)); sys.path.insert(0,str(ROOT/'tools')); sys.path.insert(0,str(ROOT/'tools/replay'))
 
 from PySide6.QtWidgets import QApplication,QMessageBox
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer,QSettings,QProcess
 from perpetual_app.window import MainWindow,ASSETS
+from perpetual_app.i18n import load_language,use_decimal_point
 
 
 @contextmanager
@@ -28,6 +29,12 @@ def terminal_interrupt(window):
     try: yield
     finally:
         timer.stop(); timer.deleteLater(); signal.signal(signal.SIGINT,previous)
+
+
+def relaunch():
+    """Start a new instance with the same arguments; it reads the saved language at startup."""
+    if getattr(sys,'frozen',False): QProcess.startDetached(sys.executable,sys.argv[1:])
+    else: QProcess.startDetached(sys.executable,[str(Path(__file__).resolve()),*sys.argv[1:]])
 
 
 def main():
@@ -55,6 +62,7 @@ def main():
         palette.setColor(QPalette.Disabled,role,QColor('#a3aeb9'))
     app.setPalette(palette)
     app.setWindowIcon(QIcon(str(ASSETS/'perpetual.ico')))
+    load_language(QSettings('Perpetual','Flight Console')); use_decimal_point() # Before any window builds its texts.
     if app.platformName()=='offscreen':
         import os
         from PySide6.QtGui import QFontDatabase
@@ -68,7 +76,7 @@ def main():
         try: log.write_text(text,encoding='utf-8')
         except OSError: pass
         if args.smoke_test: app.exit(1)
-        else: QMessageBox.critical(None,'Perpetual · Errore',str(value)+'\n\nDettagli: '+str(log))
+        else: QMessageBox.critical(None,'Perpetual · Error',str(value)+'\n\nDetails: '+str(log))
     sys.excepthook=exception
     if args.arm_preview:
         from perpetual_app.arm_button import ArmButtonPreview
@@ -89,12 +97,14 @@ def main():
             args.smoke_test.mkdir(parents=True,exist_ok=True)
             for i,name in enumerate(('dashboard','configuration','simulation','flights','additional-settings','console')):
                 window.navigate(i); app.processEvents()
-                if not window.grab().save(str(args.smoke_test/(name+'.png'))): raise OSError('Screenshot non salvato')
+                if not window.grab().save(str(args.smoke_test/(name+'.png'))): raise OSError('Screenshot not saved')
             (args.smoke_test/'result.json').write_text(json.dumps(dict(ok=True,pages=6,frozen=bool(getattr(sys,'frozen',False)),
                 connected=window.controller.state.connected,transport=window.controller.state.connection.get('transport'))),encoding='utf-8')
             window._closing=True; window.controller.disconnect(); window.close_timer.start()
         QTimer.singleShot(700,smoke)
-    with terminal_interrupt(window): return app.exec()
+    with terminal_interrupt(window): code=app.exec()
+    if window.restart_requested: relaunch()
+    return code
 
 
 if __name__=='__main__': raise SystemExit(main())

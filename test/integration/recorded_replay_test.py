@@ -11,7 +11,9 @@ import subprocess
 import sys
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'test/fixtures'))
+sys.path.insert(0, str(ROOT / 'tools'))
 from client_fixture import ProcessLink, load_tool
+from device_client import Client
 
 def check_navigation_replay():
     module = load_tool('tools/replay/replay_navigation.py')
@@ -128,7 +130,7 @@ def check_replay_hoppino_usb():
                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE)
         try:
             with contextlib.redirect_stdout(io.StringIO()):
-                module.run(module.Client(ProcessLink(process)), samples, output)
+                module.run(Client(ProcessLink(process)), samples, output)
         finally:
             process.stdin.close()
             process.wait(timeout=10)

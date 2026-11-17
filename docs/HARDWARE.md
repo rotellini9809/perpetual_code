@@ -76,9 +76,10 @@ historical and are not current MAIN behavior.
 | [BMP581](datasheets/bst-bmp581-ds004.pdf) | Current barometer reference |
 | [FS90](datasheets/FS90-specs.pdf) | Servo reference; mechanism endpoints still require calibration |
 | [Archived W25Q64JV](archive/datasheets/W25Q64JV_reference.pdf) | Mismatched legacy part; do not derive current capacity from it |
+| [JDY-34 manual V1.3](datasheets/JDY-34%20High%20Speed%20Dual-mode%20Bluetooth%20User%20Manual-V1.3.pdf) | Bluetooth module AT commands, factory defaults (9600, BTMODE1, ENLOG1) and pins |
 | [Archived JDY23](archive/datasheets/JDY23_reference.pdf) | Mismatched legacy module; do not reuse its AT/baud/profile assumptions for JDY-34 |
 
-Matching W25Q128JV and JDY-34 PDFs have not been supplied locally. Flash power-down/release
+A matching W25Q128JV PDF has not been supplied locally. Flash power-down/release
 commands were checked against the manufacturer-authored
 [W25Q128JV datasheet, Rev M](https://mm.digikey.com/Volume0/opasdata/d220001/medias/docus/7161/256_W25Q128JV.pdf).
 Local PDFs are retained unchanged; current hardware facts come from source/observed identification, not an inference

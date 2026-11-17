@@ -2,6 +2,7 @@
 from PySide6.QtCore import QObject, Signal, Slot, Qt
 from device_client import DeviceConnection
 from .ports import Port, enumerate_ports, candidates
+from .i18n import t
 
 
 class ConnectionSession(QObject):
@@ -54,7 +55,7 @@ class ConnectionSession(QObject):
         self._generation+=1; self.phase='searching'; self._failures=[]; self._candidate=None
         self._preferred=preferred or {}; self._candidates=[]; self._quiet=quiet
         self.reset.emit(True)
-        self._publish(self._empty('connecting'),'Connessione in corso…','')
+        self._publish(self._empty('connecting'),t('Connecting…'),'')
         if port is None: self._scan('discover')
         else:
             self._candidates=[port if isinstance(port,Port) else Port(port)]
@@ -65,17 +66,17 @@ class ConnectionSession(QObject):
             self.phase='idle'
             if self._quiet:
                 self._quiet=False
-                self._publish(self._empty('disconnected'),'Disconnesso','')
+                self._publish(self._empty('disconnected'),t('Disconnected'),'')
                 return
-            error='; '.join(self._failures) or 'Nessuna porta compatibile trovata. Collega la scheda USB oppure associa Perpetual via Bluetooth nelle impostazioni Windows.'
-            self._publish(dict(self._empty('error'),error=error),'Connessione non riuscita',error)
+            error='; '.join(self._failures) or 'No compatible port found. Connect the board over USB or pair Perpetual via Bluetooth in the Windows settings.'
+            self._publish(dict(self._empty('error'),error=error),t('Connection failed'),error)
             return
         group=[p for p in self._candidates if p.transport==self._candidates[0].transport]
         if len(group)>1 and group[0].identity!=self._preferred.get(group[0].transport):
             self.phase='choosing'; self.port_choice.emit(group); return
         self._candidate=self._candidates.pop(0); self.phase='connecting'
         self._publish(dict(state='connecting',transport=self._candidate.transport,port=self._candidate.device,reply_age_s=None),
-                      'Connessione in corso… '+self._candidate.label)
+                      t('Connecting… {port}',port=self._candidate.label))
         try:
             self.client=self._factory(self._candidate.device)
             self._watch('connect',self.client.connect())
@@ -92,9 +93,9 @@ class ConnectionSession(QObject):
     def _connect_failed(self, error):
         raw=str(error); text=raw
         if isinstance(error,PermissionError) or any(s in raw.casefold() for s in ('access is denied','accesso negato','permissionerror')):
-            text='Porta occupata o accesso negato: chiudi Serial Monitor e le altre app che usano questa porta'
+            text='Port busy or access denied: close Serial Monitor and the other apps using this port'
         elif isinstance(error,TimeoutError):
-            text='Nessuna risposta dalla scheda: verifica alimentazione e firmware MAIN'
+            text='No response from the board: check the power supply and the MAIN firmware'
         self._failures.append(self._candidate.label+': '+text)
         if not self._quiet: self.logged.emit('error',self._candidate.label+': '+raw)
         if self.client is None: self._try_next()
@@ -103,7 +104,7 @@ class ConnectionSession(QObject):
     def _close(self, reason):
         self.phase='closing'; self._close_reason=reason
         self._watch('closed',self.client.disconnect(wait=False))
-        message='Disconnessione in corso…' if reason=='disconnected' else ''
+        message=t('Disconnecting…') if reason=='disconnected' else ''
         self._publish(dict(self.snapshot,state='disconnecting'),message)
 
     def disconnect(self):
@@ -115,14 +116,14 @@ class ConnectionSession(QObject):
         if self.client is not None: self._close('disconnected')
         else:
             self.phase='idle'
-            self._publish(self._empty('disconnected'),'Disconnesso')
+            self._publish(self._empty('disconnected'),t('Disconnected'))
 
     def poll(self):
         if self.phase!='connected': return
         snapshot=self.client.snapshot()
         if self._candidate: snapshot['identity']=self._candidate.identity
         if snapshot['state'] in ('error','unresponsive','disconnected'):
-            error=snapshot.get('error') or 'Connessione persa'
+            error=snapshot.get('error') or 'Connection lost'
             self.logged.emit('error',error)
             self._generation+=1; self.reset.emit(False)
             self._publish(snapshot,error=error)
@@ -136,7 +137,7 @@ class ConnectionSession(QObject):
         if name=='ports':
             if not error: self.ports_changed.emit(result)
         elif name=='discover':
-            if error: self._failures.append('Ricerca porte: '+str(error))
+            if error: self._failures.append('Port search: '+str(error))
             else:
                 self.ports_changed.emit(result); self._candidates=candidates(result,self._preferred)
             self._try_next()
@@ -145,10 +146,10 @@ class ConnectionSession(QObject):
             self._quiet=False; self.phase='connected'; self._candidates=[]
             self.poll()
             if self.phase=='connected':
-                self._publish(self.snapshot,'Connessione stabilita')
+                self._publish(self.snapshot,t('Connection established'))
                 self.ready.emit()
         elif name=='closed':
             reason=self._close_reason; self.client=None; self.phase='idle'
             if reason=='next': self._try_next(); return
-            message='Connessione persa · premi Connetti per riprovare' if reason=='failed' else 'Disconnesso · gli ultimi dati non sono più live'
+            message=t('Connection lost · press Connect to retry') if reason=='failed' else t('Disconnected · the last data are no longer live')
             self._publish(self._empty('error' if reason=='failed' else 'disconnected'),message,str(error) if error else None)

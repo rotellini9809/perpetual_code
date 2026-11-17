@@ -1,11 +1,12 @@
 """Recorded flight curves and optional event overlays, using saved board timestamps."""
 from math import ceil,floor,log10
+from .i18n import t
 from PySide6.QtCore import Qt,QPointF,QRectF
 from PySide6.QtGui import QColor,QPainter,QPainterPath,QPen
 from PySide6.QtWidgets import QWidget,QToolTip
 
 
-PHASE_COLORS={'PAD':'#e7edf3','BOOST':'#fbe5da','COAST':'#e0edf9','DESCENT':'#dcf0e9','LANDED':'#ece7f4','BOOST 1':'#fbe5da','COAST 1':'#e0edf9','BOOST 2':'#ffd7c4','COAST 2':'#c9dff5','ABORT':'#f6cccc','Controllo abilitato':'#dcf0e9','Controllo inibito':'#edf1f5'}
+PHASE_COLORS={'PAD':'#e7edf3','BOOST':'#fbe5da','COAST':'#e0edf9','DESCENT':'#dcf0e9','LANDED':'#ece7f4','BOOST 1':'#fbe5da','COAST 1':'#e0edf9','BOOST 2':'#ffd7c4','COAST 2':'#c9dff5','ABORT':'#f6cccc','Control enabled':'#dcf0e9','Control not active':'#edf1f5'}
 
 
 def axis_scale(values,angular=False,include_zero=True):
@@ -104,7 +105,7 @@ class FlightPlot(QWidget):
         dual=any(c[4]==1 for c in self.curves)
         box=QRectF(68,48,max(10,self.width()-136),max(10,self.height()-82))
         if not self.rows:
-            p.setPen(QColor('#7b8998')); p.drawText(box,Qt.AlignCenter,'Apri un volo per visualizzare i dati')
+            p.setPen(QColor('#7b8998')); p.drawText(box,Qt.AlignCenter,t('Open a flight to view the data'))
             return
         x0=self.rows[0][0]; x1=max(x0+.001,self.rows[-1][0])
         def xpos(stamp): return box.left()+(stamp-x0)/(x1-x0)*box.width()
@@ -118,7 +119,7 @@ class FlightPlot(QWidget):
                 p.fillRect(QRectF(left,box.top(),right-left,box.height()),color)
                 if name not in seen:
                     p.fillRect(QRectF(legend_x,28,10,10),color); p.setPen(QColor('#65768b'))
-                    p.drawText(QPointF(legend_x+15,38),name)
+                    p.drawText(QPointF(legend_x+15,38),t(name))
                     legend_x+=p.fontMetrics().horizontalAdvance(name)+30; seen.add(name)
         for i in range(5):
             x=box.left()+box.width()*i/4
@@ -152,7 +153,7 @@ class FlightPlot(QWidget):
             p.setPen(QPen(line_color,3 if col==selected else 2)); p.drawPath(path)
             if angular_points: p.drawPoints(angular_points)
         if not scales:
-            p.setPen(QColor('#7b8998')); p.drawText(box,Qt.AlignCenter,'Misure non disponibili nel volo')
+            p.setPen(QColor('#7b8998')); p.drawText(box,Qt.AlignCenter,t('Measurements not available in this flight'))
         if self.show_actuators:
             for index,(stamp,text) in enumerate(self.markers):
                 if not x0<=stamp<=x1: continue

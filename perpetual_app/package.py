@@ -8,7 +8,7 @@ import sys
 ROOT=Path(__file__).resolve().parents[1]
 destination=ROOT/'.pio/desktop_dist/Perpetual'
 if not (destination/'Perpetual.exe').exists(): raise SystemExit('Build Perpetual.exe first')
-shutil.copy2(ROOT/'perpetual_app/PORTABLE.txt',destination/'LEGGIMI.txt')
+shutil.copy2(ROOT/'perpetual_app/PORTABLE.txt',destination/'README.txt')
 for folder in ('perpetual_app','tools','tools/replay'):
     (destination/'source'/folder).mkdir(parents=True,exist_ok=True)
 for file in (ROOT/'perpetual_app').glob('*.py'): shutil.copy2(file,destination/'source/perpetual_app'/file.name)
@@ -32,13 +32,13 @@ for name in ('PySide6-Essentials','shiboken6','pyserial','pyinstaller'):
             path=Path(dist.locate_file(file))
             if path.is_file(): shutil.copy2(path,notices/(name+'-'+file.name))
 (notices/'Python-LICENSE.txt').write_text((Path(sys.base_prefix)/'LICENSE.txt').read_text(encoding='utf-8'),encoding='utf-8')
-(notices/'SOURCES.txt').write_text('Qt/PySide6 e Shiboken: https://code.qt.io/cgit/pyside/pyside-setup.git/\n'
+(notices/'SOURCES.txt').write_text('Qt/PySide6 and Shiboken: https://code.qt.io/cgit/pyside/pyside-setup.git/\n'
     'Qt: https://code.qt.io/cgit/qt/qtbase.git/\n'
-    'Licenze Qt: https://doc.qt.io/qt-6/licenses-used-in-qt.html\n'
-    'Licenze Qt for Python: https://doc.qt.io/qtforpython-6/licenses.html\n'
+    'Qt licenses: https://doc.qt.io/qt-6/licenses-used-in-qt.html\n'
+    'Qt for Python licenses: https://doc.qt.io/qtforpython-6/licenses.html\n'
     'pySerial: https://github.com/pyserial/pyserial/tree/v3.5\n'
     'PyInstaller bootloader: https://pyinstaller.org/en/stable/license.html\n'
-    'I DLL Qt sono distribuiti separatamente in _internal e non sono modificati.\n',encoding='utf-8')
+    'The Qt DLLs are distributed separately in _internal and are not modified.\n',encoding='utf-8')
 (destination/'build.json').write_text(json.dumps(dict(prototype=1,python=sys.version,dependencies=versions),indent=2),encoding='utf-8')
 archive=shutil.make_archive(str(destination.parent/'Perpetual-Windows'),'zip',destination.parent,'Perpetual')
 print(archive)

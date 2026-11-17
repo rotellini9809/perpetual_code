@@ -106,7 +106,7 @@ sim events
 sim stop
 ```
 
-The app's **Uscite fisiche** checkbox defaults off and is fixed for the run. `sim begin physical`
+The app's **Physical outputs** checkbox defaults off and is fixed for the run. `sim begin physical`
 uses the same navigation/rules/runtime with the board output executor: firmware checks configured
 servo endpoints, assigned pyro continuity and output availability before moving anything.
 It then commands assigned servos to their initial positions before starting the profile clock;

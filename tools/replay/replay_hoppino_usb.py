@@ -7,7 +7,7 @@ import sys
 import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from device_client import Client, DeviceConnection
+from device_client import DeviceConnection
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_INPUT = ROOT / 'datasets/hoppino_VOLO_UFFICIALE.csv'

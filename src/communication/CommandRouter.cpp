@@ -86,6 +86,13 @@ bool CommandRouter::dispatchCommand(const char *command, const char *arguments, 
     const protocol::Json data;
     return protocol::finish(command, data, "BUSY", hasId, id, output, capacity);
   }
+  if (!strcmp(command,"bluetooth") && protocol::Tokens(arguments).is(0,"name")) {
+    protocol::Tokens t(arguments); protocol::Json data; char name[24]={};
+    const char *error=!bluetooth_ ? "UNKNOWN_COMMAND" : !t.valid || t.count!=2 ? "INVALID_ARGUMENT" :
+        occupied() || !settings_.disarmed() ? "BUSY" : bluetooth_->requestName(t.values[1],name,sizeof(name));
+    if (!error) data.add(R"(,"name":"%s","ble_name":"%s_BLE","restarting":true)",name,name);
+    return protocol::finish(command,data,error,hasId,id,output,capacity);
+  }
   if (!strcmp(command,"airbrake")) {
     protocol::Tokens t(arguments);
     if (t.is(0,"status")) {

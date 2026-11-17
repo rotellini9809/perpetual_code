@@ -12,7 +12,7 @@ void ImuCalibration::begin(bool verify,const storage::ImuCalibrationRecord &r) {
   *this=ImuCalibration{}; active_=true; verification_=verify; record_=r;
 }
 bool ImuCalibration::capture(unsigned face) {
-  if (!active_ || collecting_ || face>=6) return false;
+  if (!active_ || collecting_ || failed_ || face>=6) return false;
   face_=face; collecting_=true; have_=false; error_="None"; resetWindow(); return true;
 }
 void ImuCalibration::add(const sensors::Reading &r) {
@@ -28,9 +28,13 @@ void ImuCalibration::add(const sensors::Reading &r) {
   }
   const unsigned axis=face_/2; const float sign=face_%2 ? -1.f : 1.f;
   // Provisional board qualification limits. Motion restarts the continuous window.
-  valid=valid && std::fabs(std::sqrt(n2)-G)<(verification_ ?.35f:2.f) &&
-      g2<.01f && sign*a[axis]>G*.94f;
-  for (unsigned i=0;i<3;++i) if (i!=axis && std::fabs(a[i])>G*.15f) valid=false;
+  const float magnitude=std::sqrt(n2);
+  // Verification collects a stationary, correctly oriented window before judging
+  // the coefficients. A stable wrong magnitude must fail, not retry forever.
+  const float orientationMagnitude=verification_ ? magnitude : G;
+  valid=valid && magnitude>1.f && (verification_ || std::fabs(magnitude-G)<2.f) &&
+      g2<.01f && sign*a[axis]>orientationMagnitude*.94f;
+  for (unsigned i=0;i<3;++i) if (i!=axis && std::fabs(a[i])>orientationMagnitude*.15f) valid=false;
   if (!valid) { resetWindow(); error_="POSITION_OR_MOTION"; return; }
   if (!samples_) startTime_=r.timeUs;
   for (unsigned i=0;i<3;++i) { sum_[i]+=a[i]; square_[i]+=double(a[i])*a[i]; }
@@ -44,6 +48,12 @@ void ImuCalibration::add(const sensors::Reading &r) {
   }
   norm_=std::sqrt(norm_);
   if (noise_>.12f) { resetWindow(); error_="NOISY"; return; }
+  if (verification_) {
+    bool accepted=std::fabs(norm_-G)<.35f;
+    for (unsigned i=0;i<3;++i)
+      accepted=accepted && std::fabs(means_[face_][i]-(i==axis ? sign*G : 0.f))<=.4f;
+    if (!accepted) { failed_=true; collecting_=false; error_="IMU_VERIFICATION_FAILED"; return; }
+  }
   mask_|=1u<<face_; collecting_=false;
 }
 bool ImuCalibration::result(storage::ImuCalibrationRecord &r) const {
@@ -51,7 +61,7 @@ bool ImuCalibration::result(storage::ImuCalibrationRecord &r) const {
   r=record_;
   if (verification_) { r.approval=storage::ImuApproval::Verified; return true; }
   if (r.revision==UINT32_MAX) return false;
-  ++r.revision; r.approval=storage::ImuApproval::Required;
+  ++r.revision; r.approval=storage::ImuApproval::Required; r.identity=false;
   for (unsigned i=0;i<3;++i) {
     const float plus=means_[2*i][i],minus=means_[2*i+1][i];
     r.bias[i]=(plus+minus)*.5f; r.scale[i]=2*G/(plus-minus);
