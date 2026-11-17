@@ -95,3 +95,16 @@ See the [recording guide](docs/testing/RECORDING.md) before storage diagnostics.
 - [Recording, download and timing](docs/testing/RECORDING.md)
 - [Validation evidence and remaining work](docs/testing/VALIDATION.md)
 - [Hardware and datasheets](docs/HARDWARE.md)
+
+## License and attribution
+
+Original software in this repository is licensed under the
+[PolyForm Noncommercial License 1.0.0](LICENSE).
+
+See [NOTICE](NOTICE) for attribution notices.
+Third-party components retain their respective licenses.
+
+For commercial licensing inquiries, contact rotellini9809@gmail.com.
+
+If you use Perpetual in research, please notify me at the address
+above. This is a voluntary request, not a license condition.
