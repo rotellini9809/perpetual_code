@@ -80,7 +80,7 @@ CSV columns are defined once in [Storage formats](../technical/STORAGE_FORMAT.md
 The metadata contains sequence/status/sample count, sensor/output/frame modes, frozen
 configuration with rule names and codec hex, output-start states/timestamps, and
 recording_summary or its unavailable state, and the frozen `calibration` snapshot retrieved with
-`flights calibration <sequence>`. Its schema is [defined once in Storage formats](../technical/STORAGE_FORMAT.md#per-flight-calibration-snapshot-header-v6). Historical names/actions come from that flight, even
+`flights calibration <sequence>`. Its schema is [defined once in Storage formats](../technical/STORAGE_FORMAT.md#per-flight-calibration-snapshot-header-v7). Historical names/actions come from that flight, even
 if applied settings change. Null numeric values decode as NaN. An empty/invalid output slot is
 not proof the physical output never operated.
 

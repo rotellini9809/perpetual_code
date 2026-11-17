@@ -80,7 +80,8 @@ bool CommandRouter::dispatchCommand(const char *command, const char *arguments, 
   if (policy.maintenance && (simActive || physicalActive || (arming_ && arming_->hasServoPreview())))
     return protocol::finish(command,protocol::Json{},"BUSY",hasId,id,output,capacity);
   const bool configWrite=policy.group==Group::Configuration && !policy.readOnly;
-  if (((run_.active() || settings_.runLocked()) && (configWrite || otherRun)) ||
+  const bool imuSessionCommand=!strcmp(command,"imu") && arming_ && arming_->imuCalibrationActive();
+  if (((run_.active() || settings_.runLocked()) && ((configWrite && !imuSessionCommand) || otherRun)) ||
       (flights_ && flights_->storageBusy() && (configWrite || policy.beginRun))) {
     const protocol::Json data;
     return protocol::finish(command, data, "BUSY", hasId, id, output, capacity);

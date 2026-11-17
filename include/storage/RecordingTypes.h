@@ -40,6 +40,8 @@ struct FlightCalibration {
   bool available = false, sensorAxes = false, gyroCalibrated = false;
   uint8_t upAxis = 0;
   float referenceAltitude = 0, gyroBias[3] = {}, accelBias[3] = {};
+  float accelScale[3] = {1,1,1};
+  uint32_t accelCalibrationRevision=0;
 };
 
 enum class StartState : uint8_t { Empty, Pending, Recorded, Invalid };

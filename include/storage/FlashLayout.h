@@ -7,8 +7,7 @@ namespace storage {
 struct FlashLayout {
   static constexpr uint32_t Capacity = 16u * 1024u * 1024u;
   static constexpr uint32_t SectorBytes = 4096, PageBytes = 256;
-  // Reserved for device accelerometer XYZ biases only. Gyro bias is arming-session RAM.
-  // No calibration record format or writer yet; the future UI will supply these biases.
+  // Accelerometer bias/scale and append-only validation journal. Gyro stays in RAM.
   static constexpr uint32_t CalibrationBegin = 0, CalibrationBytes = SectorBytes;
   static constexpr uint32_t ConfigurationBegin = 0x001000, ConfigurationBytes = 0x004000;
   static constexpr uint32_t DirectoryA = 0x005000, DirectoryB = 0x00D000, DirectoryBankBytes = 0x008000;

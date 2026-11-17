@@ -18,6 +18,8 @@ const char *blockerName(ArmBlocker b) {
     case ArmBlocker::ServosNotPrepared: return "SERVOS_NOT_PREPARED";
     case ArmBlocker::ServosNotConfigured: return "SERVOS_NOT_CONFIGURED";
     case ArmBlocker::OrientationNotReady: return "ORIENTATION_NOT_READY";
+    case ArmBlocker::ImuCalibrationMissing: return "IMU_CALIBRATION_MISSING";
+    case ArmBlocker::ImuVerificationRequired: return "IMU_VERIFICATION_REQUIRED";
     case ArmBlocker::PhysicalServosPrepared: return "PHYSICAL_SERVOS_PREPARED";
     case ArmBlocker::HardwareChecksUnavailable: return "HARDWARE_CHECKS_UNAVAILABLE";
     case ArmBlocker::Count: break;
@@ -59,6 +61,7 @@ const char *ArmingController::checkPyroContinuity(uint8_t &configured, uint8_t &
 Preflight ArmingController::preflight(FlightMode mode, bool record, PhysicalChecks *checks, storage::OutputMode outputMode) const {
   if (mode == FlightMode::Physical) outputMode = storage::OutputMode::Physical;
   Preflight p;
+  p.imuCalibrationState=imuCalibrationState(); p.imuCalibrationReason=imuCalibrationReason();
   if (state() != ArmingState::Disarmed || config_.runLocked() || runtime_.blockedByOtherRun() || (recorder_ && recorder_->busy()) ||
       (outputs_ && (outputs_->hasPreview() || (outputMode == storage::OutputMode::Physical && outputs_->owner())))) {
     p.block(ArmBlocker::Busy); return p; // Never touch hardware while another owner is active.
@@ -66,6 +69,10 @@ Preflight ArmingController::preflight(FlightMode mode, bool record, PhysicalChec
   if (config_.hasDraft()) p.block(ArmBlocker::DraftActive);
   if (!config_.configValid()) p.block(ArmBlocker::ConfigInvalid);
   if (mode==FlightMode::Physical && !config_.orientationReady()) p.block(ArmBlocker::OrientationNotReady);
+  if (mode==FlightMode::Physical) {
+    if (!imuStore_ || !imuStore_->present()) p.block(ArmBlocker::ImuCalibrationMissing);
+    else if (!imuStore_->verified() && !approvalReserved_) p.block(ArmBlocker::ImuVerificationRequired);
+  }
   if (!config_.disarmed()) p.block(ArmBlocker::NotDisarmed);
   if ((record || mode == FlightMode::Physical) && (!recorder_ || !recorder_->initialized())) p.block(ArmBlocker::StorageNotReady);
   if (mode == FlightMode::Simulation && outputMode == storage::OutputMode::Virtual) {
@@ -136,10 +143,32 @@ const char *ArmingController::arm(sensors::SensorSource &source, FlightMode mode
   navigation_ = {}; calibration_.clear(); error_ = "None"; state_ = ArmingState::Disarmed;
   if (mode == FlightMode::Simulation) return startRuntime(reference, device);
   if (!config_.acquireRun()) return "BUSY";
-  reserved_ = true; calibration_.begin(device); source_->start(); state_ = ArmingState::Arming; return nullptr;
+  reserved_ = true;
+  if (!imuStore_->approve(storage::ImuApproval::InUse)) {
+    error_="IMU_CALIBRATION_IO"; stop(); return error_;
+  }
+  approvalReserved_=true; boostConsumed_=false;
+  auto calibrated=device; imuStore_->apply(calibrated);
+  calibration_.begin(calibrated); source_->start(); state_ = ArmingState::Arming; return nullptr;
 }
 PollResult ArmingController::poll(FrameResult &result) {
   result = {};
+  if (imuCalibration_.active()) {
+    if (clock_ && uint32_t(clock_()-imuOperationTime_)>180000000u) {
+      imuError_="IMU_CALIBRATION_TIMEOUT"; cancelImuCalibration(); return {};
+    }
+    sensors::Reading r;
+    if (source_->poll(r)) imuCalibration_.add(r);
+    if (imuCalibration_.complete()) {
+      storage::ImuCalibrationRecord record;
+      if (!imuCalibration_.result(record)) imuError_="IMU_CALIBRATION_INVALID";
+      else if (!(imuCalibration_.verification() ? imuStore_->approve(storage::ImuApproval::Verified) : imuStore_->save(record))) imuError_="IMU_CALIBRATION_IO";
+      else boostConsumed_=false;
+      cancelImuCalibration();
+    }
+    return {};
+  }
+  settleImuApproval();
   if (state_ == ArmingState::Arming) {
     sensors::Reading reading;
     if (source_->poll(reading) && calibration_.add(reading)) {
@@ -155,6 +184,7 @@ PollResult ArmingController::poll(FrameResult &result) {
   }
   if (state() == ArmingState::Closing) return {};
   const auto p = runtime_.poll(result);
+  if (approvalReserved_ && runtime_.status().boostReached) { boostConsumed_=true; approvalReserved_=false; }
   if (p.processed && result.navigation.valid) navigation_ = result.navigation;
   if (p.error && std::strcmp(p.error, "INVALID_TIMESTAMP")) { error_ = p.error; stop(); }
   else if (state_ == ArmingState::Armed && !runtime_.active()) {
@@ -165,12 +195,54 @@ PollResult ArmingController::poll(FrameResult &result) {
   return p;
 }
 unsigned ArmingController::stop(storage::RecordingEnd reason) {
+  if (imuCalibration_.active()) cancelImuCalibration();
   if (reserved_) { config_.releaseRun(); reserved_ = false; }
   const auto pending = runtime_.stop(reason);
   if (source_) source_->stop();
   source_ = nullptr; checks_ = nullptr; calibration_.clear();
   state_ = runtime_.status().recordingBusy ? ArmingState::Closing : ArmingState::Disarmed;
+  settleImuApproval();
   return pending;
+}
+const char *ArmingController::imuCalibrationState() const {
+  if (!imuStore_ || !imuStore_->present()) return "absent";
+  return (imuStore_->verified() || approvalReserved_) && !boostConsumed_ ? "verified" : "required";
+}
+const char *ArmingController::imuCalibrationReason() const {
+  if (!imuStore_ || !imuStore_->present()) return "MISSING";
+  if (boostConsumed_) return "AFTER_BOOST";
+  if (imuStore_->record().approval==storage::ImuApproval::InUse && !approvalReserved_) return "FLIGHT_OR_RESET";
+  return !std::strcmp(imuCalibrationState(),"verified") ? "None" : "NOT_VERIFIED";
+}
+const char *ArmingController::beginImuCalibration(sensors::SensorSource &source,bool verify) {
+  if (!imuStore_) return "IMU_CALIBRATION_UNAVAILABLE";
+  if (!config_.storageReady()) return "STORAGE_NOT_READY";
+  if (active() || state()!=ArmingState::Disarmed || config_.runLocked() || runtime_.blockedByOtherRun() ||
+      (recorder_ && recorder_->busy()) || (outputs_ && (outputs_->owner() || outputs_->hasPreview()))) return "BUSY";
+  if (!config_.disarmed()) return "ARMED";
+  if (config_.hasDraft()) return "DRAFT_ACTIVE";
+  if (verify && !imuStore_->present()) return "IMU_CALIBRATION_MISSING";
+  if (!clock_ || source.convention()!=sensors::FrameConvention::SensorAxes) return "INVALID_ARGUMENT";
+  if (!config_.acquireDeviceOperation()) return "BUSY";
+  reserved_=true; source_=&source; source_->start();
+  imuCalibration_.begin(verify,imuStore_->record()); imuOperationTime_=clock_(); imuError_="None";
+  return nullptr;
+}
+const char *ArmingController::captureImuFace(unsigned face) {
+  if (!imuCalibration_.capture(face)) return "INVALID_ARGUMENT";
+  imuOperationTime_=clock_(); return nullptr;
+}
+void ArmingController::cancelImuCalibration() {
+  if (!imuCalibration_.active()) return;
+  imuCalibration_.cancel();
+  if (source_) source_->stop();
+  source_=nullptr;
+  if (reserved_) { config_.releaseRun(); reserved_=false; }
+}
+void ArmingController::settleImuApproval() {
+  if (!approvalReserved_ || state()!=ArmingState::Disarmed || (recorder_ && recorder_->busy())) return;
+  approvalReserved_=false;
+  if (!imuStore_->approve(storage::ImuApproval::Verified)) imuError_="IMU_CALIBRATION_IO";
 }
 const char *ArmingController::disarmError() const {
   if (runtime_.blockedByOtherRun()) return "BUSY";

@@ -5,6 +5,7 @@ from PySide6.QtWidgets import QWidget,QFrame,QVBoxLayout,QHBoxLayout,QTabWidget,
 from .configuration import condition_text,rule_label,next_rule_id
 from .dialogs import RuleDialog,ChannelDialog
 from .airbrake_dialog import AirbrakeDialog
+from .imu_calibration_page import ImuCalibrationPage
 from .widgets import label,button,card,row,table,fill_table
 
 
@@ -77,6 +78,7 @@ class ConfigurationPage(QWidget):
         self.airbrake_button=button('Configura aerofreni',self.edit_airbrakes); self.airbrake_button.hide()
         rule_box.addLayout(row(self.add_rule_button,self.airbrake_button,self.edit_rule_button,self.remove_rule_button,None))
         tabs.addTab(rules,'Regole'); tabs.addTab(channels,'Canali'); tabs.setCurrentIndex(0)
+        self.imu_page=ImuCalibrationPage(controller); tabs.addTab(self.imu_page,'Calibrazione IMU')
         self.attach_footer(box)
 
     def attach_footer(self,layout):
@@ -88,6 +90,7 @@ class ConfigurationPage(QWidget):
         box.addWidget(self.draft_text,1); box.addWidget(self.validate_button); box.addWidget(self.apply_button); box.addWidget(self.discard_button); layout.addWidget(self.draft_bar)
 
     def render(self,s):
+        self.imu_page.render(s)
         self.draft_bar.setVisible(s.dirty or s.staged)
         self.draft_text.setText('Bozza validata dalla scheda · non ancora applicata' if s.validated else 'Modifiche non applicate · bozza locale')
         self.validate_button.setEnabled(s.editable and s.dirty); self.apply_button.setEnabled(s.editable and s.dirty and s.validated)

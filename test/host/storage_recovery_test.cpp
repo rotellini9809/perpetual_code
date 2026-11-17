@@ -235,7 +235,7 @@ void run() {
   assert(responsive.initialize() && responsive.directory().corruptCount()==0);
 
   // A valid unsupported header version is not corruption and causes no writes.
-  auto unsupported=seed; auto *p=unsupported.bytes.data()+interrupted.start; p[4]=7;
+  auto unsupported=seed; auto *p=unsupported.bytes.data()+interrupted.start; p[4]=8;
   const auto configPages=(layout.configBytes+255)/256*256;
   const auto crc=binary::extendCrc(binary::extendCrc(binary::CrcInitial,p,252),p+512,configPages)^binary::CrcInitial;
   binary::put(p+252,crc,4); binary::put(p+256+4,crc,4); binary::put(p+256+8,~crc,4);

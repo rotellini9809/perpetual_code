@@ -15,7 +15,7 @@ below define the covered bytes; CRC alone does not establish extent ownership.
 
 | Region | Begin | End inclusive | Size |
 |---|---|---|---|
-| Accelerometer calibration, reserved only | 0x000000 | 0x000FFF | 4 KiB |
+| Accelerometer calibration and approval journal | 0x000000 | 0x000FFF | 4 KiB |
 | Configuration reservation (rules + mounting) | 0x001000 | 0x004FFF | 16 KiB |
 | Directory A | 0x005000 | 0x00CFFF | 32 KiB |
 | Directory B | 0x00D000 | 0x014FFF | 32 KiB |
@@ -28,11 +28,31 @@ same map before mount. Directory operations erase/program only the two directory
 allocation must be contiguous and end at or before DataEnd. Overlap checks use linear intervals;
 older wrapped metadata is rejected without writes.
 
-The calibration reservation is for three sensor-axis accelerometer biases (m/s^2), defaulting
-to zero when no calibration is available. No record format or reader/writer is implemented yet;
-the future interface will supply calibration. The current gyro bias lives in arming-session RAM; a historical copy is saved in each
-flight header and is not reused for another arming. Mounting uses an explicitly saved signed axis selector; see
-[navigation](NAVIGATION.md#calibration-and-mounting) for its separate device-setting policy.
+## Device IMU calibration journal v1
+
+The dedicated 0x000000 sector contains sixteen append-only 256-byte records. Each
+record stores magic 0x554D4950 at 0 (u32), version 1 at 4 (u8), approval at 5 (u8:
+0 required, 1 verified, 2 in-use), calibration revision at 8 (nonzero u32), XYZ bias
+at 12 (three float32, m/s^2), XYZ scale at 24 (three float32), and CRC32 of bytes
+0..251 at 252. Other bytes remain FF. Every approval record carries the complete
+coefficient set and revision, binding approval to that calibration.
+
+Load is read-only. The last complete record supplies coefficients; a trailing torn
+record revokes approval rather than falling back to an earlier verified record.
+An in-use record loaded after reboot always requires a new verification. Invalid
+coefficients, unsupported records, erased memory and read failures cannot approve arm.
+An explicit later verification can append a new complete approval after a torn write.
+
+Before physical arming, the controller programs/readback-verifies in-use while idle.
+At physical Boost it consumes the RAM reservation without accessing calibration flash.
+Disarm before Boost restores verified after recording finalization. Simulations never
+reserve or consume approval. Full-journal compaction and new calibration erase this
+sector only while idle; interrupted erase/replacement may require recalibration.
+No automatic boot formatting or replacement coefficients are installed.
+
+Gyro bias and initial attitude remain per-arming RAM values. Their historical copies,
+accelerometer bias/scale and calibration revision are frozen in the flight header.
+Mounting is a separate saved signed axis; see [navigation](NAVIGATION.md#calibration-and-mounting).
 
 ## Configuration package
 
@@ -120,7 +140,7 @@ are nonzero uint64 values; exhaustion fails without wrapping. Each bank has 64 s
 is 48 retained flights.
 The RAM ordering of entries is not their stable identity. See [transactions](STORAGE.md#directory-transactions).
 
-## Recording header v6
+## Recording header v7
 
 `plan(config, limits, layout)` validates the complete plan and computes layout without flash
 access. It reserves exactly one slot per assigned output, ordered by rule order and assignment
@@ -153,7 +173,7 @@ Descriptor fields:
 | Offset | Width | Meaning |
 |---|---|---|
 | 0 | 4 | Magic 0x52444850 |
-| 4 | 2 | Header version 6 |
+| 4 | 2 | Header version 7 |
 | 6 | 2 | Descriptor bytes 256 |
 | 8 | 4 | Total header reservation bytes |
 | 12 | 4 | Configuration offset 512 |
@@ -170,7 +190,7 @@ Descriptor fields:
 | 40 | 4 | Sample-data offset, equal to header reservation bytes |
 | 44 | 4 | Summary offset, exactly after output slots |
 | 64 | count x 8 | Output mappings: uint32 rule, uint8 kind, uint8 channel, FF x 2 |
-| 160 | 45 | Per-flight calibration and state-machine snapshot; [fields below](#per-flight-calibration-snapshot-header-v6) |
+| 160 | 64 | Per-flight calibration and state-machine snapshot; [fields below](#per-flight-calibration-snapshot-header-v7) |
 | 252 | 4 | Immutable CRC |
 
 Unspecified bytes are FF. Output kind is 0 pyro or 1 servo; channels are one-based. The
@@ -182,7 +202,7 @@ page is programmed once between erases. Creation is acknowledged only after deco
 normal read path.
 
 The header omits a flight ID, firmware ID, launch pressure, ranges and nominal rate. The
-sequence remains directory/block bookkeeping. The airbrake law version is frozen separately. Current header v6 always reserves the final
+sequence remains directory/block bookkeeping. The airbrake law version is frozen separately. Current header v7 always reserves the final
 summary; v1/v2/unknown headers are rejected without migration. Layout equations are:
 
 ```text
@@ -231,7 +251,7 @@ values at offsets 4..59 in the listed order, phase uint8 at 60, battery uint16 m
 unavailable; zero means a measured 0 V. Offsets 64..71 contain four u16 commanded openings (0..10000 = 0..100%; FFFF = unassigned).
 Offsets 72..73 contain u16 control flags, 74 the failed-condition bitmask and 75 the servo
 channel mask. [Airbrakes](AIRBRAKES.md#logging) defines flags and transition interpretation.
-Block version 3 and recording-header version 6 are required; old recordings are rejected, not migrated.
+Block version 3 and recording-header version 7 are required; old recordings are rejected, not migrated.
 Timestamp zero is valid; accepted timestamps strictly increase without uint32 rollover.
 Phase mapping is 0 PAD, 1 BOOST/BOOST 1, 2 COAST/COAST 1, 3 DESCENT, 4 LANDED,
 5 BOOST 2, 6 COAST 2, 7 ABORT. The frozen machine setting disambiguates stage-one labels.
@@ -327,7 +347,7 @@ unclosed directory entry does not turn that entry into Completed after a restart
 
 ## Compatibility
 
-Component versions are independent: configuration codec is v3 and recording header is v6;
+Component versions are independent: configuration codec is v3 and recording header is v7;
 sample blocks are v3; directory/start/summary remain v1. Only configuration codec v3 is read and written;
 older packages and snapshots are rejected. There is no conversion or legacy decoder.
 No automatic erase or migration writes occur at boot. `flights info` reports `config_version:3`
@@ -337,9 +357,9 @@ StoppedFull=4, Invalidated=5, Corrupt=6. Firmware that only accepts 1..5 cannot 
 containing Corrupt and must not autoformat it. The frozen whole-image FNV64 regression value is
 `0x5af89f6fd720024f` (current fixture uses zero channel delays).
 
-## Per-flight calibration snapshot (header v6)
+## Per-flight calibration snapshot (header v7)
 
-Descriptor bytes 160..204 store the immutable startup calibration, covered by the same
+Descriptor bytes 160..223 store the immutable startup calibration, covered by the same
 CRC and commit as the configuration snapshot. Old header versions are unsupported;
 use explicit `flights format` to start with the new format. The rule codec is v3.
 
@@ -356,6 +376,9 @@ use explicit `flights format` to start with the new format. The rule codec is v3
 | 196 | 4 | Minimum COAST 1 velocity, float32 m/s |
 | 200 | 4 | Compiled airbrake law version, u32 |
 | 204 | 1 | Airbrakes enabled at startup, strictly 0/1 |
+| 205 | 3 | Reserved FF |
+| 208 | 12 | XYZ accelerometer scales, float32; FF for BODY input |
+| 220 | 4 | Device accelerometer calibration revision, u32; FF for BODY input |
 
 Unavailable snapshots use flags 0 and FF in all remaining snapshot bytes. When input is
 already calibrated BODY data, axis and bias fields remain FF and export as null, rather

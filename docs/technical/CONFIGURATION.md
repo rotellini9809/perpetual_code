@@ -236,6 +236,30 @@ outside the phone subset always reply in JSON, including when manually typed wit
 
 ## Device orientation and factory reset
 
+The IMU procedure is independent of rule drafts and mounting. Use `imu begin`, then
+`imu capture +X`, `-X`, `+Y`, `-Y`, `+Z`, `-Z` (one command per position). The named
+sensor axis points upward. `imu status` exposes progress, completed-face mask, errors,
+bias/scale, revision and saved approval. `imu cancel` discards the unfinished RAM
+procedure. All six accepted faces commit a new calibration marked as requiring verification.
+
+`imu verify` starts independent corrected measurements in +X and +Y, each explicitly
+captured again. Both accepted windows save approval for the current revision. Each window
+requires at least 240 fresh samples and two continuous seconds. Preliminary limits are:
+raw magnitude within 2 m/s² of gravity for calibration, corrected magnitude within
+0.35 m/s² for verification, raw gyro norm below 0.1 rad/s, expected-axis component
+above 0.94 g, transverse components below 0.15 g and per-axis standard deviation no
+greater than 0.12 m/s². Fit residuals must not exceed 0.4 m/s²; bias is limited to
+±2 m/s² and scale to 0.8..1.2. Motion/invalid data or gaps over 100 ms restart the
+window; repeated/backward samples do not count. These are development thresholds
+requiring qualification on the physical board. A procedure times out after 180 seconds
+without a new capture request.
+
+The firmware owns acceptance, persistence and physical-arm blockers
+`IMU_CALIBRATION_MISSING` / `IMU_VERIFICATION_REQUIRED`. Physical Boost consumes
+approval; a no-launch disarm preserves it. Simulations preserve it. Reboot during
+an arm attempt conservatively requires another verification. The five-second gyro,
+gravity and barometer acquisition still runs at every physical arming.
+
 These commands operate on device settings separately from a rule draft:
 
 | Command | Behavior |

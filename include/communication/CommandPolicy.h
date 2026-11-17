@@ -15,8 +15,9 @@ inline CommandPolicy classifyCommand(const char *command, const Tokens &t) {
   const bool flights=!strcmp(command,"flights");
   const bool arm=!strcmp(command,"arm");
   const bool disarm=!strcmp(command,"disarm") || !strcmp(command,"ds");
+  const bool imu=!strcmp(command,"imu");
   if (config || !strcmp(command,"rule") || !strcmp(command,"condition") || !strcmp(command,"output") ||
-      !strcmp(command,"airbrake") || !strcmp(command,"pyro") || !strcmp(command,"servo")) p.group=CommandGroup::Configuration;
+      !strcmp(command,"airbrake") || !strcmp(command,"pyro") || !strcmp(command,"servo") || imu) p.group=CommandGroup::Configuration;
   else if (flights) p.group=CommandGroup::Flights;
   else if (!strcmp(command,"sim")) p.group=CommandGroup::Simulation;
   else if (!strcmp(command,"hil")) p.group=CommandGroup::Hil;
@@ -27,7 +28,7 @@ inline CommandPolicy classifyCommand(const char *command, const Tokens &t) {
   const bool run=p.group==CommandGroup::Simulation || p.group==CommandGroup::Hil || p.group==CommandGroup::Replay;
   const bool deviceSetting=config && (t.is(0,"orientation") || t.is(0,"machine") || t.is(0,"airbrakes"));
   if (configuration)
-    p.readOnly=(!strcmp(command,"airbrake") && t.is(0,"status")) || t.is(0,"show") || t.is(0,"list") || (config && t.is(0,"draft")) ||
+    p.readOnly=(imu && t.is(0,"status")) || (!strcmp(command,"airbrake") && t.is(0,"status")) || t.is(0,"show") || t.is(0,"list") || (config && t.is(0,"draft")) ||
                (deviceSetting && t.count==1) || (!strcmp(command,"pyro") && t.is(0,"continuity"));
   else if (run) p.readOnly=t.is(0,"status") || t.is(0,"events") || t.is(0,"timing");
   else if (flights)
@@ -35,6 +36,7 @@ inline CommandPolicy classifyCommand(const char *command, const Tokens &t) {
   else if (arm || disarm || p.group==CommandGroup::Power) p.readOnly=false;
   p.mutation=!p.readOnly;
   p.operational=(configuration && !(!strcmp(command,"airbrake") && t.is(0,"status"))) || flights || (run && !p.readOnly) || !strcmp(command,"sensors") || !strcmp(command,"preflight") || arm || disarm;
+  if (imu) p.operational=!p.readOnly;
   p.maintenance=(config && t.is(0,"reset")) || (deviceSetting && t.count>1) || (flights && t.is(0,"format"));
   p.beginRun=arm || (run && t.is(0,"begin"));
   return p;

@@ -1,0 +1,34 @@
+#pragma once
+#include "storage/ImuCalibrationStore.h"
+
+namespace flight {
+// One explicit stationary acquisition at a time; no barometer dependency.
+class ImuCalibration {
+public:
+  static constexpr unsigned TargetSamples=240;
+  void begin(bool verification, const storage::ImuCalibrationRecord &record);
+  bool capture(unsigned face);
+  void cancel() { active_=collecting_=false; }
+  void add(const sensors::Reading &r);
+  bool active() const { return active_; }
+  bool collecting() const { return collecting_; }
+  bool complete() const { return verification_ ? (mask_ & 5)==5 : mask_==63; }
+  bool verification() const { return verification_; }
+  unsigned mask() const { return mask_; }
+  unsigned face() const { return face_; }
+  unsigned samples() const { return samples_; }
+  const char *error() const { return error_; }
+  float norm() const { return norm_; }
+  float noise() const { return noise_; }
+  bool result(storage::ImuCalibrationRecord &record) const;
+private:
+  void resetWindow();
+  bool active_=false,collecting_=false,verification_=false,have_=false;
+  unsigned mask_=0,face_=0,samples_=0;
+  uint64_t lastTime_=0,lastSequence_=0,startTime_=0;
+  double sum_[3]={},square_[3]={};
+  float means_[6][3]={},norm_=0,noise_=0;
+  storage::ImuCalibrationRecord record_;
+  const char *error_="None";
+};
+}

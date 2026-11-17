@@ -15,7 +15,7 @@ using binary::extendCrc;
 using binary::CrcInitial;
 constexpr uint32_t Magic = 0x52444850, HeaderCommit = 0x43444850, StartMagic = 0x54534850, StartCommit = 0x43534850;
 constexpr uint32_t ConfigOffset = 512, Page = FlashLayout::PageBytes;
-constexpr uint16_t HeaderVersion = 6, StartVersion = 1;
+constexpr uint16_t HeaderVersion = 7, StartVersion = 1;
 static_assert(recovery::MaxAssignments >= 2 * recovery::ChannelCount, "Header must hold every physical output");
 static_assert(64 + recovery::MaxAssignments * 8 <= 252, "Mapping table exceeds descriptor page");
 constexpr uint32_t CalibrationOffset=160, CalibrationEnd=192;
@@ -28,7 +28,8 @@ bool validCalibration(const FlightCalibration &c) {
   if (!std::isfinite(c.referenceAltitude) || (c.gyroCalibrated && !c.sensorAxes)) return false;
   if (c.sensorAxes) {
     if (c.upAxis>=6) return false;
-    for (unsigned i=0;i<3;++i) if (!std::isfinite(c.gyroBias[i]) || !std::isfinite(c.accelBias[i])) return false;
+    for (unsigned i=0;i<3;++i) if (!std::isfinite(c.gyroBias[i]) || !std::isfinite(c.accelBias[i]) ||
+        !std::isfinite(c.accelScale[i]) || c.accelScale[i]<=0) return false;
   }
   return true;
 }
@@ -117,6 +118,8 @@ bool FlightHeaderStore::create(uint32_t address, const recovery::Configuration &
     putFloat(page_+164,calibration.referenceAltitude);
     if (calibration.sensorAxes) {
       page_[161]=calibration.upAxis;
+      for (unsigned i=0;i<3;++i) putFloat(page_+208+4*i,calibration.accelScale[i]);
+      put(page_+220,calibration.accelCalibrationRevision,4);
       for (unsigned i=0;i<3;++i) { putFloat(page_+168+4*i,calibration.gyroBias[i]); putFloat(page_+180+4*i,calibration.accelBias[i]); }
     }
   }
@@ -163,7 +166,8 @@ bool FlightHeaderStore::load(uint32_t address) {
     auto &c=header_.calibration; const auto flags=page_[160];
     if (flags!=0 && flags!=1 && flags!=3 && flags!=7) return fail(HeaderError::Corrupt);
     c.available=flags&1; c.sensorAxes=flags&2; c.gyroCalibrated=flags&4;
-    if (!erased(page_+205,47) || !erased(page_+193,3) || !erased(page_+162,2)) return fail(HeaderError::Corrupt);
+    if (!erased(page_+205,3) || !erased(page_+224,28) || !erased(page_+193,3) || !erased(page_+162,2)) return fail(HeaderError::Corrupt);
+    if (!c.sensorAxes && !erased(page_+208,16)) return fail(HeaderError::Corrupt);
     if (!c.available) { if (!erased(page_+161,CalibrationEnd-161) || !erased(page_+192,13)) return fail(HeaderError::Corrupt); }
     else {
       if (page_[192]>1) return fail(HeaderError::Corrupt);
@@ -173,6 +177,8 @@ bool FlightHeaderStore::load(uint32_t address) {
       c.referenceAltitude=getFloat(page_+164);
       if (c.sensorAxes) {
         c.upAxis=page_[161];
+        for (unsigned i=0;i<3;++i) c.accelScale[i]=getFloat(page_+208+4*i);
+        c.accelCalibrationRevision=get32(page_+220,4);
         for (unsigned i=0;i<3;++i) { c.gyroBias[i]=getFloat(page_+168+4*i); c.accelBias[i]=getFloat(page_+180+4*i); }
       } else if (page_[161]!=255 || !erased(page_+168,24)) return fail(HeaderError::Corrupt);
     }

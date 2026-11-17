@@ -22,7 +22,7 @@ bool ArmingCalibration::add(const sensors::Reading &r) {
   if (haveBaro_ && (r.baroSequence < lastBaroSequence_ || (r.baroSequence > lastBaroSequence_ && r.baroTimeUs <= lastBaroTime_))) valid = false;
   float a2 = 0, g2 = 0;
   for (unsigned i = 0; i < 3; ++i) {
-    const float a = r.accelMps2[i] - device_.accelBias[i];
+    const float a = (r.accelMps2[i] - device_.accelBias[i])*device_.accelScale[i];
     valid = valid && std::isfinite(a) && std::isfinite(r.gyroRadps[i]);
     a2 += a*a; g2 += r.gyroRadps[i]*r.gyroRadps[i];
   }
@@ -39,7 +39,7 @@ bool ArmingCalibration::add(const sensors::Reading &r) {
   acceptedTime_ = r.timeUs;
   for (unsigned i = 0; i < 3; ++i) {
     gyroSum_[i] += r.gyroRadps[i];
-    accelSum_[i] += r.accelMps2[i]-device_.accelBias[i];
+    accelSum_[i] += (r.accelMps2[i]-device_.accelBias[i])*device_.accelScale[i];
   }
   // Opposing directions must not average to a fictitious stationary gravity.
   if (samples_+1==TargetSamples) {

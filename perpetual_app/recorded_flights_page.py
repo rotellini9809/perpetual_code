@@ -61,10 +61,9 @@ class RecordedFlightsPage(QWidget):
         body.addWidget(self.flight_rates); box.addWidget(frame)
         frame,body=card('Orientamento Euler')
         self.flight_orientation=FlightPlot([(4,'Roll','°','#3c70b8',0),(5,'Pitch','°','#1d8b7e',0),(6,'Yaw','°','#a36db1',0)],angular=True)
-        self.flight_orientation.setToolTip('Euler ZYX in un riferimento con +X verticale. Zero: muso +X verso l’alto con orientamento trasversale di riferimento. Non è un azzeramento sul primo campione.')
         self.flight_rates.setToolTip('Componenti del giroscopio attorno agli assi BODY X/Y/Z, convertite da rad/s a °/s. Non sono le derivate degli angoli Euler.')
         body.addWidget(self.flight_orientation)
-        orientation_note=label('Angoli Euler ZYX convertiti nel riferimento con +X verso l’alto. Lo zero corrisponde al muso verticale con orientamento trasversale di riferimento.','hint')
+        orientation_note=label('Angoli Euler ZYX espressi nel riferimento con +X verso l’alto. Lo zero indica il razzo con la punta verso l’alto e una rotazione di riferimento attorno al proprio asse.','hint')
         orientation_note.setWordWrap(True); orientation_note.setStyleSheet('color: #929da8; font-size: 12px;')
         body.addWidget(orientation_note); box.addWidget(frame)
         frame,body=card('Tensione batteria')
@@ -162,6 +161,8 @@ class RecordedFlightsPage(QWidget):
             ('Bias giroscopio',gyro,'Correzioni X/Y/Z negli assi del sensore, usate in questa registrazione.'),
             ('Riferimento barometrico',f'{reference:.3f} m' if reference is not None else 'Non disponibile','Quota barometrica di riferimento sottratta per ottenere la quota relativa del volo.'),
             ('Bias accelerometro',biases('accel_bias_mps2','m/s'+chr(178)),'Correzioni X/Y/Z applicate negli assi del sensore. Zero significa nessuna correzione; non certifica una calibrazione eseguita.'),
+            ('Scala accelerometro',biases('accel_scale',''),'Fattori moltiplicativi applicati dopo aver sottratto il bias.'),
+            ('Calibrazione IMU',str(calibration.get('accel_calibration_revision') or 'Non disponibile'),'Revisione dei coefficienti salvata con questo volo.'),
             ('Orientamento scheda',calibration.get('up_axis') or ('Non applicato (dati simulati)' if calibration else 'Non disponibile'),'Asse del sensore rivolto verso la punta, salvato con questo volo.'),
             ('Modalit'+chr(224),mode,'Sorgente dei sensori e modalit'+chr(224)+' delle uscite usate nel volo registrato.')]:
             item=QTreeWidgetItem(self.flight_details,[key,value]); item.setToolTip(0,hint); item.setToolTip(1,hint)

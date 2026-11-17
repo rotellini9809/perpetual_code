@@ -105,9 +105,9 @@ class SettingsPage(QWidget):
             if saved.get('supported') is False: text='Aggiorna il firmware per abilitare gli aerofreni.'
             elif not saved.get('ready',True): text='Impostazione non valida: salvala nuovamente.'
             elif 'enabled' in saved:
-                text='Salvati sulla scheda: '+('abilitati' if saved['enabled'] else 'disabilitati')
-                if changed: text+=' · Modifica non salvata: premi Salva.'
+                text='Modifica non salvata: premi Salva.' if changed else ''
         self.airbrakes_saved.setText(text)
+        self.airbrakes_saved.setVisible(bool(text))
 
     def _render_machine(self,s):
         machine=s.machine if s.connected else {}

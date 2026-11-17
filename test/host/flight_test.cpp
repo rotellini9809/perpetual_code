@@ -243,6 +243,9 @@ void run() {
   sensors::HardwareSensorSource hardware(device,clockUs); assert(!hardware.begin());
   FakeOutputs gpio; gpio.connected=0; flight::OutputExecutor outputs(gpio,clockUs);
   flight::ArmingController physical(config,run,clockUs,&recorder,&outputs);
+  Nor imuFlash; storage::ImuCalibrationStore imuStore(imuFlash);
+  storage::ImuCalibrationRecord imuRecord; imuRecord.revision=1; imuRecord.bias[0]=.25f; imuRecord.approval=storage::ImuApproval::Verified;
+  assert(imuStore.save(imuRecord)); physical.setImuCalibrationStore(imuStore);
   Checks checks; checks.readiness.baroReady=true;
   simulation::HilSession hilSession(config,run,clockUs); SensorHilCommands hil(hilSession);
   simulation::SimulationSession sim(config,run,clockUs,&recorder,&outputs); SimulationCommands simulation(sim);
@@ -551,6 +554,9 @@ void run() {
   FakeSensorDevice device; sensors::HardwareSensorSource hardware(device,clockUs); assert(hardware.begin());
   Checks checks; checks.healthy();
   flight::ArmingController live(config,run,clockUs,&queued,&outputs);
+  Nor imuFlash; storage::ImuCalibrationStore imuStore(imuFlash);
+  storage::ImuCalibrationRecord imuRecord; imuRecord.revision=1; imuRecord.bias[0]=.25f; imuRecord.approval=storage::ImuApproval::Verified;
+  assert(imuStore.save(imuRecord)); live.setImuCalibrationStore(imuStore);
   assert(live.preflight(flight::FlightMode::Physical,true,&checks).has(flight::ArmBlocker::ServosNotPrepared));
   assert(!live.prepareServos());
   navigation::SensorCalibration calibration; calibration.accelBias[0]=.25f;
@@ -610,7 +616,9 @@ void run() {
 }
 
 #include "airbrakes_cases.h"
+#include "imu_calibration_cases.h"
 int main() {
+  test_imu_calibration::run();
   test_airbrakes::run();
   std::puts("  run_controller"); std::fflush(stdout);
   test_run_controller::run();

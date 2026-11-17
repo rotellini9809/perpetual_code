@@ -196,6 +196,7 @@ void calibrationRoundtrip() {
   HeaderFlash flash; FlightHeaderStore header(flash);
   FlightCalibration c; c.available=c.sensorAxes=c.gyroCalibrated=true; c.upAxis=5;
   c.referenceAltitude=123.25f; c.airbrakeLawVersion=37;
+  c.accelScale[0]=1.03125f; c.accelScale[2]=.96875f; c.accelCalibrationRevision=123;
   for (unsigned i=0;i<3;++i) { c.gyroBias[i]=(int(i)-1)*.03125f; c.accelBias[i]=(int(i)-1)*.25f; }
   auto invalid=c; invalid.gyroBias[0]=std::numeric_limits<float>::infinity();
   assert(!header.create(0x15000,fixture(),limits,SensorMode::Hardware,OutputMode::Physical,sensors::FrameConvention::SensorAxes,invalid) && !flash.writes);
@@ -204,11 +205,12 @@ void calibrationRoundtrip() {
   FlightHeaderStore reboot(flash); assert(reboot.load(0x15000));
   const auto &saved=reboot.view()->calibration;
   assert(saved.airbrakeLawVersion==37);
+  assert(saved.accelScale[0]==1.03125f && saved.accelScale[2]==.96875f && saved.accelCalibrationRevision==123);
   assert(saved.available && saved.sensorAxes && saved.gyroCalibrated && saved.upAxis==5);
   assert(saved.referenceAltitude==123.25f && saved.gyroBias[0]==-.03125f && saved.accelBias[2]==.25f);
-  for (unsigned offset:{160u,161u,162u,164u,168u}) {
+  for (unsigned offset:{160u,161u,162u,164u,168u,208u}) {
     auto damaged=flash; auto *p=damaged.bytes.data()+0x15000;
-    if (offset==164 || offset==168) binary::put(p+offset,0x7f800000,4);
+    if (offset==164 || offset==168 || offset==208) binary::put(p+offset,0x7f800000,4);
     else p[offset]=offset==161 ? 6 : 255;
     if (offset==162) p[offset]=0;
     const auto length=(reboot.view()->layout.configBytes+255)/256*256;
@@ -245,7 +247,7 @@ void run() {
   assert(header.view()->starts[1].kind == recovery::OutputKind::Servo && header.view()->starts[2].rule == 20);
   const auto initial = flash; const auto writes = flash.writes, reads = flash.reads;
   // A valid CRC/commit cannot enable an old or unknown header format.
-  for (unsigned field : {4u, 20u}) for (unsigned version : {1u, 2u, 3u, 4u, 5u, 7u}) {
+  for (unsigned field : {4u, 20u}) for (unsigned version : {1u, 2u, 3u, 4u, 5u, 6u, 8u}) {
     auto wrong = initial; auto *descriptor = wrong.bytes.data() + 0x15000;
     if (field==20 && version==3) continue;
     storage::binary::put(descriptor + field, version, 2);

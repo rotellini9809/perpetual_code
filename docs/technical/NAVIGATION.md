@@ -88,6 +88,13 @@ after the phase step; tilt and phase-ABORT decisions precede rule/output evaluat
 
 ## Calibration and mounting
 
+Accelerometer correction is `(raw - bias) * scale` per SENSOR axis, before mounting
+rotation. `flight::ImuCalibration` fits bias and scale from six stationary faces;
+the separate +X/+Y verification approves that revision. The same correction is used
+in verification, arming attitude initialization and flight processing. See
+[configuration procedure](CONFIGURATION.md#device-orientation-and-factory-reset) and
+[persistent journal](STORAGE_FORMAT.md#device-imu-calibration-journal-v1).
+
 Gyro bias must be measured before launch during each arming session, following Recovery System's
 stationary-sample approach. Keep its three values in RAM for that session only; recompute them on
 the next arming rather than loading them from flash. `ArmingCalibration` now implements this
@@ -101,7 +108,7 @@ window are skipped. Launch reference is the mean of fresh pressure-altitude acqu
 counted independently rather than weighting repeated barometer values as fresh samples.
 
 The same 500 accepted IMU samples also average accelerometer specific force after subtracting
-the device acceleration bias in SENSOR coordinates. The shared SENSOR-to-BODY mounting
+the saved device acceleration bias and applying per-axis scale in SENSOR coordinates. The shared SENSOR-to-BODY mounting
 transform is then applied once. `AttitudeEstimator::fromGravity` constructs a normalized
 BODY-to-NAV quaternion that maps this upward vector to NAV +Z. For an upright BODY +X,
 the initial rotation is Ry(-90 degrees): vertical projection is correct from the first flight
@@ -121,7 +128,7 @@ is no automatic calibration timeout: progress remains visible and `disarm` cance
 An averaged acceleration magnitude below 8.80665 m/s^2 restarts the window as well, rejecting
 strongly cancelling gravity directions. Raw calibration samples and the initial quaternion are
 not persisted. The resulting biases, reference and mounting are frozen into each physical
-flight header; see [the snapshot format](STORAGE_FORMAT.md#per-flight-calibration-snapshot-header-v4).
+flight header; see [the snapshot format](STORAGE_FORMAT.md#per-flight-calibration-snapshot-header-v7).
 The recorded gyro bias is never reused for the next arming session.
 
 A separate pre-arm tilt-consistency/convergence gate is not implemented yet. Its future policy
@@ -131,18 +138,17 @@ The earlier proposed strict one-second immobility thresholds are not adopted; th
 averaging windows need qualification with the repaired IMU. Initializing from mean gravity
 does not replace that future motion-consistency policy.
 
-Persistent accelerometer calibration will contain only three additive biases in sensor-axis
-coordinates, in m/s^2. Missing calibration uses (0,0,0) and must not by itself prevent flight.
-There are no user-calibrated scale factors or cross-axis matrices. The 4 KiB sector at
-0x000000..0x000FFF remains reserved and untouched: its record format, loading/writing and the
-interface-driven calibration procedure are deferred until the user interface is defined.
+Persistent accelerometer calibration contains additive biases and per-axis scales in
+sensor coordinates; it does not fit a cross-axis matrix. The dedicated 4 KiB sector at
+0x000000..0x000FFF stores coefficients and their paired approval. Missing calibration
+or required verification blocks physical arm, while simulation remains independent.
 Gravity is part of specific force, not an accelerometer bias to remove while stationary.
 
 `SensorCalibration` is the RAM snapshot passed to `SensorPipeline::begin()`. Its `configured`
-flag means arming gyro bias is ready, independently of whether accelerometer calibration exists.
-Accelerometer biases default to zero. For raw input, both bias vectors must be finite and are
-subtracted before mounting transformation. The snapshot is copied at begin and cleared at end.
-Missing accelerometer calibration therefore needs no special pipeline mode.
+flag means arming gyro bias and initial attitude are ready. The physical controller
+injects saved accelerometer bias, scale and revision after checking approval. The
+snapshot is copied at begin and cleared at end. Gyro subtraction and accelerometer
+bias/scale correction precede mounting transformation.
 
 Mounting is one `upAxis` field identifying the signed sensor axis pointing toward the nose
 (up on an upright launch pad). The orientation must be explicitly saved before physical arming; the six options fix the following
@@ -182,8 +188,8 @@ Hoppino replay source. See [architecture](ARCHITECTURE.md) and [simulation](../t
 `HardwareSensorSource` now adapts fresh driver readings to the same runtime. MAIN uses it for
 idle diagnostics and real physical arming/flight. The current board's IMU solder fault still
 blocks physical readiness. Physical output integration exists and opt-in physical simulation
-uses it; repaired-sensor acquisition qualification and persistent accelerometer storage remain
-future work.
+uses it. Persistent accelerometer storage is implemented; repaired-sensor acquisition
+and numerical-threshold qualification remain hardware work.
 
 ## Verification
 

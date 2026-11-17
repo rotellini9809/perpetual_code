@@ -11,7 +11,8 @@ constexpr int8_t MountingAxes[6][3] = {
 bool validCalibration(const SensorCalibration &c) {
   if (!c.configured || static_cast<unsigned>(c.upAxis) >= 6) return false;
   for (unsigned i = 0; i < 3; ++i)
-    if (!std::isfinite(c.gyroBias[i]) || !std::isfinite(c.accelBias[i])) return false;
+    if (!std::isfinite(c.gyroBias[i]) || !std::isfinite(c.accelBias[i]) ||
+        !std::isfinite(c.accelScale[i]) || c.accelScale[i]<=0) return false;
   return true;
 }
 }
@@ -46,7 +47,7 @@ bool SensorPipeline::process(const sensors::Reading &input, NavigationOutput &ou
     if (convention_ == sensors::FrameConvention::LoggedCalibratedBody) {
       frame.accel[i] = input.accelMps2[i]; frame.gyro[i] = input.gyroRadps[i];
     } else {
-      accel[i]=input.accelMps2[i]-calibration_.accelBias[i];
+      accel[i]=(input.accelMps2[i]-calibration_.accelBias[i])*calibration_.accelScale[i];
       gyro[i]=input.gyroRadps[i]-calibration_.gyroBias[i];
     }
   }

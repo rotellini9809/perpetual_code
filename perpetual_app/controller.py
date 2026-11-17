@@ -15,6 +15,9 @@ from .connection import ConnectionSession
 from .flight_data import load_flight
 
 REASONS = {
+    'IMU_CALIBRATION_MISSING':'Calibrazione IMU assente',
+    'IMU_VERIFICATION_REQUIRED':'Calibrazione IMU da verificare',
+    'IMU_CALIBRATION_IO':'Salvataggio della calibrazione IMU non riuscito',
     'IMU_UNAVAILABLE':'IMU non disponibile', 'BAROMETER_UNAVAILABLE':'Barometro non disponibile',
     'STORAGE_NOT_READY':'Memoria di registrazione da preparare',
     'CONTINUITY_FAULT':'Continuità dei canali pyro da verificare', 'SERVOS_NOT_PREPARED':'Servo da preparare',
@@ -62,6 +65,7 @@ class AppState:
     sensors: dict = field(default_factory=dict)
     sensor_availability: dict = field(default_factory=dict) # Last awake observation; sleep is not a sensor fault.
     preflight: dict = field(default_factory=dict)
+    imu_calibration: dict = field(default_factory=dict)
     pyro_continuity: dict = field(default_factory=dict)
     orientation: dict = field(default_factory=dict)
     airbrakes: dict = field(default_factory=dict)
@@ -113,7 +117,7 @@ class AppState:
 
     @property
     def editable(self):
-        return self.connected and self.owns_control and not self.foreground and self.config_view=='applied' and self.status.get('arming_state')=='disarmed' and not self.status.get('estimate_replay_active')
+        return self.connected and self.owns_control and not self.foreground and not self.imu_calibration.get('active') and self.config_view=='applied' and self.status.get('arming_state')=='disarmed' and not self.status.get('estimate_replay_active')
 
     @property
     def owns_control(self): return self.control.get('owner','none') in ('none',self.connection.get('transport'))
@@ -136,7 +140,7 @@ class Controller(QObject):
         self._executor = ThreadPoolExecutor(max_workers=1,thread_name_prefix='Perpetual operations')
         self._epoch, self._serial = 0, 0
         self._jobs = {}
-        self._last_status = self._last_sim = self._last_sensors = self._last_airbrakes = 0
+        self._last_status = self._last_sim = self._last_sensors = self._last_airbrakes = self._last_imu = 0
         self._want_events = False
         self.page = 0
         self._sensor_stream = False
@@ -204,10 +208,11 @@ class Controller(QObject):
         self._epoch+=1; self.state.foreground=''; self.state.validated=False; self.state.staged=False
         self.state.flights=[]; self.state.flights_loaded=False # Board inventory belongs to this session; local CSV data is independent.
         self.state.sim_preflight={}
+        self.state.imu_calibration={}
         if self._download_cancel: self._download_cancel.set(); self._download_cancel=None
         if self.state.download.get('state') in ('downloading','cancelling'): self.state.download['state']='interrupted'
         if starting:
-            for key in ('status','preflight','pyro_continuity','sim','events','sensors','sensor_availability','orientation','machine','airbrakes','airbrake_status'): setattr(self.state,key,{})
+            for key in ('status','preflight','pyro_continuity','sim','events','sensors','sensor_availability','orientation','machine','airbrakes','airbrake_status','imu_calibration'): setattr(self.state,key,{})
 
     def _connection_update(self, snapshot, message, error):
         previous=self.state.connection.get('state')
@@ -225,6 +230,12 @@ class Controller(QObject):
         try: return dict(self.request(client,'config orientation'),supported=True)
         except CommandError as error:
             if error.code not in ('UNKNOWN_COMMAND','INVALID_ARGUMENT','NO_DRAFT'): raise
+            return dict(supported=False)
+
+    def _read_imu_calibration(self,client):
+        try: return dict(self.request(client,'imu status'),supported=True)
+        except CommandError as error:
+            if error.code!='UNKNOWN_COMMAND': raise
             return dict(supported=False)
 
     def _read_machine(self,client):
@@ -278,6 +289,7 @@ class Controller(QObject):
         client=self.connection
         def read():
             return dict(status=self.request(client,'status'),capabilities=self.request(client,'capabilities'),
+                        imu_calibration=self._read_imu_calibration(client),
                         control=self.request(client,'control status'),preflight=self.request(client,'preflight'),
                         sensors=self.request(client,'sensors'),configuration=self._read_config(client),sim=self.request(client,'sim status'),orientation=self._read_orientation(client),machine=self._read_machine(client),airbrakes=self._read_airbrakes(client),airbrake_status=self._read_airbrake_status(client))
         self._job('Sincronizzazione scheda',read)
@@ -324,6 +336,8 @@ class Controller(QObject):
             elif command.startswith('preflight') and response.get('requested_mode')!='simulation': data['preflight']=response
             elif command=='sensors': data['sensors']=response
             elif command=='airbrake status': data['airbrake_status']=response
+            elif command.startswith('imu '):
+                data.update(imu_calibration=dict(response,supported=True),preflight=self.request(client,'preflight'),status=self.request(client,'status'))
             elif command.startswith('config airbrakes'): data.update(airbrakes=self._read_airbrakes(client),airbrake_status=self._read_airbrake_status(client))
             elif command=='pyro continuity': data['pyro_continuity']=response
             elif command.startswith('sim '): data.update(sim=self.request(client,'sim status'),status=self.request(client,'status'))
@@ -463,7 +477,7 @@ class Controller(QObject):
                 percent=done*100//max(1,total)
                 if percent!=last_percent or now-last_update>=.5:
                     last_percent=percent; last_update=now; self._progress.emit(epoch,done,total,now-started)
-            download(client,sequence,destination,progress=progress,cancelled=cancel.is_set)
+            download(client,sequence,destination,progress=progress,cancelled=cancel.is_set,overwrite=True)
             result=dict(downloaded_path=str(destination))
             try: result['flight']=load_flight(destination)
             except ValueError as error: result['preview_error']='Download completato; anteprima non disponibile: '+str(error)
@@ -519,7 +533,7 @@ class Controller(QObject):
                 self.state.preflight={}; self.state.pyro_continuity={}
             if result.get('downloaded_path'):
                 self.state.download.update(state='completed',path=result['downloaded_path'])
-            for key in ('status','preflight','pyro_continuity','sensors','capabilities','control','events','flights','flight','orientation','machine'):
+            for key in ('status','preflight','pyro_continuity','sensors','capabilities','control','events','flights','flight','orientation','machine','imu_calibration'):
                 if key in result: setattr(self.state,key,result[key])
             if 'flights' in result: self.state.flights_loaded=True
             if result.get('preflight',{}).get('ready'): self.state.sim_preflight={}
@@ -578,12 +592,22 @@ class Controller(QObject):
             self._job('poll',lambda:dict(airbrake_status=self._read_airbrake_status(client)),False)
         elif now-self._last_status>=4:
             previous=self.state.status.get('power_mode')
+            previous_arming=self.state.status.get('arming_state')
             def poll_status():
                 status=client.request('status'); result=dict(status=status,control=client.request('control status'))
                 if previous=='sleeping' and status.get('power_mode')=='active':
                     result['preflight']=client.request('preflight'); result['sensors']=client.request('sensors')
+                elif previous_arming in ('armed','arming','closing') and status.get('arming_state')=='disarmed':
+                    result['preflight']=client.request('preflight')
                 return result
             self._last_status=now; self._job('poll',poll_status,False)
+        elif self.state.imu_calibration.get('supported') and (self.page==1 or self.state.imu_calibration.get('active')) and now-self._last_imu>=.75:
+            was_active=self.state.imu_calibration.get('active')
+            def poll_imu():
+                imu=self._read_imu_calibration(client); result=dict(imu_calibration=imu)
+                if was_active and not imu.get('active'): result['preflight']=client.request('preflight')
+                return result
+            self._last_imu=now; self._job('poll',poll_imu,False)
         elif self._sensor_stream and now-self._last_sensors>=sensor_interval:
             self._last_sensors=now; self._job('poll',lambda:dict(sensors=client.request('sensors')),False)
 

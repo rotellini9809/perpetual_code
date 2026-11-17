@@ -10,6 +10,7 @@ import math
 from pathlib import Path
 import struct
 import sys
+import tempfile
 import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -106,8 +107,21 @@ def sequence_text(sequence):
     return str(int(text))
 
 
-def download(client, sequence, destination, *, progress=None, cancelled=None):
+def download(client, sequence, destination, *, progress=None, cancelled=None, overwrite=False):
     """Export CSV/JSON; cancel between replies and remove only this export's partial files."""
+    if overwrite:
+        destination = Path(destination)
+        metadata_path = destination.with_suffix('.json')
+        if destination == metadata_path:
+            raise ValueError('CSV and metadata destinations overlap')
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix='.flight-download-', dir=destination.parent) as folder:
+            staged = Path(folder) / destination.name
+            result = download(client, sequence, staged, progress=progress, cancelled=cancelled)
+            if cancelled and cancelled(): raise CancelledError('Download annullato')
+            staged.with_suffix('.json').replace(metadata_path)
+            staged.replace(destination)
+            return result
     owned=[]
     try: return _download(client,sequence,destination,progress,cancelled,owned)
     except CancelledError:

@@ -6,10 +6,12 @@ namespace navigation {
 // Signed sensor axis pointing toward the nose (up when upright on the pad).
 enum class UpAxis : uint8_t { PositiveX, NegativeX, PositiveY, NegativeY, PositiveZ, NegativeZ };
 struct SensorCalibration {
-  bool configured = false; // Arming-session gyro bias ready; no saved accel calibration required.
+  bool configured = false; // Arming-session gyro bias and initial attitude ready.
   // Per-run snapshot. Gyro bias is measured anew at arming and remains RAM-only.
   float gyroBias[3] = {}; // Sensor coordinates, rad/s; never persisted.
   float accelBias[3] = {}; // Sensor coordinates, m/s^2; zero without saved device calibration.
+  float accelScale[3] = {1,1,1};
+  uint32_t accelCalibrationRevision = 0;
   UpAxis upAxis = UpAxis::PositiveX; // Other body axes follow a fixed right-handed convention.
   std::array<float,4> initialQuaternion{{1,0,0,0}}; // RAM-only BODY -> NAV, measured during physical arming.
 };

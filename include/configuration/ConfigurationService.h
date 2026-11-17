@@ -22,6 +22,10 @@ public:
     runLocked_ = true; return true;
   }
   void releaseRun() { runLocked_ = false; }
+  bool acquireDeviceOperation() {
+    if (runLocked_ || drafting_ || !disarmed_) return false;
+    runLocked_=true; return true;
+  }
   bool runLocked() const { return runLocked_; }
   const char *beginDraft();
   const char *discardDraft();

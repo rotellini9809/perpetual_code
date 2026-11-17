@@ -150,7 +150,7 @@ the next saved frame and recording end reason provide the available evidence.
 Opening is the post-clamp command/attempt, not proof of successful physical movement.
 
 The canonical byte offsets and versions are in [Storage format](STORAGE_FORMAT.md):
-configuration v3, header v6, samples v3 (76 bytes, nine samples per block), download
+configuration v3, header v7, samples v3 (76 bytes, nine samples per block), download
 `xor32-v2`. The Python downloader and app configuration backend understand/preserve
 these fields. Settings has an enable checkbox with the required compiled-law warning.
 Configuration/Rules edits the continuous gate; Channels reuses closed/open calibration.

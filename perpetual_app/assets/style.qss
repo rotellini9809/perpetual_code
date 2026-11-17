@@ -45,6 +45,10 @@ QPushButton#armFlight, QPushButton#releaseServo { color: white; background: #c43
 QPushButton#armFlight:hover, QPushButton#releaseServo:hover { background: #ad3030; border-color: #ad3030; }
 QPushButton#armFlight:pressed, QPushButton#releaseServo:pressed { background: #942828; border-color: #942828; }
 QPushButton#armFlight:disabled, QPushButton#releaseServo:disabled { color: #fff5f5; background: #dda3a3; border-color: #dda3a3; }
+QPushButton#armFlight[disarming="false"] { color: white; background: #218653; border-color: #218653; }
+QPushButton#armFlight[disarming="false"]:hover { background: #197044; border-color: #197044; }
+QPushButton#armFlight[disarming="false"]:pressed { background: #125c37; border-color: #125c37; }
+QPushButton#armFlight[disarming="false"]:disabled { color: #f2fff7; background: #a0c6b0; border-color: #a0c6b0; }
 QPushButton#danger { color: #ae4a45; border-color: #dfbfbc; }
 QPushButton#danger:disabled { color: #bfb0af; border-color: #e5dedd; }
 QPushButton#inlineLink { color: #167c76; background: transparent; border: 0; padding: 0; text-decoration: underline; }

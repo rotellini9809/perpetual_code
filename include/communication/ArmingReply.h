@@ -4,6 +4,7 @@
 
 namespace protocol {
 inline void appendPreflight(Json &json, const flight::Preflight &report) {
+  json.add(",\"imu_calibration_state\":\"%s\",\"imu_calibration_reason\":\"%s\"",report.imuCalibrationState,report.imuCalibrationReason);
   json.add(",\"ready\":%s,\"reasons\":[", report.ready() ? "true" : "false");
   bool comma=false;
   for (unsigned i=0;i<unsigned(flight::ArmBlocker::Count);++i) {

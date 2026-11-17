@@ -22,6 +22,29 @@ bool ArmingCommands::dispatch(const char *command, const char *arguments, bool h
   const bool arm = !std::strcmp(command, "arm"), preflight = !std::strcmp(command, "preflight");
   const bool disarm = !std::strcmp(command, "disarm") || !std::strcmp(command, "ds");
   protocol::Tokens t(arguments); protocol::Json data; const char *error = nullptr;
+  if (!std::strcmp(command,"imu")) {
+    if (!t.valid || !t.count) error="INVALID_ARGUMENT";
+    else if (t.is(0,"status") && t.count==1) {}
+    else if ((t.is(0,"begin") || t.is(0,"verify")) && t.count==1) {
+      if (!checks_.inspect().imuReady) error="IMU_UNAVAILABLE";
+      else error=physical_.beginImuCalibration(source_,t.is(0,"verify"));
+    } else if (t.is(0,"capture") && t.count==2) {
+      const char *faces[]={"+X","-X","+Y","-Y","+Z","-Z"}; unsigned face=6;
+      for (unsigned i=0;i<6;++i) if (t.is(1,faces[i])) face=i;
+      error=physical_.captureImuFace(face);
+    } else if (t.is(0,"cancel") && t.count==1) physical_.cancelImuCalibration();
+    else error="INVALID_ARGUMENT";
+    const auto &c=physical_.imuCalibration(); const auto *store=physical_.imuStore();
+    data.add(R"(,"imu_calibration_state":"%s","imu_calibration_reason":"%s","active":%s,"collecting":%s,"verification":%s,"face":%u,"face_mask":%u,"samples":%u,"target":%u,"last_error":"%s","window_error":"%s","norm_mps2":%.6g,"noise_mps2":%.6g,"revision":%lu)",
+      physical_.imuCalibrationState(),physical_.imuCalibrationReason(),c.active()?"true":"false",c.collecting()?"true":"false",
+      c.verification()?"true":"false",c.face(),c.mask(),c.samples(),flight::ImuCalibration::TargetSamples,physical_.imuError(),c.error(),
+      double(c.norm()),double(c.noise()),static_cast<unsigned long>(store && store->present()?store->record().revision:0));
+    if (store && store->present()) {
+      const auto &r=store->record();
+      data.add(R"(,"bias_mps2":[%.6g,%.6g,%.6g],"scale":[%.6g,%.6g,%.6g])",double(r.bias[0]),double(r.bias[1]),double(r.bias[2]),double(r.scale[0]),double(r.scale[1]),double(r.scale[2]));
+    }
+    return protocol::finish(command,data,error,hasId,id,out,capacity,true);
+  }
   const bool prepare=!std::strcmp(command,"servo") && t.is(0,"arm");
   const bool continuity=!std::strcmp(command,"pyro") && t.is(0,"continuity");
   if (!std::strcmp(command,"servo") && t.valid && t.count==1 && t.is(0,"release")) {

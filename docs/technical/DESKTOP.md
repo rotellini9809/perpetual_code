@@ -1,5 +1,13 @@
 # Shared USB/Bluetooth command service
 
+Configuration includes a **Calibrazione IMU** tab. It guides explicit six-face
+calibration and independent +X/+Y verification, shows firmware progress, coefficient
+revision, bias/scale, gravity magnitude and noise, and offers cancellation. Polling
+uses the existing serialized worker; Python never decides whether a window is valid.
+The Dashboard preflight table always includes the acknowledged calibration state
+when supplied by firmware; clicking that row opens this tab. Physical-flight completion
+refreshes preflight so a consumed approval cannot leave an enabled cached Arm button.
+
 MAIN exposes USB serial at 115200. Commands end with LF or CRLF; the monitor's send_on_enter
 filter sends a line on Enter. There are no unsolicited debug prints.
 
@@ -304,7 +312,7 @@ contains sequence, block, offset, first sample index, block_count, count, crc32,
 and data (strict Base64). At most 9 samples and 448 encoded bytes fit each reply;
 no larger serial buffers or unsolicited streaming are required. The old `read`
 command remains available for diagnostics. App and firmware must both be updated.
-The current format is sample v3/header v6; older flight memory needs an explicit
+The current format is sample v3/header v7; older flight memory needs an explicit
 `flights format`. See [Airbrakes](AIRBRAKES.md) for the coordinated format change.
 
 Payload encoding: start with nineteen zero 32-bit words for each reply. For each

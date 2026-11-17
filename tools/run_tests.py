@@ -15,7 +15,8 @@ CONFIG += ['src/storage/ConfigurationStore.cpp']
 NAVIGATION = ['src/navigation/' + name + '.cpp' for name in
               ('AttitudeEstimator', 'VerticalKalman', 'FlightDetector', 'Navigation')]
 SENSORS = [*NAVIGATION, 'src/navigation/SensorPipeline.cpp',
-           'src/hardware/HardwareSensorSource.cpp', 'src/flight/ArmingCalibration.cpp']
+           'src/hardware/HardwareSensorSource.cpp', 'src/flight/ArmingCalibration.cpp',
+           'src/flight/ImuCalibration.cpp', 'src/storage/ImuCalibrationStore.cpp']
 STORAGE = ['src/storage/' + name + '.cpp' for name in
            ('FlightDirectory', 'FlightHeaderStore', 'FlightSampleStore', 'FlightSummaryStore',
             'FlightRecorder', 'QueuedRecorder')]

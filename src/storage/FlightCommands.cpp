@@ -126,6 +126,10 @@ bool FlightCommands::dispatch(const char *command, const char *arguments, bool h
           if (!c.sensorAxes) data.add("null");
           else { const auto *values=vector ? c.accelBias : c.gyroBias; data.add("[%.9g,%.9g,%.9g]",double(values[0]),double(values[1]),double(values[2])); }
         }
+        data.add(",\"accel_scale\":");
+        if (c.sensorAxes) data.add("[%.9g,%.9g,%.9g]",double(c.accelScale[0]),double(c.accelScale[1]),double(c.accelScale[2]));
+        else data.add("null");
+        data.add(",\"accel_calibration_revision\":%lu",static_cast<unsigned long>(c.accelCalibrationRevision));
         data.add("}");
       }
       return finish();

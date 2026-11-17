@@ -11,6 +11,7 @@ public:
   bool dispatch(const char *, const char *, bool, uint32_t, char *, std::size_t) override;
   flight::RuntimeStatus status() const { return physical_.runtime().status(); }
   bool active() const { return physical_.active(); }
+  bool imuCalibrationActive() const { return physical_.imuCalibration().active(); }
   bool hasPreparedServos() const { return physical_.hasPreparedServos(); }
   bool hasServoPreview() const { return physical_.hasServoPreview(); }
   void releaseServoPreview() { physical_.releaseServoPreview(); }

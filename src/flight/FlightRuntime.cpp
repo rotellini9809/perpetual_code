@@ -38,7 +38,8 @@ const char *FlightRuntime::begin(sensors::SensorSource &source, float referenceA
     snapshot.gyroCalibrated=sensorMode==storage::SensorMode::Hardware && calibration.configured;
     snapshot.machine=machine_; snapshot.airbrakeLawVersion=control::AirbrakeLawVersion; snapshot.airbrakesEnabled=config_.airbrakesEnabled();
     snapshot.referenceAltitude=referenceAltitude; snapshot.upAxis=uint8_t(calibration.upAxis);
-    for (unsigned i=0;i<3;++i) { snapshot.gyroBias[i]=calibration.gyroBias[i]; snapshot.accelBias[i]=calibration.accelBias[i]; }
+    snapshot.accelCalibrationRevision=calibration.accelCalibrationRevision;
+    for (unsigned i=0;i<3;++i) { snapshot.gyroBias[i]=calibration.gyroBias[i]; snapshot.accelBias[i]=calibration.accelBias[i]; snapshot.accelScale[i]=calibration.accelScale[i]; }
     const bool prepared = recorder_->begin(*config_.applied(), config_.limits(), recordBytes, sensorMode,
                                            outputMode, source.convention(), snapshot);
     timing_.prepareUs = clock_ ? uint32_t(clock_() - start) : 0;

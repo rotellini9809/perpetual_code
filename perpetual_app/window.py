@@ -4,13 +4,14 @@ from PySide6.QtCore import Qt,QTimer,QSettings
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (QMainWindow,QWidget,QFrame,QVBoxLayout,QHBoxLayout,QGridLayout,QStackedWidget,
     QComboBox,QLineEdit,QScrollArea,
-    QPlainTextEdit,QCheckBox,QProgressBar,QMessageBox,QHeaderView,QInputDialog,QSizePolicy)
+    QPlainTextEdit,QCheckBox,QProgressBar,QMessageBox,QHeaderView,QInputDialog,QSizePolicy,QTableWidgetItem)
 from .controller import Controller,REASONS
 from .arm_button import ArmButton
 from .flight_data import phase_name
 from .configuration import rule_label
 from .airbrakes import control_text
 from .configuration_page import ConfigurationPage
+from .imu_calibration_page import STATES as IMU_STATES,CAUSES as IMU_CAUSES
 from .settings_page import SettingsPage
 from .sensor_details import SensorDetails
 from .recorded_flights_page import RecordedFlightsPage
@@ -112,6 +113,7 @@ class MainWindow(QMainWindow):
         heading=QVBoxLayout(); heading.setSpacing(6); heading.addWidget(self.readiness_title); heading.addWidget(self.config_issue_button,0,Qt.AlignLeft)
         controls=QHBoxLayout(); controls.addLayout(heading,1); controls.addWidget(self.preflight_button,0,Qt.AlignTop); body.addLayout(controls)
         self.readiness_table=table(['DA COMPLETARE']); self.readiness_table.horizontalHeader().hide()
+        self.readiness_table.cellClicked.connect(self.open_preflight_item)
         self.readiness_table.setSelectionMode(self.readiness_table.SelectionMode.NoSelection)
         self.readiness_table.setWordWrap(True); self.readiness_table.setTextElideMode(Qt.ElideNone)
         self.readiness_table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
@@ -151,6 +153,11 @@ class MainWindow(QMainWindow):
         if settings:
             target=self.settings_page.bistage_parameters if error=='STATE_MACHINE_INVALID' else self.settings_page.airbrakes_enabled
             self.pages.widget(4).ensureWidgetVisible(target)
+
+    def open_preflight_item(self,row,column):
+        item=self.readiness_table.item(row,0)
+        if item and item.data(Qt.ItemDataRole.UserRole)=='imu':
+            self.navigate(1); self.configuration_page.tabs.setCurrentWidget(self.configuration_page.imu_page)
 
     def toggle_arming(self):
         arming=self.controller.state.status.get('arming_state')
@@ -318,6 +325,7 @@ class MainWindow(QMainWindow):
         for badge,saved,key,ready in ((self.bistage_badge,s.machine,'bistage','machine_ready'),(self.airbrake_badge,s.airbrakes,'enabled','ready')):
             known=connected and saved.get(ready,False)
             active=bool(known and saved.get(key))
+            badge.setVisible(active)
             if badge.property('active')!=active:
                 badge.setProperty('active',active); badge.style().unpolish(badge); badge.style().polish(badge)
             description='Abilitato sulla scheda' if active else 'Disabilitato sulla scheda' if known else 'Impostazione non letta dalla scheda'
@@ -347,6 +355,21 @@ class MainWindow(QMainWindow):
         fill_table(self.readiness_table,rows)
         for i,reason in enumerate(reasons):
             self.readiness_table.item(i,0).setToolTip(reason)
+            if reason in ('IMU_CALIBRATION_MISSING','IMU_VERIFICATION_REQUIRED'):
+                self.readiness_table.item(i,0).setData(Qt.ItemDataRole.UserRole,'imu')
+        imu_state=s.preflight.get('imu_calibration_state') if connected else None
+        if imu_state:
+            # Keep the IMU state in the same preflight table, including successful approval.
+            text='Calibrazione IMU: '+IMU_STATES.get(imu_state,imu_state)
+            cause=IMU_CAUSES.get(s.preflight.get('imu_calibration_reason'),'')
+            if cause: text+=' · '+cause
+            text+=' · Apri calibrazione'
+            imu_row=next((i for i,r in enumerate(reasons) if r in ('IMU_CALIBRATION_MISSING','IMU_VERIFICATION_REQUIRED')),None)
+            if imu_row is None:
+                imu_row=self.readiness_table.rowCount(); self.readiness_table.insertRow(imu_row)
+                self.readiness_table.setItem(imu_row,0,QTableWidgetItem(text))
+            item=self.readiness_table.item(imu_row,0); item.setText(text); item.setData(Qt.ItemDataRole.UserRole,'imu')
+            item.setToolTip('Apri Configurazione → Calibrazione IMU')
         self.preflight_button.setEnabled(usable)
         blocked=connected and bool(reasons)
         if self.arm_button.property('blocked')!=blocked:
@@ -356,7 +379,7 @@ class MainWindow(QMainWindow):
         self.arm_button.set_disarming(disarming)
         self.arm_button.set_request_pending(bool(s.foreground))
         self.arm_button.setEnabled(usable and s.owns_control and (arming in ('armed','arming') if disarming else ready and not reasons and not s.dirty and not s.staged and arming=='disarmed'))
-        self.arm_button.setToolTip('Disarma la scheda; la richiesta viene verificata dal firmware.' if disarming else
+        self.arm_button.setToolTip('Tieni premuto per 1,5 s per disarmare; la richiesta viene verificata dal firmware.' if disarming else
             'Preflight bloccato dalla scheda. Premi Ricontrolla dopo aver risolto i problemi.' if blocked else
             'Richiede preflight pronto dalla scheda. Tieni premuto per 1,5 s; la scheda ricontrolla prima di armare.')
         prepared=s.preflight.get('prepared_servo_mask',0)
@@ -425,12 +448,15 @@ class MainWindow(QMainWindow):
             widget.setToolTip(f'ID: {sensors.get(key+"_id","—")} · errore: {sensors.get(key+"_error","—")}')
     def _render_sim(self,s):
         data=s.sim; stamp=data.get('t_ms',0)
+        starting=s.foreground in ('Avvio simulazione','Preparazione della simulazione')
+        if starting: stamp=0
         duration=data.get('duration_ms')
         self.sim_progress.setRange(0,max(1,duration or 0))
         self.sim_progress.setValue(stamp)
         total=f'{duration/1000:.2f}' if duration else '—'
         profile='Test bistadio' if data.get('source')=='bistage_synthetic' else 'Hoppino'
         self.sim_summary.setText(f'{profile} · {stamp/1000:.2f} / {total} s · {"In esecuzione" if data.get("active") else data.get("reason","In attesa")} · {data.get("starts",0)} attivazioni')
+        if starting: self.sim_summary.setText(s.foreground+'… In attesa della risposta di Perpetual.')
         self.sim_phase.set(phase_name(data.get('phase'),data.get('bistage',False)) if data.get('samples') else '—')
         self.sim_altitude.set(f'{data["z_est"]:.1f} m' if data.get('samples') and data.get('z_est') is not None else '—')
         self.sim_samples.set(f'{data["samples"]:,}'.replace(',',' ') if 'samples' in data else '—')

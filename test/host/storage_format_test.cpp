@@ -81,8 +81,8 @@ void run() {
   for (auto byte : flash.bytes) fingerprint = (fingerprint ^ byte) * UINT64_C(0x100000001B3);
   // Fixed image with zero channel delays, directory, header,
   // summary reservation, historical start timestamps and sample blocks.
-  if (fingerprint != UINT64_C(0x5af89f6fd720024f)) std::cerr << "Storage image fingerprint: 0x" << std::hex << fingerprint << std::dec << '\n';
-  assert(fingerprint == UINT64_C(0x5af89f6fd720024f));
+  if (fingerprint != UINT64_C(0x6d9c4c302cee3f5c)) std::cerr << "Storage image fingerprint: 0x" << std::hex << fingerprint << std::dec << '\n';
+  assert(fingerprint == UINT64_C(0x6d9c4c302cee3f5c));
   std::cout << "Storage encoding tests passed: known CRC vector, incremental CRC, endian widths and unchanged full storage image.\n";
 }
 } // namespace test_storage_encoding

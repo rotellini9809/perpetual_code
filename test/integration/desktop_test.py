@@ -469,9 +469,11 @@ def run():
     from desktop_airbrakes import check_airbrakes
     from desktop_settings import check_setting_drafts
     from desktop_arm_button import check_arm_button
+    from desktop_imu import check_imu
     check_arm_button(app)
     check_airbrakes(app,wait,Native)
     check_setting_drafts(app,wait,Native)
+    check_imu(app,wait,Native)
     check_connections(app,wait)
 
     backend=Native(); backend.state='connected'
@@ -920,7 +922,10 @@ def run():
         assert window.sim_physical.isChecked() and not window.sim_physical.isEnabled()
         assert window.arm_button.text()=='DISARM' and window.arm_button.isEnabled()
         assert not window.release_servos_button.isEnabled()
-        window.arm_button.click(); wait(lambda:not controller.state.foreground)
+        window.navigate(0); app.processEvents()
+        window.arm_button.click(); assert 'disarm' not in backend.commands[-1:]
+        QTest.mousePress(window.arm_button,Qt.LeftButton); QTest.qWait(1580); QTest.mouseRelease(window.arm_button,Qt.LeftButton)
+        wait(lambda:not controller.state.foreground)
         assert 'disarm' in backend.commands and window.arm_button.text()=='ARM'
         assert not controller.state.sim['active'] and window.sim_physical.isEnabled()
         window.sim_physical.setChecked(False)

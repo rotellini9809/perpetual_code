@@ -1,6 +1,7 @@
 #pragma once
 #include "flight/FlightRuntime.h"
 #include "flight/ArmingCalibration.h"
+#include "flight/ImuCalibration.h"
 
 namespace flight {
 enum class FlightMode { Physical, Simulation };
@@ -8,7 +9,8 @@ enum class ArmingState { Disarmed, Arming, Armed, Closing };
 enum class ArmBlocker : uint8_t {
   Busy, DraftActive, ConfigInvalid, NotDisarmed, TimingUnavailable, ImuUnavailable,
   BarometerUnavailable, StorageNotReady, ContinuityFault, ServosNotPrepared,
-  HardwareChecksUnavailable, ServosNotConfigured, PhysicalServosPrepared, OrientationNotReady, Count
+  HardwareChecksUnavailable, ServosNotConfigured, PhysicalServosPrepared, OrientationNotReady,
+  ImuCalibrationMissing, ImuVerificationRequired, Count
 };
 struct Preflight {
   uint32_t blockers = 0;
@@ -16,6 +18,8 @@ struct Preflight {
   bool ready() const { return blockers == 0; }
   void block(ArmBlocker b) { blockers |= uint32_t(1) << unsigned(b); }
   bool has(ArmBlocker b) const { return (blockers & (uint32_t(1) << unsigned(b))) != 0; }
+  const char *imuCalibrationState = "absent";
+  const char *imuCalibrationReason = "MISSING";
   const char *error() const;
 };
 struct PhysicalReadiness {
@@ -56,7 +60,17 @@ public:
   void releaseServoPreview() { if (outputs_) outputs_->releasePreview(); }
   const char *checkPyroContinuity(uint8_t &configured, uint8_t &connected) const; // Read-only; no cached preflight approval.
   ArmingState state() const;
-  bool active() const { return state() == ArmingState::Arming || (state() == ArmingState::Armed && runtime_.active()); }
+  bool active() const { return imuCalibration_.active() || state() == ArmingState::Arming || (state() == ArmingState::Armed && runtime_.active()); }
+  void setImuCalibrationStore(storage::ImuCalibrationStore &store) { imuStore_=&store; }
+  const char *imuCalibrationState() const;
+  const char *imuCalibrationReason() const;
+  const char *beginImuCalibration(sensors::SensorSource &source, bool verify);
+  const char *captureImuFace(unsigned face);
+  void cancelImuCalibration();
+  const ImuCalibration &imuCalibration() const { return imuCalibration_; }
+  const storage::ImuCalibrationStore *imuStore() const { return imuStore_; }
+  void maintainImuApproval() { settleImuApproval(); }
+  const char *imuError() const { return imuError_; }
   uint8_t deviceUpAxis() const { return config_.upAxis(); }
   bool orientationReady() const { return config_.orientationReady(); }
   bool armed() const { return state() == ArmingState::Armed && runtime_.active(); }
@@ -72,6 +86,7 @@ public:
   void setBattery(const BatteryMonitor &battery) { runtime_.setBattery(battery); }
   void refreshRecordingStatus(RuntimeStatus &status) const { runtime_.refreshRecordingStatus(status); }
 private:
+  void settleImuApproval();
   const char *startRuntime(float reference, const navigation::SensorCalibration &calibration);
   ConfigurationService &config_;
   timing::Clock clock_;
@@ -90,5 +105,10 @@ private:
   navigation::NavigationOutput navigation_;
   const char *error_ = "None";
   Preflight lastPreflight_;
+  storage::ImuCalibrationStore *imuStore_=nullptr;
+  ImuCalibration imuCalibration_;
+  bool approvalReserved_=false,boostConsumed_=false;
+  uint32_t imuOperationTime_=0;
+  const char *imuError_="None";
 };
 }

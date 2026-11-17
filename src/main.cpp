@@ -47,6 +47,7 @@ Sensors sensorDevice;
 sensors::HardwareSensorSource hardwareSource(sensorDevice, navigationClock);
 storage::ProfiledFlashDevice profiledFlash(flashDevice, navigationClock);
 storage::ConfigurationStore configurationStore(profiledFlash);
+storage::ImuCalibrationStore imuCalibrationStore(profiledFlash);
 storage::FlightRecorder recorder(profiledFlash);
 void wakeStorage() { __sev(); }
 storage::QueuedRecorder recordingWorker(recorder, navigationClock, wakeStorage);
@@ -202,6 +203,8 @@ void setup() {
   commandStatus.flashJedec = flash.readJEDEC();
   commandStatus.flashIdentified = FlashLogger::isW25Q128(commandStatus.flashJedec);
   configuration.boot(flashReady); // Read only: missing settings never trigger formatting.
+  if (flashReady) imuCalibrationStore.load();
+  physicalFlight.setImuCalibrationStore(imuCalibrationStore);
   // Mount existing flights and reconcile interrupted recordings before accepting
   // commands/runs. Core 1 stays idle until a recording starts. Never autoformat:
   // failures remain visible through flights status/failure and physical preflight.
@@ -220,6 +223,7 @@ void setup() {
 void loop() {
   if (!power.sleeping()) battery.poll(millis(),readBatteryAdc); // Real board voltage, also during simulation/HIL.
   standaloneSimulation.poll(); // Due sensor work runs before USB, even disconnected.
+  if (!power.sleeping()) physicalFlight.maintainImuApproval();
   if (physicalFlight.active()) {
     flight::FrameResult result;
     physicalFlight.poll(result); // Same runtime/executor as simulation, with real sensors.

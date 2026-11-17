@@ -94,6 +94,19 @@ unchanged. See [hardware](../HARDWARE.md#status-led-and-power-saving) for LED be
 
 ## Arming and readiness
 
+`imu status` passively reports the IMU procedure and saved calibration state.
+`imu begin`, `imu verify`, `imu capture <signed-axis>` and `imu cancel` control it;
+see [configuration](CONFIGURATION.md#device-orientation-and-factory-reset). A procedure
+reserves the run/configuration lock and transport ownership, blocks sleep and other
+runs, and never enables flight outputs. The current procedure survives a transport
+disconnect; reconnect can inspect/cancel it. The 180-second timeout releases ownership.
+Status is passive; acquisition controls wake the board.
+
+Preflight includes `imu_calibration_state` (`absent`, `required`, `verified`) and
+`imu_calibration_reason` (`MISSING`, `NOT_VERIFIED`, `AFTER_BOOST`, `FLIGHT_OR_RESET`,
+`None`). Saved approval is consumed only by physical flight. Physical arming remains
+blocked until a current revision is verified, alongside existing hardware checks.
+
 The [state-machine reference](state_macines.md#5-ciclo-di-armamento--macchina-separata-implementata)
 owns operational transition functions; this section defines command effects and replies.
 
@@ -304,7 +317,7 @@ contains sequence, block, offset, first sample index, block_count, count, crc32,
 and data (strict Base64). At most 9 samples and 448 encoded bytes fit each reply;
 no larger serial buffers or unsolicited streaming are required. The old `read`
 command remains available for diagnostics. App and firmware must both be updated.
-The current format is sample v3/header v6; older flight memory needs an explicit
+The current format is sample v3/header v7; older flight memory needs an explicit
 `flights format`. See [Airbrakes](AIRBRAKES.md) for the coordinated format change.
 
 Payload encoding: start with nineteen zero 32-bit words for each reply. For each
