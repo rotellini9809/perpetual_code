@@ -20,6 +20,9 @@ public:
   static const char *errorName(RecorderError error);
   bool format(); // Explicit logical format; preserves settings and calibration.
   bool initializeBlank(); // Explicit request; refuses any non-erased/unknown directory.
+  // Boot: mount existing storage; prepare only a never-used (missing and fully erased) directory.
+  // Damaged or unknown data is never formatted: the failure stays visible.
+  bool prepareAtBoot();
   void abort(); // Drop RAM, preserve Recording metadata for recovery; no flash writes.
   bool initialize(); // Mount; reconcile Recording into Interrupted/Corrupt, never resume.
   bool begin(const recovery::Configuration &config, const recovery::ValidationLimits &limits, uint32_t sampleBytes,

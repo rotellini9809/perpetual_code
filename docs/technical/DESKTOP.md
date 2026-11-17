@@ -137,7 +137,8 @@ returns `ok:false`, normally `IMU_UNAVAILABLE`, with the complete blocker list. 
 current state this also includes `STORAGE_NOT_READY`, `CONTINUITY_FAULT`, `SERVOS_NOT_PREPARED`,
 `SERVOS_NOT_CONFIGURED` (an assigned servo has no saved endpoints),
 and `ORIENTATION_NOT_READY` (no explicitly saved mounting).
-Mount/recovery failures remain visible in `flights status` and `flights failure`; boot never formats storage.
+Mount/recovery failures remain visible in `flights status` and `flights failure`. Boot prepares only a never-used
+flash (no directory, both banks erased), like `flights init`; it never formats used or damaged storage.
 MAIN does not provide a way to override physical activation readiness. A rejected preflight
 does not reserve a flight or write flash. Positive physical calibration/start transitions are
 currently tested on PC with fake sensor/GPIO adapters and the production physical executor.

@@ -230,9 +230,10 @@ void setup() {
   if (flashReady) imuCalibrationStore.load();
   physicalFlight.setImuCalibrationStore(imuCalibrationStore);
   // Mount existing flights and reconcile interrupted recordings before accepting
-  // commands/runs. Core 1 stays idle until a recording starts. Never autoformat:
-  // failures remain visible through flights status/failure and physical preflight.
-  if (flashReady) recorder.initialize();
+  // commands/runs. Core 1 stays idle until a recording starts. A never-used flash
+  // (no directory, erased banks) is prepared here, like `flights init`; used or
+  // damaged storage is never formatted and its failure stays visible.
+  if (flashReady) recorder.prepareAtBoot();
   // BOARD BRING-UP: IMU soldering is currently faulty; barometer was verified on USB.
   // Probe both independently; barometer diagnostics remain usable if the IMU fails.
   // Missing IMU frames are never faked and still block physical arming.

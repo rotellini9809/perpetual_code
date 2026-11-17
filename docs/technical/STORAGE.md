@@ -29,8 +29,10 @@ have not been removed as a speculative speedup.
 ## Preparation and allocation
 
 Boot reads settings and, after successful flash initialization, calls `initialize()` to mount
-existing flights and reconcile interrupted recordings before accepting commands/runs. It never
-autoformats; failed mounting leaves recording unready with diagnostics in `flights status/failure`.
+existing flights and reconcile interrupted recordings before accepting commands/runs. Only a never-used
+flash (directory missing, both banks erased) is prepared at boot through `initializeBlank()`; used or
+damaged storage is never formatted, and failed mounting leaves recording unready with diagnostics in
+`flights status/failure`.
 `flights recover` can repeat mounting manually; `initializeBlank()` (`flights init`) formats only
 if both complete directory banks are erased.
 Unknown non-erased metadata fails closed. Settings/calibration are outside the recording banks.

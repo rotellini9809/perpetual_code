@@ -33,6 +33,11 @@ bool FlightRecorder::initializeBlank() {
   if (!directory_.format()) return fault(RecorderError::Directory);
   return initialize();
 }
+bool FlightRecorder::prepareAtBoot() {
+  if (initialize()) return true;
+  if (directory_.error() != DirectoryError::Missing) return false; // Keep the mount diagnosis.
+  return initializeBlank(); // Writes only when both directory banks are entirely erased.
+}
 bool FlightRecorder::format() {
   if (active_) return fail(RecorderError::NotRecording);
   initialized_=metadataValid_=false; faultLatched_=false; failure_={}; error_=RecorderError::None;

@@ -238,6 +238,17 @@ void run() {
   MemoryFlash flash; storage::ConfigurationStore store(flash); assert(store.save(fixture(),limits,true));
   ConfigurationService config(store,limits); config.boot(true); assert(!config.setOrientation(0));
   Nor recordingFlash; storage::FlightRecorder recorder(recordingFlash); assert(recorder.initializeBlank());
+  // Boot prepares only never-used storage: a blank flash is ready without any command...
+  Nor blank; storage::FlightRecorder fresh(blank); assert(fresh.prepareAtBoot() && fresh.initialized());
+  storage::FlightRecorder remount(blank); assert(remount.prepareAtBoot() && remount.initialized());
+  // ...while one unexpected byte in a directory bank is left untouched and reported.
+  Nor used; used.bytes[storage::FlashLayout::DirectoryB+100]=0x42; const auto before=used.bytes;
+  storage::FlightRecorder careful(used); assert(!careful.prepareAtBoot() && !careful.initialized());
+  assert(careful.directory().error()==storage::DirectoryError::Corrupt && used.bytes==before); // Not "missing".
+  // A damaged existing directory keeps its mount diagnosis and is never formatted.
+  Nor damaged=blank; damaged.bytes[storage::FlashLayout::DirectoryA+40]^=1; damaged.bytes[storage::FlashLayout::DirectoryB+40]^=1;
+  const auto damagedBefore=damaged.bytes; storage::FlightRecorder broken(damaged);
+  assert(!broken.prepareAtBoot() && broken.error()==storage::RecorderError::Directory && damaged.bytes==damagedBefore);
   flight::RunController run;
   FakeSensorDevice device; device.imu=false;
   sensors::HardwareSensorSource hardware(device,clockUs); assert(!hardware.begin());
