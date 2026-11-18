@@ -27,7 +27,7 @@ const char *FlightRuntime::begin(sensors::SensorSource &source, float referenceA
   if (!pipeline_.begin(source, calibration, referenceAltitude, nominalHz,machine_)) return "INITIALIZATION_FAILED";
   if (const char *error = run_.begin(RunMode::Sensors, config_)) { pipeline_.end(); return error; }
   airbrakes_.begin(config_.airbrakesEnabled() ? config_.applied()->airbrakes.channelMask : 0);
-  recordingRequested_ = recordBytes != 0; saved_ = dropped_ = 0; full_ = false;
+  recordingRequested_ = recordBytes != 0; saved_ = dropped_ = 0; full_ = false; lastBaroSequence_ = 0;
   boostReached_ = processingFailed_ = landed_ = closingStarts_ = false; sensorMode_ = sensorMode; outputMode_ = outputMode;
   recordingSequence_ = 0; recordingError_ = storage::RecorderError::None;
   timing_ = {}; timing_.nominalPeriodUs = uint32_t(1000000.0f / nominalHz);
@@ -153,15 +153,23 @@ void FlightRuntime::save(const sensors::Reading &input, const FrameResult &resul
     const auto &a = result.events.starts[i];
     if (!recorder_->recordStart(a.rule, a.kind, a.channel, uint32_t(a.timeMs))) { recordingFault(recorder_->error()); return; }
   }
-  storage::FlightSample sample; sample.timeMs = result.timeMs; sample.phase = result.navigation.phase; sample.abortReason=result.navigation.abortReason;
+  storage::FlightSample sample; sample.timeUs = input.timeUs; sample.imuSequence = uint32_t(input.imuSequence);
+  sample.imuValid = input.imuValid;
+  sample.phase = result.navigation.phase; sample.abortReason=result.navigation.abortReason;
   sample.airbrakes=airbrakes_.status();
   if (battery_) sample.batteryMv = battery_->millivolts();
   for (unsigned i = 0; i < 3; ++i) {
     sample.values[storage::FlightSample::AccelX+i] = input.imuValid ? input.accelMps2[i] : std::numeric_limits<float>::quiet_NaN();
     sample.values[storage::FlightSample::GyroX+i] = input.imuValid ? input.gyroRadps[i] : std::numeric_limits<float>::quiet_NaN();
   }
-  sample.values[storage::FlightSample::PressureHpa] = input.baroValid ? input.pressurePa / 100.0f : std::numeric_limits<float>::quiet_NaN();
-  sample.values[storage::FlightSample::TemperatureC] = input.temperatureC;
+  // The barometer is logged once per reading (100 Hz), not repeated on every IMU sample.
+  if (input.baroValid && input.baroSequence != lastBaroSequence_) {
+    lastBaroSequence_ = input.baroSequence; sample.baroFresh = true;
+    const uint64_t age = input.timeUs > input.baroTimeUs ? input.timeUs - input.baroTimeUs : 0;
+    sample.baroAgeUs = uint16_t(age > 0xFFFF ? 0xFFFF : age);
+    sample.values[storage::FlightSample::PressurePa] = input.pressurePa;
+    sample.values[storage::FlightSample::TemperatureC] = input.temperatureC;
+  }
   const auto &nav = result.navigation;
   if (nav.valid) {
     sample.values[storage::FlightSample::AltitudeM] = nav.altitude;

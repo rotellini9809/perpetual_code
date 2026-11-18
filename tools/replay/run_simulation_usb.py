@@ -64,7 +64,9 @@ def run(client, output, record=False, clock=time.monotonic, sleep=time.sleep):
                 or status['samples'] + timing['missed_ticks'] != samples or count != status['samples']
                 or [event[0] for event in report['events']['phases']] != list(range(status['phase']+1))):
             raise RuntimeError('Simulation result failed validation; report retained')
-        if record and (status['saved_samples'] != status['samples'] or status['dropped_samples'] or status['recording_error'] != 'None'):
+        # PAD samples are reduced to the pre-launch history (0.5 s full rate + 10 Hz), so
+        # fewer samples are saved than processed; none may be dropped.
+        if record and (not 0 < status['saved_samples'] <= status['samples'] or status['dropped_samples'] or status['recording_error'] != 'None'):
             raise RuntimeError('Recording incomplete; report retained')
         if timing['missed_ticks'] or timing['over_budget']:
             raise RuntimeError('Measured deadline violations; report retained')

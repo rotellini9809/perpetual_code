@@ -61,7 +61,7 @@ def check_connections(app,wait):
             links[1].succeed(); wait(lambda:controller.state.connected)
             assert window.transport.text()=='Bluetooth · COM44' and window.connect_button.text()=='Disconnetti'
             # Board inventory is session-scoped; the opened CSV remains independent.
-            local_csv=Path(folder)/'kept.csv'; local_csv.write_text('t_ms,z_est,vz_est\n0,0,1\n5,10,1\n')
+            local_csv=Path(folder)/'kept.csv'; local_csv.write_text('t_us,z_est,vz_est\n0,0,1\n5000,10,1\n')
             local_flight=load_flight(local_csv); controller.state.flight=local_flight
             old_inventory=[dict(sequence='1',status=2,committed_bytes=1024,allocated_bytes=4096)]
             controller._complete(controller._epoch,0,'poll',dict(flights=old_inventory,status=dict(arming_state='disarmed')),None,POLL)

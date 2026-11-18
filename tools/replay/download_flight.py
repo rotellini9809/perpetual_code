@@ -16,8 +16,9 @@ import uuid
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import device_client as transport
-FIELDS = ['t_ms', 'accelX', 'accelY', 'accelZ', 'gyroX', 'gyroY', 'gyroZ', 'pressure',
-          'temp', 'z_est', 'vz_est', 'roll', 'pitch', 'yaw', 'az_est', 'state', 'battery_v', 'abort_reason', *[f'airbrake_{i}_pct' for i in range(1,5)], 'airbrake_flags', 'airbrake_failed_conditions', 'airbrake_channel_mask']
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import flight_log
+FIELDS = flight_log.CSV_FIELDS
 STATUS = {1: 'recording', 2: 'completed', 3: 'interrupted', 4: 'stopped_full', 5: 'invalidated', 6: 'CORRUPT'}
 
 
@@ -72,32 +73,24 @@ def configuration(payload):
     return result
 
 
-def unpack_samples(response):
-    """Decode bounded, checksummed little-endian sample records without float rounding."""
-    count=response.get('count')
-    if type(count) is not int or not 1<=count<=9 or not isinstance(response.get('data'),str) or len(response['data'])>600:
-        raise RuntimeError('Invalid packed sample dimensions')
-    try: payload=base64.b64decode(response['data'],validate=True)
-    except (ValueError,binascii.Error) as error: raise RuntimeError('Invalid packed sample encoding') from error
-    if len(payload)>448 or type(response.get('crc32')) is not int or zlib.crc32(payload)!=response['crc32']:
-        raise RuntimeError('Packed sample checksum/length mismatch')
-    rows=[]; offset=0; words=[0]*19
-    for _ in range(count):
-        if offset+4>len(payload): raise RuntimeError('Truncated packed sample mask')
-        mask=struct.unpack_from('<I',payload,offset)[0]; offset+=4
-        if mask>>19: raise RuntimeError('Invalid packed sample mask')
-        for word in range(19):
-            if mask & (1<<word):
-                if offset+4>len(payload): raise RuntimeError('Truncated packed sample word')
-                words[word]^=struct.unpack_from('<I',payload,offset)[0]; offset+=4
-        stamp,*fields=struct.unpack('<I14fBHB4HHBB',struct.pack('<19I',*words))
-        values=fields[:14]; phase,battery,reason=fields[14:17]; openings=fields[17:21]; flags,failed,channels=fields[21:]
-        if channels>15 or flags & ~511 or any((u>10000 if channels&(1<<i) else u!=65535) for i,u in enumerate(openings)):
-            raise RuntimeError('Invalid airbrake sample')
-        if any(math.isinf(value) for value in values): raise RuntimeError('Invalid packed sample value')
-        rows.append([stamp,*[None if math.isnan(value) else value for value in values],phase,None if battery==65535 else battery/1000,reason,*[None if u==65535 else u/100 for u in openings],flags,failed,channels])
-    if offset!=len(payload): raise RuntimeError('Extra packed sample bytes')
-    return rows
+def fetch_block(request, sequence, index, chunk_bytes):
+    """Assemble one raw v4 block body from base64 chunks and decode it."""
+    body = bytearray()
+    frames = None
+    while len(body) < flight_log.BODY_BYTES:
+        response = request(f'flights block {sequence} {index} {len(body)}')
+        try: chunk = base64.b64decode(response.get('data', ''), validate=True)
+        except (ValueError, binascii.Error) as error: raise RuntimeError('Invalid block chunk encoding') from error
+        if (response.get('sequence') != sequence or response.get('block') != index or response.get('offset') != len(body)
+                or response.get('bytes') != len(chunk) or not 1 <= len(chunk) <= chunk_bytes
+                or len(body) + len(chunk) > flight_log.BODY_BYTES or (frames is not None and response.get('frames') != frames)):
+            raise RuntimeError('Unexpected block chunk identity/order')
+        frames = response.get('frames'); body.extend(chunk)
+    try: block = flight_log.decode_block(bytes(body))
+    except flight_log.LogError as error: raise RuntimeError(f'Block {index}: {error}') from error
+    if str(block['sequence']) != sequence or block['index'] != index or len(block['frames']) != frames:
+        raise RuntimeError('Block identity mismatch')
+    return block
 
 
 def sequence_text(sequence):
@@ -144,8 +137,10 @@ def _download(client,sequence,destination,progress,cancelled,owned):
     if destination == metadata_path or destination.exists() or metadata_path.exists():
         raise FileExistsError('CSV/metadata destination already exists or overlaps')
     info = request(f'flights info {sequence}', timeout=600)
-    if info.get('sample_transport') != 'xor32-v2':
-        raise ValueError('Update the board firmware to use the optimized download')
+    if info.get('sample_transport') != 'raw-v4' or info.get('block_body_bytes') != flight_log.BODY_BYTES:
+        raise ValueError('Board firmware does not provide flight log v4; upload current MAIN firmware')
+    if type(info.get('block_chunk_bytes')) is not int or not 1 <= info['block_chunk_bytes'] <= flight_log.BODY_BYTES:
+        raise RuntimeError('Invalid block chunk size')
     if info.get('config_version') != 3:
         raise ValueError('Unsupported configuration export format; upload current MAIN firmware')
     response = request(f'flights summary {sequence}')
@@ -161,7 +156,7 @@ def _download(client,sequence,destination,progress,cancelled,owned):
             raise RuntimeError('Invalid flight calibration snapshot')
         if calibration['sensor_axes']:
             if calibration.get('up_axis') not in ('+X','-X','+Y','-Y','+Z','-Z'): raise RuntimeError('Invalid recorded orientation')
-            for key in ('gyro_bias_radps','accel_bias_mps2'):
+            for key in ('gyro_bias_radps','accel_bias_mps2','accel_scale'):
                 values=calibration.get(key)
                 if not isinstance(values,list) or len(values)!=3 or any(type(v) not in (int,float) or not math.isfinite(v) for v in values):
                     raise RuntimeError('Invalid recorded sensor bias')
@@ -178,7 +173,7 @@ def _download(client,sequence,destination,progress,cancelled,owned):
             raise RuntimeError('Invalid committed recording summary')
     if info.get('sequence') != sequence or info.get('status') not in (2, 3, 4):
         raise RuntimeError('Flight is not a closed retained selection')
-    if not 0 <= info['samples'] <= 0xFFFFFFFF or not 0 <= info['blocks'] <= 16384:
+    if not 0 <= info['samples'] <= 0xFFFFFFFF or not 0 <= info['blocks'] <= 8192:
         raise RuntimeError('Invalid recording dimensions')
     if not 1 <= info['config_bytes'] <= 4096:
         raise RuntimeError('Invalid snapshot size')
@@ -201,8 +196,11 @@ def _download(client,sequence,destination,progress,cancelled,owned):
             raise RuntimeError('Invalid output-start timestamp')
         starts.append(dict(rule_id=rule, rule_name=names[rule], kind='pyro' if kind == 0 else 'servo',
                            channel=channel, state={0: 'empty', 2: 'recorded', 3: 'invalid'}[state], t_ms=stamp))
-    abort=None
-    count, previous = 0, None
+    if info['frame'] not in (0, 1) or (info['frame'] == 0) != bool(calibration and calibration.get('sensor_axes')):
+        raise RuntimeError('Recorded frame convention does not match the calibration snapshot')
+    calibrate = flight_log.Calibration(info['frame'], calibration)
+    abort = None
+    count, previous_time, previous_sequence = 0, None, None
     if progress: progress(0,info['samples'])
     destination.parent.mkdir(parents=True, exist_ok=True)
     checkpoint()
@@ -210,32 +208,24 @@ def _download(client,sequence,destination,progress,cancelled,owned):
         owned.append(destination)
         writer = csv.writer(target)
         writer.writerow(FIELDS)
-        for block in range(info['blocks']):
-            offset = 0
-            while True:
-                response = request(f'flights packed {sequence} {block} {offset}')
-                rows = unpack_samples(response)
-                total = response['block_count']
-                if response.get('sequence') != sequence or response['block'] != block or response['offset'] != offset or response['first'] != count:
-                    raise RuntimeError('Unexpected sample chunk identity/order')
-                if not 1 <= total <= 9 or not 1 <= len(rows) <= 9 or offset+len(rows) > total:
-                    raise RuntimeError('Invalid sample chunk dimensions')
-                for row in rows:
-                    if len(row) != len(FIELDS) or not isinstance(row[0], int) or not 0 <= row[0] <= 0xFFFFFFFF or row[15] not in range(8) or row[17] not in range(3):
-                        raise RuntimeError('Invalid stored sample')
-                    if previous is not None and row[0] <= previous:
-                        raise RuntimeError('Stored timestamps are not increasing')
-                    if row[17] and abort is None: abort=dict(t_ms=row[0],reason={1:'Velocity',2:'Tilt'}[row[17]])
-                    previous = row[0]
-                    writer.writerow(['nan' if value is None else value for value in row])
-                    count += 1
-                offset += len(rows)
-                if progress: progress(count,info['samples'])
-                if offset == total:
-                    break
+        for index in range(info['blocks']):
+            block = fetch_block(request, sequence, index, info['block_chunk_bytes'])
+            for frame in block['frames']:
+                if previous_time is not None:
+                    if frame['time_us'] <= previous_time or frame['sequence'] <= previous_sequence:
+                        raise RuntimeError('Stored samples are not increasing')
+                    # The first frame of a block carries absolute values; recompute its gap.
+                    frame['gap'] = max(frame['gap'], frame['sequence'] - previous_sequence - 1)
+                row = flight_log.csv_row(frame, calibrate, info['frame'] == 0)
+                if frame['state']['abort'] and abort is None:
+                    abort = dict(t_us=frame['time_us'], reason={1: 'Velocity', 2: 'Tilt'}[frame['state']['abort']])
+                previous_time, previous_sequence = frame['time_us'], frame['sequence']
+                writer.writerow(['' if value is None else value for value in row])
+                count += 1
+            if progress: progress(count,info['samples'])
     if count != info['samples']:
         raise RuntimeError('Stored sample count mismatch; partial CSV retained')
-    metadata = dict(sequence=sequence, status=STATUS[info['status']], sample_count=count,
+    metadata = dict(sequence=sequence, status=STATUS[info['status']], sample_count=count, log_format=4,
                     sensor_mode=info['sensor_mode'], output_mode=info['output_mode'], frame=info['frame'],
                     configuration=snapshot, configuration_version=3, configuration_hex=payload.hex(), output_starts=starts,
                     recording_summary=summary, calibration=calibration, abort=abort)

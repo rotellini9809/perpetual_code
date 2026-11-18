@@ -30,7 +30,7 @@ private:
   sensors::FrameConvention frame_ = sensors::FrameConvention::LoggedCalibratedBody;
   uint8_t configuration_[storage::ConfigurationStore::MaxPayload] = {};
   std::size_t configBytes_ = 0;
-  storage::SampleBlock block_;
+  storage::RawBlock block_;
   bool selectedValid_ = false, blockValid_ = false;
   timing::Clock clock_;
   uint32_t lastTransferUs_=0;

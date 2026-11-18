@@ -21,7 +21,7 @@ SENSORS = [*NAVIGATION, 'src/navigation/SensorPipeline.cpp',
            'src/hardware/HardwareSensorSource.cpp', 'src/flight/ArmingCalibration.cpp',
            'src/flight/ImuCalibration.cpp', 'src/storage/ImuCalibrationStore.cpp']
 STORAGE = ['src/storage/' + name + '.cpp' for name in
-           ('FlightDirectory', 'FlightHeaderStore', 'FlightSampleStore', 'FlightSummaryStore',
+           ('FlightDirectory', 'FlightHeaderStore', 'FlightLogCodec', 'FlightSampleStore', 'FlightSummaryStore',
             'FlightRecorder', 'QueuedRecorder')]
 RUNTIME = [*CONFIG, *SENSORS, *STORAGE, 'src/control/AirbrakeLaw.cpp',
            *('src/flight/' + name + '.cpp' for name in ('RunController', 'FlightRuntime', 'ArmingController', 'OutputExecutor')),

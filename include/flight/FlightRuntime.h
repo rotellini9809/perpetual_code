@@ -85,6 +85,7 @@ private:
   storage::SensorMode sensorMode_ = storage::SensorMode::Simulation;
   uint64_t recordingSequence_ = 0;
   uint32_t saved_ = 0, dropped_ = 0;
+  uint64_t lastBaroSequence_ = 0; // Barometer identity already sent to the recorder.
   storage::RecorderError recordingError_ = storage::RecorderError::None;
   uint64_t identity_ = 0;
   bool started_ = false;

@@ -15,7 +15,7 @@ for file in (ROOT/'perpetual_app').glob('*.py'): shutil.copy2(file,destination/'
 for name in ('requirements.txt','Perpetual.spec','build.ps1','PORTABLE.txt'):
     shutil.copy2(ROOT/'perpetual_app'/name,destination/'source/perpetual_app'/name)
 shutil.copytree(ROOT/'perpetual_app/assets',destination/'source/perpetual_app/assets',dirs_exist_ok=True)
-for file in ('tools/device_client.py','tools/replay/download_flight.py'):
+for file in ('tools/device_client.py','tools/replay/download_flight.py','tools/replay/flight_log.py'):
     shutil.copy2(ROOT/file,destination/'source'/file)
 notices=destination/'notices'; notices.mkdir(exist_ok=True)
 for file in (ROOT/'perpetual_app/notices').glob('*'):

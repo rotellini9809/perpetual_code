@@ -42,6 +42,8 @@ def compact_float(value):
 
 def prepare(input_path, pressure_unit='hpa', include_temperature=False):
     rows, samples, reference, hz = navigation_replay.load_sensor_samples(input_path, pressure_unit)
+    # HIL samples carry millisecond time; load_sensor_samples returns microseconds.
+    samples = [(stamp // 1000, values) for stamp, values in samples]
     origin = samples[0][0]
     commands = []
     for row, (stamp, values) in zip(rows, samples):

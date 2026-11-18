@@ -71,9 +71,9 @@ def check_airbrakes(app,wait,native):
             path=Path(directory)/'airbrakes.csv'
             with path.open('w',newline='',encoding='utf-8') as stream:
                 writer=csv.writer(stream)
-                writer.writerow(['t_ms','z_est','vz_est','state',*[f'airbrake_{i}_pct' for i in range(1,5)],'airbrake_flags','airbrake_failed_conditions','airbrake_channel_mask'])
+                writer.writerow(['t_us','z_est','vz_est','state',*[f'airbrake_{i}_pct' for i in range(1,5)],'airbrake_flags','airbrake_failed_conditions','airbrake_channel_mask'])
                 for time,opening,flags,failed,phase in ((0,0,5,1,0),(6000,0,261,1,2),(6035,0,5,1,2),(8000,25,3,0,6),(10000,70,3,0,6),(15000,0,5,1,3),(20000,0,17,0,7)):
-                    writer.writerow([time,30,10,phase,opening,'nan','nan','nan',flags,failed,1])
+                    writer.writerow([time*1000,30,10,phase,opening,'','','',flags,failed,1])
             path.with_suffix('.json').write_text(json.dumps(dict(sensor_mode=1,configuration=dict(rules=[],airbrakes=dict(channel_mask=1,conditions=[dict(kind=0,phase_mask=64)])),calibration=dict(bistage=True,airbrakes_enabled=True,airbrake_law_version=1))),encoding='utf-8')
             controller.open_flight(path); wait(lambda:not s.foreground)
             assert not s.error

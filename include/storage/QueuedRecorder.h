@@ -8,7 +8,7 @@ namespace storage {
 // Only poll() accesses the underlying writer until completion/fault acknowledgment.
 class QueuedRecorder : public RecordingSink {
 public:
-  static constexpr uint32_t SampleCapacity = 64, StartCapacity = 8;
+  static constexpr uint32_t SampleCapacity = 128, StartCapacity = 8; // ~270 ms at 476 Hz.
   using Notify = void (*)();
   QueuedRecorder(FlightRecorder &writer, timing::Clock clock = nullptr, Notify notify = nullptr)
       : writer_(writer), clock_(clock), notify_(notify) {}

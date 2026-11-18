@@ -24,10 +24,10 @@ def load_flight(path):
         return value if math.isfinite(value) else None
     with path.open(newline='',encoding='utf-8-sig') as source:
         reader = csv.DictReader(source)
-        if not {'t_ms','z_est','vz_est'} <= set(reader.fieldnames or []): raise ValueError('Incompatible CSV: t_ms, z_est and vz_est are required')
+        if not {'t_us','z_est','vz_est'} <= set(reader.fieldnames or []): raise ValueError('Incompatible CSV: t_us, z_est and vz_est are required (flight log v4)')
         previous = -1
         for row in reader:
-            stamp = int(row['t_ms'])
+            stamp = int(row['t_us'])
             if stamp <= previous: raise ValueError('CSV times are not increasing')
             previous = stamp; total+=1
             if first is None: first=stamp
@@ -38,18 +38,18 @@ def load_flight(path):
             # Stored Euler fields are already degrees in NAV Z-up. Re-express
             # the entire rotation in X-up before decimation, preserving gaps.
             values[3:6]=euler_x_up(*values[3:6])
-            rows.append((stamp/1000,*values))
+            rows.append((stamp/1e6,*values))
             openings=[number(row,f'airbrake_{i}_pct') for i in range(1,5)]
             if 'airbrake_flags' in row:
                 flags=int(row['airbrake_flags']); failed=int(row['airbrake_failed_conditions']); mask=int(row['airbrake_channel_mask'])
                 if not 0<=flags<=511 or not 0<=failed<=255 or not 0<=mask<=15 or any(u is not None and not 0<=u<=100 for u in openings):
                     raise ValueError('Invalid airbrake data in the CSV')
-                air_mask|=mask; air_rows.append((stamp/1000,*openings))
+                air_mask|=mask; air_rows.append((stamp/1e6,*openings))
                 observed=(flags,failed,mask)
                 if observed!=previous_air:
-                    air_transitions.append(dict(time=stamp/1000,phase=phase,flags=flags,failed=failed,channel_mask=mask)); previous_air=observed
+                    air_transitions.append(dict(time=stamp/1e6,phase=phase,flags=flags,failed=failed,channel_mask=mask)); previous_air=observed
             name=PHASES[phase] if phase is not None else None
-            if not phases or phases[-1][1]!=name: phases.append((stamp/1000,name))
+            if not phases or phases[-1][1]!=name: phases.append((stamp/1e6,name))
     valid=[r for r in rows if r[1] is not None and r[2] is not None]
     if not valid: raise ValueError('No valid samples in the CSV')
     metadata = {}
@@ -76,9 +76,9 @@ def load_flight(path):
     simulated_battery = metadata.get('sensor_mode') == 1
     if simulated_battery:
         # Illustrative 2S trace, separate from CSV battery_v and never exported as a measurement.
-        duration=max(.001,(last-first)/1000)
-        plot=[(*r,round(8.4-.2*(r[0]-first/1000)/duration,3)) for r in plot]
-    return dict(path=str(path),rows=plot,phases=phases,airbrakes=airbrakes,samples=total,valid_samples=len(valid),duration=(last-first)/1000,
+        duration=max(.001,(last-first)/1e6)
+        plot=[(*r,round(8.4-.2*(r[0]-first/1e6)/duration,3)) for r in plot]
+    return dict(path=str(path),rows=plot,phases=phases,airbrakes=airbrakes,samples=total,valid_samples=len(valid),duration=(last-first)/1e6,
                 max_altitude=max(r[1] for r in valid),max_speed=max(abs(r[2]) for r in valid),metadata=metadata,simulated_battery=simulated_battery)
 
 

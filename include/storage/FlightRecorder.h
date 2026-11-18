@@ -4,6 +4,7 @@
 #include "storage/FlightHeaderStore.h"
 #include "storage/FlightSampleStore.h"
 #include "storage/FlightSummaryStore.h"
+#include "storage/PadHistory.h"
 
 namespace storage {
 struct RecordingInfo {
@@ -27,14 +28,16 @@ public:
   bool initialize(); // Mount; reconcile Recording into Interrupted/Corrupt, never resume.
   bool begin(const recovery::Configuration &config, const recovery::ValidationLimits &limits, uint32_t sampleBytes,
              SensorMode sensorMode, OutputMode outputMode, sensors::FrameConvention frame, const FlightCalibration &calibration = FlightCalibration{});
-  bool append(const FlightSample &sample); // RAM only; no flush or directory writes.
+  // PAD samples stay in the RAM pre-launch history; the first non-PAD sample writes
+  // that history, then samples are encoded and full blocks written (no directory writes).
+  bool append(const FlightSample &sample);
   bool recordStart(recovery::RuleId rule, recovery::OutputKind kind, uint32_t channel, uint32_t timeMs); // RAM only.
-  bool service(); // Worker: pending starts first, then a full sample buffer.
+  bool service(); // Worker: persist pending output starts.
   bool finish(bool producerClosed, const RecordingSummary &summary = RecordingSummary{},
               RecordingRetention retention = RecordingRetention::Keep) override;
   bool remove(uint64_t sequence); // Durable logical deletion; erase only on later reuse.
   bool inspect(uint64_t sequence, RecordingInfo &output); // Detected corruption persists a directory flag.
-  bool readBlock(uint64_t sequence, uint32_t index, SampleBlock &output);
+  bool readBlock(uint64_t sequence, uint32_t index, RawBlock &output);
   const FlightHeader *metadata() const { return metadataValid_ ? header_.view() : nullptr; }
   const FlightDirectory &directory() const { return directory_; }
   const FlightEntry *current() const { return current_.sequence ? &current_ : nullptr; }
@@ -56,12 +59,16 @@ private:
   bool markCorrupt(const FlightEntry &entry);
   bool rejectRead(const FlightEntry &entry); // Retain the decoding error while persisting quarantine.
   bool persistProgress(FlightStatus status);
+  bool store(const FlightSample &sample, bool history);
+  bool writeHistory();
   FlashDevice &flash_;
   FlightDirectory directory_;
   FlightHeaderStore header_;
   FlightSampleStore samples_;
   FlightSummaryStore summary_;
-  SampleBlock block_;
+  RawBlock block_;
+  PadHistory pad_;
+  bool launched_ = false; // A non-PAD sample was seen; history written.
   FlightEntry current_;
   uint32_t headerBytes_ = 0, sampleBytes_ = 0;
   bool initialized_ = false, active_ = false, samplesFull_ = false, metadataValid_ = false;

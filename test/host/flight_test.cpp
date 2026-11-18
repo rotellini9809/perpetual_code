@@ -15,6 +15,7 @@
 #include "storage/QueuedRecorder.h"
 #include <algorithm>
 #include "../fixtures/FakeOutputs.h"
+#include "../fixtures/FlightLogSupport.h"
 
 // Each namespace isolates one component scenario and its fault model.
 namespace test_run_controller {
@@ -167,7 +168,9 @@ void run() {
   assert(capture.samples.size() == 80 && capture.starts == 2 && flash.mutations == writes);
   assert(std::all_of(capture.samples.begin(),capture.samples.end(),[&](const storage::FlightSample &s) { return s.batteryMv==BatteryMonitor::fromAdc(2018); }));
   assert(capture.samples[0].values[storage::FlightSample::AccelX] == .125f);
-  assert(capture.samples[0].values[storage::FlightSample::PressureHpa] == 1013.25f);
+  assert(capture.samples[0].values[storage::FlightSample::PressurePa] == 101325.f && capture.samples[0].baroFresh);
+  assert(!capture.samples[1].baroFresh && capture.samples[4].baroFresh); // Barometer only when its sequence advances.
+  assert(capture.samples[1].timeUs - capture.samples[0].timeUs == 5000 && capture.samples[1].imuSequence == capture.samples[0].imuSequence + 1);
   device.pending = true; // A fresh register read with repeated flight time is rejected before navigation.
   polled = runtime.poll(a);
   assert(!polled.processed && !strcmp(polled.error, "INVALID_TIMESTAMP"));
@@ -513,27 +516,31 @@ void run() {
   assert(sample(QueuedRecorder::SampleCapacity+2,40).navigation.phase==recovery::FlightPhase::Boost);
   assert(runtime.status().boostReached && runtime.status().droppedSamples==3 && runtime.active());
   runtime.stop(); drain();
+  // The queued samples were all PAD: they form the pre-launch history (last 0.5 s at
+  // full rate + 10 Hz before), written at close and truncated by the 2-block budget.
   assert(!runtime.status().recordingDiscarded && writer.inspect(launched,info));
-  assert(info.entry.status==FlightStatus::StoppedFull && info.samples==36 && info.summaryState==SummaryState::Valid);
-  SampleBlock block;
-  for (unsigned i=0;i<4;++i) {
-    assert(writer.readBlock(launched,i,block));
-    for (unsigned j=0;j<block.count;++j) assert(block.samples[j].phase==recovery::FlightPhase::Pad);
+  assert(info.entry.status==FlightStatus::StoppedFull && info.samples>=80 && info.samples<=103 && info.summaryState==SummaryState::Valid);
+  RawBlock raw; uint32_t previous=0;
+  for (unsigned i=0;i<2;++i) {
+    assert(writer.readBlock(launched,i,raw)); const auto block=decodeRaw(raw);
+    for (unsigned j=0;j<block.frames;++j) {
+      const auto &f=block.frame[j];
+      assert(f.state.phase==uint8_t(recovery::FlightPhase::Pad) && f.history && f.sequence>previous); previous=f.sequence;
+    }
   }
-  // Full PAD-only logs are discarded too; fullness is not evidence of launch.
-  const auto fullPad=begin(SensorMode::Hardware);
-  for (unsigned i=0;i<64;++i) sample(i,9.80665f);
-  while (queued.pendingSamples()) assert(queued.poll());
-  assert(runtime.status().samplesFull && !runtime.status().boostReached);
+  // A long PAD wait never reaches flash, so it cannot fill the log; it is still discarded.
+  const auto longPad=begin(SensorMode::Hardware);
+  for (unsigned i=0;i<400;++i) { sample(i,9.80665f); while (queued.pendingSamples()) assert(queued.poll()); }
+  assert(!runtime.status().samplesFull && !runtime.status().boostReached && runtime.status().savedSamples==0);
   runtime.stop(); drain(); assert(runtime.status().recordingDiscarded);
-  assert(!writer.inspect(fullPad,info) && writer.error()==RecorderError::StaleSelection);
+  assert(!writer.inspect(longPad,info) && writer.error()==RecorderError::StaleSelection);
   // Abrupt cancellation preserves an uncertain PAD log for recovery.
   const auto interrupted=begin(SensorMode::Hardware); sample(0,9.80665f);
   run.disconnect(); runtime.stop(); drain(); assert(!runtime.status().recordingDiscarded);
   assert(writer.initialize() && writer.inspect(interrupted,info) && info.entry.status==FlightStatus::Interrupted);
   assert(writer.directory().retainedCount()==3);
   assert(std::equal(protectedBytes.begin(),protectedBytes.end(),flash.bytes.begin()));
-  puts("Flight retention passed: asynchronous PAD discard, diagnostic retention, unsaved BOOST, full logs and interrupted-log preservation.");
+  puts("Flight retention passed: asynchronous PAD discard, diagnostic retention, pre-launch history, unsaved BOOST, full logs and interrupted-log preservation.");
 }
 } // namespace test_flight_retention
 
@@ -622,7 +629,11 @@ void run() {
   while (queued.poll()) {}
   assert(live.state()==flight::ArmingState::Disarmed && config.disarmed() && !config.runLocked());
   assert(writer.directory().retainedCount()==1 && writer.current()->status==storage::FlightStatus::Completed);
-  assert(live.runtime().status().savedSamples>7000 && live.runtime().status().droppedSamples==0);
+  // ~5 s of PAD (about 1000 samples at 200 Hz) are reduced to the pre-launch history:
+  // 0.5 s at full rate plus 10 Hz before, about 145 samples.
+  const auto &recorded=live.runtime().status();
+  assert(recorded.savedSamples+1000-145>=recorded.samples-20 && recorded.savedSamples+1000-145<=recorded.samples+20);
+  assert(recorded.droppedSamples==0);
   assert(!gpio.mask && !gpio.positions[0] && !outputs.hasPreparation());
   unsigned starts=0;
   for (const auto &slot:writer.metadata()->starts) {

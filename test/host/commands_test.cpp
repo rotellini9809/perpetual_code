@@ -2,7 +2,6 @@
 #include "communication/CommandService.h"
 #include "communication/CommandPolicy.h"
 #include "communication/RecordingReply.h"
-#include "communication/PackedFlightCodec.h"
 #include <cassert>
 #include <string>
 #include <vector>
@@ -536,17 +535,22 @@ void run() {
     const auto command = "hil sample " + std::to_string(i*5) + " 0 0 9.80665 0 0 0 101325 22.5";
     has(send(usb, command), "\"ok\":true");
   }
-  has(send(usb, "hil stop"), "\"saved_samples\":36");
+  // All 45 samples are PAD: they stay in the pre-launch history and are written at close.
+  has(send(usb, "hil stop"), "\"saved_samples\":45");
   assert(session.timing().prepareUs > 0 && session.timing().finishUs > 0);
-  assert(session.timing().step.count == 45 && session.timing().storage.count == 45 && session.timing().storage.maxUs > 400);
+  assert(session.timing().step.count == 45 && session.timing().storage.count == 45);
   has(send(usb, "hil timing"), "\"timing_valid\":true");
   has(send(usb, "flights timing"), "\"failures\":[0,0,0]");
-  has(send(usb, "hil status"), "\"dropped_samples\":9");
-  has(send(usb, "flights info 1"), "\"samples\":36");
-  has(send(usb, "flights info 1"), "\"status\":4");
-  has(send(usb, "flights read 1 0 0"), "22.5");
+  has(send(usb, "hil status"), "\"dropped_samples\":0");
+  has(send(usb, "flights info 1"), "\"samples\":45");
+  has(send(usb, "flights info 1"), "\"status\":2");
+  has(send(usb, "flights info 1"), "\"sample_transport\":\"raw-v4\"");
+  // Raw block bodies travel as 448-byte base64 chunks: 1792 = 4 x 448.
+  has(send(usb, "flights block 1 0 0"), "\"bytes\":448,\"frames\":45,\"data\":\"UFNCSwQAAAc");
+  has(send(usb, "flights block 1 0 1344"), "\"bytes\":448");
+  has(send(usb, "flights block 1 0 1792"), "Bounds");
   has(send(usb, "flights info 18446744073709551616"), "INVALID_ARGUMENT");
-  has(send(usb, "flights read 1 1000 0"), "Bounds");
+  has(send(usb, "flights block 1 1000 0"), "Bounds");
   has(send(usb, "flights list 1"), "\"available\":false");
   has(send(usb, "hil begin 0 200 logged_body record 4096"), "\"recording_sequence\":\"2\"");
   has(send(usb, "@500 hil sample 0 0 0 9.80665 0 0 0 101325"), "\"ok\":true");
@@ -556,8 +560,9 @@ void run() {
   has(send(usb, "flights info 2"), "\"status\":2");
   has(send(usb, "flights list 0"), "\"sequence\":\"2\"");
   has(send(usb, "flights list 1"), "\"sequence\":\"1\"");
+  // PAD never reaches flash: fly (BOOST) long enough to fill and write one block.
   send(usb, "hil begin 0 200 logged_body record 4096"); flash.failProgram = true;
-  for (unsigned i = 0; i < 12; ++i) has(send(usb, "hil sample " + std::to_string(i*5) + " 0 0 9.80665 0 0 0 101325"), "\"imu_valid\":true");
+  for (unsigned i = 0; i < 60; ++i) has(send(usb, "hil sample " + std::to_string(i*5) + " 40 0 9.80665 0 0 0 101325"), "\"imu_valid\":true");
   has(send(usb, "hil status"), "\"recording_error\":\"Sample\"");
   has(send(usb, "hil status"), "\"active\":true");
   has(send(usb, "flights failure"), "\"component\":\"Sample\"");
@@ -586,12 +591,12 @@ void run() {
                         sensors::FrameConvention::LoggedCalibratedBody));
   for (const auto &a : rule.assignments) assert(recorder.recordStart(rule.id, a.kind, a.channel, UINT32_MAX));
   storage::FlightSample sample; sample.phase = recovery::FlightPhase::Landed;
-  sample.values.fill(-std::numeric_limits<float>::max()); sample.timeMs = UINT32_MAX-1;
-  assert(recorder.append(sample)); ++sample.timeMs; assert(recorder.append(sample)); assert(recorder.finish(true));
+  sample.values.fill(-std::numeric_limits<float>::max()); sample.timeUs = UINT64_MAX-1; sample.imuSequence = UINT32_MAX-1;
+  assert(recorder.append(sample)); ++sample.timeUs; ++sample.imuSequence; assert(recorder.append(sample)); assert(recorder.finish(true));
   const auto info = send(usb, "@4294967294 flights info 4");
   has(info, "\"ok\":true"); has(info, "[4294967295,1,4,2,4294967295]");
-  const auto rows = send(usb, "@4294967295 flights read 4 0 0");
-  has(rows, "\"ok\":true"); has(rows, "],[4294967295,");
+  const auto rows = send(usb, "@4294967295 flights block 4 0 0");
+  has(rows, "\"ok\":true"); has(rows, "\"frames\":2");
   assert(info.size() < CommandService::MaxReply && rows.size() < CommandService::MaxReply);
   // Keep the worker paused: stop/disconnect return immediately, and every flash
   // mutation/new run remains gated until ownership is explicitly acknowledged.
@@ -640,28 +645,34 @@ void run() {
   for (uint32_t t=0;t<=sensors::SimulatedSensorSource::durationMs();++t) { elapsedUs=simOrigin+t*1000; asyncSim.poll(); }
   assert(!asyncSim.active() && asyncSim.status().recordingBusy && asyncSim.status().savedSamples==0);
   while (queued.busy()) assert(queued.poll());
-  assert(asyncSim.status().samples==6600 && asyncSim.status().savedSamples==64 && !asyncSim.status().recordingBusy);
+  // The paused worker only ever saw the first 128 queued (PAD) samples: they are
+  // reduced to the pre-launch history (0.5 s at full rate plus 10 Hz before).
+  const auto simSaved=asyncSim.status().savedSamples;
+  assert(asyncSim.status().samples==6600 && simSaved>=100 && simSaved<=110 && !asyncSim.status().recordingBusy);
   send(usb,"hil begin 0 200 logged_body record 4096");
   // Starting a different HIL recording must not replace the previous simulation's final report.
-  assert(asyncSim.status().samples==6600 && asyncSim.status().savedSamples==64 && !asyncSim.status().recordingBusy);
+  assert(asyncSim.status().samples==6600 && asyncSim.status().savedSamples==simSaved && !asyncSim.status().recordingBusy);
   send(usb,"hil stop"); while (queued.busy()) queued.poll();
   // A damaged interrupted flight is visible without blocking healthy history.
   assert(recorder.begin(fixture(),limits,4096,storage::SensorMode::Simulation,storage::OutputMode::Virtual,
                         sensors::FrameConvention::LoggedCalibratedBody));
   const auto damaged=*recorder.current(); const auto headerBytes=recorder.metadata()->layout.headerBytes;
-  for(unsigned i=0;i<9;++i) { storage::FlightSample s; s.timeMs=i; assert(recorder.append(s)); }
-  assert(recorder.service()); recorder.abort(); flash.bytes[damaged.start+headerBytes+36]^=1;
+  // 120 airborne 15-byte FRAMEs: the first block (114) is committed, the rest stays in RAM.
+  for(unsigned i=0;i<120;++i) {
+    storage::FlightSample s; s.phase=recovery::FlightPhase::Boost; s.timeUs=i*1000; s.imuSequence=i+1; assert(recorder.append(s));
+  }
+  assert(recorder.service() && recorder.committedSamples()==114); recorder.abort(); flash.bytes[damaged.start+headerBytes+36]^=1;
   const auto damagedBytes=std::vector<uint8_t>(flash.bytes.begin()+damaged.start,flash.bytes.begin()+damaged.start+damaged.allocatedBytes);
   has(send(usb,"flights recover"),"\"corrupt_flights\":1");
   has(send(usb,"flights status"),"\"corrupt_flights\":1");
   has(send(usb,"flights list 0"),"\"corrupt\":true");
   has(send(usb,"flights list 0"),"\"status\":6");
   has(send(usb,"flights info "+std::to_string(damaged.sequence)),"Corrupt");
-  has(send(usb,"flights info 1"),"\"samples\":36");
+  has(send(usb,"flights info 1"),"\"samples\":45");
   has(send(usb,"flights recover"),"\"ready\":true");
   assert(std::equal(damagedBytes.begin(),damagedBytes.end(),flash.bytes.begin()+damaged.start));
   usb.setExtension(&router); usb.reset(); router.setPower(power);
-  has(send(usb,"flights read 1 0 0"),"\"ok\":true");
+  has(send(usb,"flights block 1 0 0"),"\"ok\":true");
   has(send(usb,"sleep"),"BUSY"); assert(!powerHardware.sleeps);
   elapsedUs+=5000000; // A stopped/cancelled transfer's lease expires without retaining ownership.
   has(send(usb,"sleep"),"\"power_mode\":\"sleeping\"");
@@ -846,7 +857,7 @@ void run() {
     {"servo","show",CommandGroup::Configuration,Read|Operational},
     {"pyro","continuity",CommandGroup::Configuration,Read|Operational},
     {"config","show \"unterminated",CommandGroup::Configuration,Read|Operational},
-    {"flights","packed 1 0 0",CommandGroup::Flights,Read|Operational},
+    {"flights","block 1 0 0",CommandGroup::Flights,Read|Operational},
     {"flights","format",CommandGroup::Flights,Mutation|Operational|Maintenance},
     {"flights","timing reset",CommandGroup::Flights,Mutation|Operational},
     {"flights","recover",CommandGroup::Flights,Mutation|Operational},
@@ -883,25 +894,6 @@ void run() {
   protocol::appendRecordingPending(fragment,status);
   assert(!strcmp(fragment.bytes,R"(,"recording_busy":true,"recording_sequence":"18446744073709551615","saved_samples":17,"dropped_samples":3,"recording_error":"Sample","pending_samples":7)"));
 
-  storage::SampleBlock block; block.index=7; block.firstSample=42; block.count=1;
-  block.samples[0].values.fill(0); block.samples[0].batteryMv=0;
-  protocol::Json encoded;
-  assert(protocol::appendPackedFlightSamples(encoded,block,0));
-  assert(!strcmp(encoded.bytes,R"(,"block":7,"offset":0,"first":42,"block_count":1,"count":1,"crc32":3565452569,"data":"AAADAP//////////")"));
-  protocol::Json invalid;
-  assert(!protocol::appendPackedFlightSamples(invalid,block,1) && invalid.length==0);
-  block.count=12;
-  assert(!protocol::appendPackedFlightSamples(invalid,block,0) && invalid.length==0);
-  block.count=9; block.index=UINT32_MAX; block.firstSample=UINT32_MAX-9;
-  for (unsigned i=0;i<block.count;++i) {
-    auto &s=block.samples[i]; s.timeMs=i*5;
-    for (unsigned j=0;j<s.values.size();++j) s.values[j]=float((i+1)*7919+(j+1)*104729)/(i+j+1);
-    s.phase=recovery::FlightPhase::Abort; s.abortReason=recovery::AbortReason::Tilt;
-  }
-  protocol::Json bounded;
-  bounded.add(R"(,"sequence":"18446744073709551615")");
-  assert(protocol::appendPackedFlightSamples(bounded,block,0));
-  assert(bounded.ok && bounded.length<sizeof(bounded.bytes));
 }
 }
 

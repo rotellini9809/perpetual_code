@@ -1,9 +1,20 @@
 #include "storage/FlightCommands.h"
-#include "communication/PackedFlightCodec.h"
 #include "communication/CommandProtocol.h"
 #include "communication/TimingReply.h"
 #include "communication/RecordingReply.h"
 
+namespace {
+// Raw v4 block bodies travel in base64 chunks; 448 bytes = 600 characters fit one reply.
+constexpr uint32_t BlockChunkBytes = 448;
+void appendBase64(protocol::Json &data, const uint8_t *bytes, unsigned size) {
+  static const char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  for (unsigned i = 0; i < size; i += 3) {
+    const uint32_t bits = (uint32_t(bytes[i]) << 16) | (i + 1 < size ? uint32_t(bytes[i + 1]) << 8 : 0) | (i + 2 < size ? bytes[i + 2] : 0);
+    data.add("%c%c%c%c", alphabet[(bits >> 18) & 63], alphabet[(bits >> 12) & 63],
+             i + 1 < size ? alphabet[(bits >> 6) & 63] : '=', i + 2 < size ? alphabet[bits & 63] : '=');
+  }
+}
+}
 bool FlightCommands::select(uint64_t sequence) {
   if (selectedValid_ && selected_.entry.sequence == sequence) return true;
   selectedValid_ = blockValid_ = false;
@@ -101,8 +112,7 @@ bool FlightCommands::dispatch(const char *command, const char *arguments, bool h
     const bool calibration = t.count == 2 && t.is(0, "calibration");
     const bool summary = t.count == 2 && t.is(0, "summary");
     const bool config = t.count == 3 && t.is(0, "config") && protocol::unsignedNumber(t[2], offset);
-    const bool packed = t.is(0,"packed");
-    const bool read = t.count == 4 && (t.is(0, "read") || packed) && protocol::unsignedNumber(t[2], index) && protocol::unsignedNumber(t[3], offset);
+    const bool read = t.count == 4 && t.is(0, "block") && protocol::unsignedNumber(t[2], index) && protocol::unsignedNumber(t[3], offset);
     if (!info && !calibration && !summary && !config && !read) { error = "INVALID_ARGUMENT"; return finish(); }
     if (!select(sequence)) {
       error = recorder_.error() == RecorderError::None ? "Corrupt" : FlightRecorder::errorName(recorder_.error());
@@ -137,7 +147,8 @@ bool FlightCommands::dispatch(const char *command, const char *arguments, bool h
     if (summary) { protocol::appendRecordingSummary(data,selected_.summaryState,selected_.summary); return finish(); }
     const auto blocks = (selected_.entry.committedBytes - selected_.headerBytes) / FlightSampleStore::BlockBytes;
     if (info) {
-      data.add(",\"sample_transport\":\"xor32-v2\"");
+      data.add(",\"sample_transport\":\"raw-v4\",\"block_body_bytes\":%lu,\"block_chunk_bytes\":%lu",
+               static_cast<unsigned long>(FlightSampleStore::BodyBytes), static_cast<unsigned long>(BlockChunkBytes));
       data.add(",\"status\":%u,\"samples\":%lu,\"blocks\":%lu,\"sensor_mode\":%u,\"output_mode\":%u,\"frame\":%u,\"config_version\":%u,\"config_bytes\":%u,\"starts\":[",
                unsigned(selected_.entry.status), static_cast<unsigned long>(selected_.samples), static_cast<unsigned long>(blocks),
                unsigned(sensorMode_), unsigned(outputMode_), unsigned(frame_), unsigned(storage::ConfigurationStore::FormatVersion), unsigned(configBytes_));
@@ -162,27 +173,13 @@ bool FlightCommands::dispatch(const char *command, const char *arguments, bool h
       if (!recorder_.readBlock(sequence, index, block_)) { selectedValid_ = blockValid_ = false; error = FlightRecorder::errorName(recorder_.error()); return finish(); }
       blockValid_ = true;
     }
-    if (offset >= block_.count) { error = "Bounds"; return finish(); }
-    if (packed) {
-      if (!protocol::appendPackedFlightSamples(data,block_,offset)) { error="Bounds"; return finish(); }
-      transferring_=true; lastTransferUs_=clock_ ? clock_() : 0;
-      return finish();
-    }
-    const unsigned count = block_.count - offset < 2 ? block_.count - offset : 2;
+    if (offset >= FlightSampleStore::BodyBytes) { error = "Bounds"; return finish(); }
+    const uint32_t count = FlightSampleStore::BodyBytes - offset < BlockChunkBytes ? FlightSampleStore::BodyBytes - offset : BlockChunkBytes;
     transferring_=true; lastTransferUs_=clock_ ? clock_() : 0;
-    data.add(",\"block\":%lu,\"offset\":%lu,\"first\":%lu,\"block_count\":%u,\"rows\":[",
-             static_cast<unsigned long>(index), static_cast<unsigned long>(offset), static_cast<unsigned long>(block_.firstSample+offset), unsigned(block_.count));
-    for (unsigned i = 0; i < count; ++i) {
-      const auto &sample = block_.samples[offset+i]; data.add("%s[%lu", i ? "," : "", static_cast<unsigned long>(sample.timeMs));
-      for (auto value : sample.values) { data.add(","); data.value(value); }
-      data.add(",%u,", unsigned(sample.phase));
-      if (sample.batteryMv==UINT16_MAX) data.add("null");
-      else data.add("%.3f",double(sample.batteryMv)/1000.0);
-      data.add(",%u",unsigned(sample.abortReason));
-      for (auto u:sample.airbrakes.opening) { data.add(","); if (u==65535) data.add("null"); else data.add("%.2f",double(u)/100); }
-      data.add(",%u,%u,%u]",unsigned(sample.airbrakes.flags),unsigned(sample.airbrakes.failedConditions),unsigned(sample.airbrakes.channelMask));
-    }
-    data.add("]"); return finish();
+    data.add(",\"block\":%lu,\"offset\":%lu,\"bytes\":%lu,\"frames\":%u,\"data\":\"",
+             static_cast<unsigned long>(index), static_cast<unsigned long>(offset), static_cast<unsigned long>(count), unsigned(block_.frames));
+    appendBase64(data, block_.body + offset, count);
+    data.add("\""); return finish();
   }
   error = "INVALID_ARGUMENT"; return finish();
 }

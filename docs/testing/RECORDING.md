@@ -100,7 +100,7 @@ flights format
 flights list <zero_based_retained_index>
 flights info <uint64_sequence>
 flights config <uint64_sequence> <byte_offset>
-flights read <uint64_sequence> <block_index> <sample_offset>
+flights block <uint64_sequence> <block_index> <byte_offset>
 flights summary <uint64_sequence>
 flights calibration <uint64_sequence>
 flights failure
@@ -110,12 +110,15 @@ flights timing reset
 ```
 
 Sequences are decimal JSON strings to preserve uint64 precision. Configuration chunks carry at
-most 128 bytes as hex; sample chunks at most two rows. Numeric
+most 128 bytes as hex; block chunks carry at most 448 bytes of a raw v4 block body as base64
+(four chunks per 1792-byte body), decoded only on the PC by `tools/replay/flight_log.py`. Numeric
 modes/start states/status values are in [the format specification](../technical/STORAGE_FORMAT.md).
 Idle status/recovery expose `corrupt_flights`, and list entries include `corrupt`. `hil
 status/stop` expose requested/active/busy recording, sequence, durable saved/ dropped samples,
 pending/queue capacity, fullness and independent storage error. Saved counts lag buffered
-samples. Full sample storage drops further samples while starts remain recordable. Logging
+samples. While the phase is PAD nothing is written: the last 0.5 s at full rate and 10 Hz for the
+10 s before stay in RAM and are written when the first non-PAD sample arrives (or at close for
+simulation/HIL), so fewer samples are saved than processed. Full sample storage drops further samples while starts remain recordable. Logging
 faults do not stop HIL navigation.
 
 `flights failure` exposes error/component/cause and typed flash cause/operation/ address/bytes.

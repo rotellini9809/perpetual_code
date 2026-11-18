@@ -2,6 +2,7 @@
 #include "storage/FlightHeaderStore.h"
 #include "storage/BinaryEncoding.h"
 #include "storage/VerifiedPage.h"
+#include "storage/FlightLogCodec.h"
 #include <cstring>
 #include <limits>
 #include <cmath>
@@ -15,7 +16,7 @@ using binary::extendCrc;
 using binary::CrcInitial;
 constexpr uint32_t Magic = 0x52444850, HeaderCommit = 0x43444850, StartMagic = 0x54534850, StartCommit = 0x43534850;
 constexpr uint32_t ConfigOffset = 512, Page = FlashLayout::PageBytes;
-constexpr uint16_t HeaderVersion = 7, StartVersion = 1;
+constexpr uint16_t HeaderVersion = 8, StartVersion = 1;
 static_assert(recovery::MaxAssignments >= 2 * recovery::ChannelCount, "Header must hold every physical output");
 static_assert(64 + recovery::MaxAssignments * 8 <= 252, "Mapping table exceeds descriptor page");
 constexpr uint32_t CalibrationOffset=160, CalibrationEnd=192;
@@ -104,7 +105,7 @@ bool FlightHeaderStore::create(uint32_t address, const recovery::Configuration &
   memset(page_, 255, Page); put(page_, Magic, 4); put(page_ + 4, HeaderVersion, 2); put(page_ + 6, Page, 2);
   put(page_ + 8, layout.headerBytes, 4); put(page_ + 12, ConfigOffset, 4); put(page_ + 16, layout.configBytes, 4);
   put(page_ + 20, ConfigurationStore::FormatVersion, 2); page_[22] = uint8_t(sensor); page_[23] = uint8_t(output); page_[24] = uint8_t(frame);
-  page_[25] = 3; page_[26] = layout.slotCount;
+  page_[25] = flightlog::Version; page_[26] = layout.slotCount;
   put(page_ + 28, layout.tableOffset, 4); put(page_ + 32, SlotBytes, 2); put(page_ + 36, address, 4); put(page_ + 40, layout.headerBytes, 4);
   put(page_ + 44, layout.summaryOffset, 4);
   for (unsigned i = 0; i < layout.slotCount; ++i) {
@@ -145,7 +146,7 @@ bool FlightHeaderStore::load(uint32_t address) {
   if (!committed(check_, HeaderCommit, checksum)) return fail(HeaderError::Incomplete);
   if (get32(page_, 4) != Magic || get32(page_ + 6, 2) != Page) return fail(HeaderError::Corrupt);
   const auto version=get32(page_+4,2);
-  if (version != HeaderVersion || get32(page_ + 20, 2) != ConfigurationStore::FormatVersion || page_[25] != 3) return fail(HeaderError::UnsupportedVersion);
+  if (version != HeaderVersion || get32(page_ + 20, 2) != ConfigurationStore::FormatVersion || page_[25] != flightlog::Version) return fail(HeaderError::UnsupportedVersion);
   FlightHeaderLayout layout;
   layout.headerBytes = get32(page_ + 8, 4); layout.configBytes = get32(page_ + 16, 4);
   layout.tableOffset = get32(page_ + 28, 4); layout.slotCount = page_[26];

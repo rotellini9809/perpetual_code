@@ -247,7 +247,7 @@ void run() {
   assert(header.view()->starts[1].kind == recovery::OutputKind::Servo && header.view()->starts[2].rule == 20);
   const auto initial = flash; const auto writes = flash.writes, reads = flash.reads;
   // A valid CRC/commit cannot enable an old or unknown header format.
-  for (unsigned field : {4u, 20u}) for (unsigned version : {1u, 2u, 3u, 4u, 5u, 6u, 8u}) {
+  for (unsigned field : {4u, 20u}) for (unsigned version : {1u, 2u, 3u, 4u, 5u, 6u, 7u, 9u}) { // Header v8 is current.
     auto wrong = initial; auto *descriptor = wrong.bytes.data() + 0x15000;
     if (field==20 && version==3) continue;
     storage::binary::put(descriptor + field, version, 2);
@@ -371,8 +371,8 @@ void run() {
   // Samples can exhaust their extent while the already-reserved start table remains writable.
   HeaderFlash combined; FlightHeaderStore meta(combined); assert(create(meta));
   FlightSampleStore samples(combined); assert(samples.begin(7, 0x16000, 4096));
-  for (unsigned i = 0; i < 4; ++i) { FlightSample s; s.timeMs = i; assert(samples.append(s) && samples.flush()); }
-  FlightSample extra; extra.timeMs = 4;
+  for (unsigned i = 0; i < 2; ++i) { FlightSample s; s.timeUs = i; s.imuSequence = i + 1; assert(samples.append(s) && samples.flush()); }
+  FlightSample extra; extra.timeUs = 2; extra.imuSequence = 3; // Two 2 KiB blocks fill the 4 KiB extent.
   assert(!samples.append(extra) && samples.error() == SampleError::Full);
   assert(meta.recordStart(10, recovery::OutputKind::Pyro, 1, 500) && meta.finish(true));
   FlightHeaderStore final(combined); assert(final.load(0x15000));

@@ -82,7 +82,7 @@ bool FlightRecorder::scan(const FlightEntry &entry, bool recover, RecordingInfo 
   RecordingInfo result; result.entry = entry; result.headerBytes = header_.view()->layout.headerBytes;
   const uint32_t published = (entry.committedBytes - result.headerBytes) / FlightSampleStore::BlockBytes;
   const uint32_t limit = recover ? (entry.allocatedBytes - result.headerBytes) / FlightSampleStore::BlockBytes : published;
-  uint32_t blocks = 0, lastTime = 0; bool haveTime = false;
+  uint32_t blocks = 0, nextSequence = 0; uint64_t lastTime = 0;
   for (uint32_t i = 0; i < limit; ++i) {
     const auto a = entry.start + result.headerBytes + i*FlightSampleStore::BlockBytes;
     if (!samples_.readBlock(a, entry.sequence, i, block_)) {
@@ -91,9 +91,10 @@ bool FlightRecorder::scan(const FlightEntry &entry, bool recover, RecordingInfo 
       if (recover && i >= published && (error == SampleError::Empty || error == SampleError::Incomplete)) break;
       return fail(RecorderError::Corrupt,"Sample",FlightSampleStore::errorName(error));
     }
-    if (block_.firstSample != result.samples || (haveTime && block_.samples[0].timeMs <= lastTime)) return fail(RecorderError::Corrupt);
-    lastTime = block_.samples[block_.count - 1].timeMs; haveTime = true;
-    result.samples += block_.count; ++blocks;
+    // Headers alone prove ordering: each block starts after every sample of the previous one.
+    if (i && (block_.firstSequence < nextSequence || block_.firstTimeUs <= lastTime)) return fail(RecorderError::Corrupt);
+    nextSequence = block_.firstSequence + block_.frames; lastTime = block_.firstTimeUs;
+    result.samples += block_.frames; ++blocks;
   }
   result.entry.committedBytes = result.headerBytes + blocks*FlightSampleStore::BlockBytes;
   const auto offset=header_.view()->layout.summaryOffset;
@@ -166,6 +167,7 @@ bool FlightRecorder::begin(const recovery::Configuration &config, const recovery
   reservation.allocatedBytes = allocated;
   if (!directory_.update(reservation)) return fault(RecorderError::Directory);
   current_ = reservation; headerBytes_ = planned.headerBytes; sampleBytes_ = sampleBytes; samplesFull_ = false;
+  pad_.clear(); launched_ = false;
   // Ownership is durable before any erase. Erase only the new contiguous extent.
   // eraseRange may skip read-back: header create and sample begin each verify their
   // part of the extent as erased, together covering all of it exactly once.
@@ -175,15 +177,29 @@ bool FlightRecorder::begin(const recovery::Configuration &config, const recovery
   if (!persistProgress(FlightStatus::Recording)) return false;
   active_ = metadataValid_ = true; error_ = RecorderError::None; return true;
 }
+bool FlightRecorder::store(const FlightSample &sample, bool history) {
+  if (samples_.append(sample, history)) { error_ = RecorderError::None; return true; }
+  if (samples_.error() == SampleError::Full) { samplesFull_ = true; return fail(RecorderError::Full); }
+  if (samples_.error() == SampleError::Timestamp) return fail(RecorderError::Sample);
+  return fault(RecorderError::Sample); // A block write failed: never retry an attempted mutation.
+}
+bool FlightRecorder::writeHistory() {
+  bool ok = true;
+  pad_.forEach([&](const FlightSample &sample) { ok = store(sample, true); return ok; });
+  pad_.clear();
+  // A full extent only truncates the history; other failures are reported.
+  return ok || error_ == RecorderError::Full;
+}
 bool FlightRecorder::append(const FlightSample &sample) {
   if (!active_) return fail(RecorderError::NotRecording);
   if (samplesFull_) return fail(RecorderError::Full);
-  if (!samples_.append(sample)) {
-    if (samples_.error() == SampleError::BufferFull) return fail(RecorderError::Backpressure);
-    if (samples_.error() == SampleError::Full) { samplesFull_ = true; return fail(RecorderError::Full); }
-    return fail(RecorderError::Sample);
+  if (!launched_) {
+    if (sample.phase == recovery::FlightPhase::Pad) { pad_.push(sample); error_ = RecorderError::None; return true; }
+    launched_ = true;
+    if (!writeHistory()) return false;
+    if (samplesFull_) return fail(RecorderError::Full);
   }
-  error_ = RecorderError::None; return true;
+  return store(sample, false);
 }
 bool FlightRecorder::recordStart(recovery::RuleId rule, recovery::OutputKind kind, uint32_t channel, uint32_t timeMs) {
   if (!active_) return fail(RecorderError::NotRecording);
@@ -193,8 +209,6 @@ bool FlightRecorder::recordStart(recovery::RuleId rule, recovery::OutputKind kin
 bool FlightRecorder::service() {
   if (!active_) return fail(RecorderError::NotRecording);
   if (!header_.flushStarts()) return fault(RecorderError::Header);
-  if (samples_.bufferedSamples() == FlightSampleStore::SamplesPerBlock && !samples_.flush()) return fault(RecorderError::Sample);
-  samplesFull_ = samples_.committedBytes() == sampleBytes_;
   error_ = RecorderError::None; return true;
 }
 bool FlightRecorder::persistProgress(FlightStatus status) {
@@ -217,9 +231,11 @@ bool FlightRecorder::finish(bool producerClosed, const RecordingSummary &summary
     active_ = metadataValid_ = false; header_.abandon(); samples_.abandon();
     return true;
   }
+  // A run that never left PAD (simulation/HIL keeps it) still saves its pre-launch history.
+  if (!launched_ && !writeHistory() && !active_) return false;
   if (!header_.finish(true)) return fault(RecorderError::Header);
+  // Full means a sample was refused, not that the last block happens to be in use.
   if (!samples_.finish()) return fault(RecorderError::Sample);
-  samplesFull_ = samples_.committedBytes() == sampleBytes_;
   auto finalSummary=summary; finalSummary.savedSamples=samples_.committedSamples();
   if (samplesFull_) finalSummary.reason=RecordingEnd::StorageFull;
   if (!summary_.write(current_.start+header_.view()->layout.summaryOffset,current_.sequence,current_.start,header_.checksum(),finalSummary)) return fault(RecorderError::Summary);
@@ -252,7 +268,7 @@ bool FlightRecorder::inspect(uint64_t sequence, RecordingInfo &output) {
   if (!scan(selected, false, info)) return rejectRead(selected);
   output = info; metadataValid_ = true; error_ = RecorderError::None; return true;
 }
-bool FlightRecorder::readBlock(uint64_t sequence, uint32_t index, SampleBlock &output) {
+bool FlightRecorder::readBlock(uint64_t sequence, uint32_t index, RawBlock &output) {
   if (active_) return fail(RecorderError::Busy);
   metadataValid_ = false;
   if (!initialized_) return fail(RecorderError::NotInitialized);
@@ -265,21 +281,11 @@ bool FlightRecorder::readBlock(uint64_t sequence, uint32_t index, SampleBlock &o
   const auto headerBytes = header_.view()->layout.headerBytes;
   const auto blocks = (entry->committedBytes - headerBytes) / FlightSampleStore::BlockBytes;
   if (index >= blocks) return fail(RecorderError::Bounds);
+  // Cross-block ordering was proven by inspect(); a single read validates this block only.
   const uint32_t base = entry->start + headerBytes;
-  uint32_t first = 0, lastTime = 0;
-  if (index) {
-    if (!samples_.readBlock(base + (index-1)*FlightSampleStore::BlockBytes, sequence, index-1, block_)) {
-      fail(samples_.error() == SampleError::Io ? RecorderError::Io : RecorderError::Corrupt,"Sample",FlightSampleStore::errorName(samples_.error()));
-      return rejectRead(*entry);
-    }
-    first = block_.firstSample + block_.count; lastTime = block_.samples[block_.count-1].timeMs;
-  }
   if (!samples_.readBlock(base + index*FlightSampleStore::BlockBytes, sequence, index, block_)) {
     fail(samples_.error() == SampleError::Io ? RecorderError::Io : RecorderError::Corrupt,"Sample",FlightSampleStore::errorName(samples_.error()));
     return rejectRead(*entry);
-  }
-  if (block_.firstSample != first || (index && block_.samples[0].timeMs <= lastTime)) {
-    fail(RecorderError::Corrupt); return rejectRead(*entry);
   }
   output = block_; metadataValid_ = true; error_ = RecorderError::None; return true;
 }

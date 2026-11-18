@@ -1,4 +1,7 @@
-"""Recompute navigation from recorded BODY IMU/pressure, not recorded estimates."""
+"""Recompute navigation from recorded BODY IMU/pressure, not recorded estimates.
+
+Accepts a Hoppino-style dataset (t_ms, pressure on every row) or a downloaded v4
+flight CSV (t_us, calibrated BODY accel/gyro, pressure only on fresh-barometer rows)."""
 import argparse
 import csv
 import io
@@ -20,8 +23,9 @@ SOURCES = ['src/navigation/AttitudeEstimator.cpp', 'src/navigation/VerticalKalma
 def load_sensor_samples(input_path, pressure_unit='hpa'):
     with Path(input_path).open(newline='', encoding='utf-8-sig') as source:
         reader = csv.DictReader(source)
-        required = {'t_ms', 'accelX', 'accelY', 'accelZ', 'gyroX', 'gyroY', 'gyroZ', 'pressure'}
         names = reader.fieldnames or []
+        clock = 't_us' if 't_us' in names else 't_ms'
+        required = {clock, 'accelX', 'accelY', 'accelZ', 'gyroX', 'gyroY', 'gyroZ', 'pressure'}
         if len(names) != len(set(names)) or not required <= set(names):
             raise ValueError('Missing/duplicate sensor columns')
         rows = list(reader)
@@ -31,25 +35,26 @@ def load_sensor_samples(input_path, pressure_unit='hpa'):
     for index, row in enumerate(rows, 2):
         if None in row or any(value is None for value in row.values()):
             raise ValueError(f'CSV line {index}: wrong column count')
-        if not row['t_ms'].isascii() or not row['t_ms'].isdigit():
+        if not row[clock].isascii() or not row[clock].isdigit():
             raise ValueError(f'CSV line {index}: invalid timestamp')
-        stamp = int(row['t_ms'])
+        stamp = int(row[clock]) * (1 if clock == 't_us' else 1000)  # Microseconds.
         if samples and stamp <= samples[-1][0]:
             raise ValueError('Timestamps must strictly increase')
-        values = [float(row[name]) for name in ('accelX', 'accelY', 'accelZ', 'gyroX', 'gyroY', 'gyroZ', 'pressure')]
+        # Empty v4 cells: no fresh barometer reading (or an invalid IMU sample).
+        values = [float(row[name] or 'nan') for name in ('accelX', 'accelY', 'accelZ', 'gyroX', 'gyroY', 'gyroZ', 'pressure')]
         if pressure_unit == 'hpa':
             values[-1] *= 100
         samples.append((stamp, values))
     origin = samples[0][0]
-    if samples[-1][0] - origin > 0xFFFFFFFF:
+    if samples[-1][0] - origin > 0xFFFFFFFF * 1000:
         raise ValueError('Recording too long')
     reference_values = [44330 * (1 - (values[-1] / 101325) ** 0.1903)
-                        for stamp, values in samples if stamp - origin <= 1000
+                        for stamp, values in samples if stamp - origin <= 1000000
                         and math.isfinite(values[-1]) and values[-1] > 0]
     if not reference_values:
         raise ValueError('No valid pressure in initial 1-second pad window')
     reference = statistics.mean(reference_values)
-    hz = 1000 / statistics.median([samples[i][0] - samples[i-1][0] for i in range(1, len(samples))]) if len(samples) > 1 else 200
+    hz = 1e6 / statistics.median([samples[i][0] - samples[i-1][0] for i in range(1, len(samples))]) if len(samples) > 1 else 200
     return rows, samples, reference, hz
 
 
@@ -71,7 +76,7 @@ def replay(input_path, output_path, pressure_unit='hpa', compiler=None):
         writer = csv.DictWriter(destination, fieldnames=fields)
         writer.writeheader()
         for new, old in zip(computed, rows):
-            new.update(source_t_ms=old['t_ms'], recorded_z_est=old.get('z_est', ''),
+            new.update(source_t_ms=old['t_ms'] if 't_ms' in old else f"{int(old['t_us'])/1000:.3f}", recorded_z_est=old.get('z_est', ''),
                        recorded_vz_est=old.get('vz_est', ''), recorded_legacy_state=old.get('state', ''))
             writer.writerow(new)
     labels = {0: 'PAD', 1: 'BOOST', 2: 'COAST', 3: 'DESCENT', 4: 'LANDED'}

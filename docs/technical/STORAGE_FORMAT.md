@@ -140,7 +140,7 @@ are nonzero uint64 values; exhaustion fails without wrapping. Each bank has 64 s
 is 48 retained flights.
 The RAM ordering of entries is not their stable identity. See [transactions](STORAGE.md#directory-transactions).
 
-## Recording header v7
+## Recording header v8
 
 `plan(config, limits, layout)` validates the complete plan and computes layout without flash
 access. It reserves exactly one slot per assigned output, ordered by rule order and assignment
@@ -173,7 +173,7 @@ Descriptor fields:
 | Offset | Width | Meaning |
 |---|---|---|
 | 0 | 4 | Magic 0x52444850 |
-| 4 | 2 | Header version 7 |
+| 4 | 2 | Header version 8 |
 | 6 | 2 | Descriptor bytes 256 |
 | 8 | 4 | Total header reservation bytes |
 | 12 | 4 | Configuration offset 512 |
@@ -182,7 +182,7 @@ Descriptor fields:
 | 22 | 1 | Sensor mode: 0 hardware, 1 simulation |
 | 23 | 1 | Output mode: 0 physical, 1 virtual |
 | 24 | 1 | Frame: 0 sensor axes, 1 logged calibrated body |
-| 25 | 1 | Sample block format version 3 |
+| 25 | 1 | Sample block format version 4 |
 | 26 | 1 | Assigned-output slot count |
 | 28 | 4 | Output-table offset |
 | 32 | 2 | Slot bytes 512 |
@@ -190,7 +190,7 @@ Descriptor fields:
 | 40 | 4 | Sample-data offset, equal to header reservation bytes |
 | 44 | 4 | Summary offset, exactly after output slots |
 | 64 | count x 8 | Output mappings: uint32 rule, uint8 kind, uint8 channel, FF x 2 |
-| 160 | 64 | Per-flight calibration and state-machine snapshot; [fields below](#per-flight-calibration-snapshot-header-v7) |
+| 160 | 64 | Per-flight calibration and state-machine snapshot; [fields below](#per-flight-calibration-snapshot-header-v8) |
 | 252 | 4 | Immutable CRC |
 
 Unspecified bytes are FF. Output kind is 0 pyro or 1 servo; channels are one-based. The
@@ -202,8 +202,8 @@ page is programmed once between erases. Creation is acknowledged only after deco
 normal read path.
 
 The header omits a flight ID, firmware ID, launch pressure, ranges and nominal rate. The
-sequence remains directory/block bookkeeping. The airbrake law version is frozen separately. Current header v7 always reserves the final
-summary; v1/v2/unknown headers are rejected without migration. Layout equations are:
+sequence remains directory/block bookkeeping. The airbrake law version is frozen separately. Current header v8 always reserves the final
+summary; v1..v7/unknown headers are rejected without migration. Layout equations are:
 
 ```text
 tableOffset   = 512 + align256(configBytes)
@@ -237,82 +237,157 @@ Slot state is Empty=0, Pending=1 (RAM only), Recorded=2, Invalid=3. Timestamp ze
 UINT32_MAX are valid. Empty/Invalid never prove the actuator did not operate. An individual
 damaged slot does not invalidate other slots or immutable metadata.
 
-## Samples and blocks v3
+## Samples and blocks v4
 
-`FlightSample` preserves the agreed CSV order:
+Replaces v3 together with recording header v8 (descriptor byte 25 = 4). There is no reader for
+v3 or header v7: old recordings report `UnsupportedVersion`; `flights format` clears them.
+`FlightLogCodec` encodes on the storage worker (core 1); `FlightLogDecoder.h` is the C++
+reference decoder used by host tests and `tools/replay/flight_log.py` the PC decoder.
 
-```text
-t_ms,accelX,accelY,accelZ,gyroX,gyroY,gyroZ,pressure,temp,z_est,vz_est,roll,pitch,yaw,az_est,state,battery_v,abort_reason,airbrake_1_pct,airbrake_2_pct,airbrake_3_pct,airbrake_4_pct,airbrake_flags,airbrake_failed_conditions,airbrake_channel_mask
-```
+### Goals
 
-Samples have 76 bytes: uint32 little-endian milliseconds at offset 0, fourteen IEEE-754 binary32
-values at offsets 4..59 in the listed order, phase uint8 at 60, battery uint16 millivolts at
-61..62 and abort reason at 63 (0 none, 1 velocity median, 2 tilt). Battery FFFF means
-unavailable; zero means a measured 0 V. Offsets 64..71 contain four u16 commanded openings (0..10000 = 0..100%; FFFF = unassigned).
-Offsets 72..73 contain u16 control flags, 74 the failed-condition bitmask and 75 the servo
-channel mask. [Airbrakes](AIRBRAKES.md#logging) defines flags and transition interpretation.
-Block version 3 and recording-header version 7 are required; old recordings are rejected, not migrated.
-Timestamp zero is valid; accepted timestamps strictly increase without uint32 rollover.
-Phase mapping is 0 PAD, 1 BOOST/BOOST 1, 2 COAST/COAST 1, 3 DESCENT, 4 LANDED,
-5 BOOST 2, 6 COAST 2, 7 ABORT. The frozen machine setting disambiguates stage-one labels.
-Unknown phases
-are rejected. All finite float values are preserved, including heights above 327.67 m.
-Missing/nonfinite measurements encode canonical quiet NaN 0x7FC00000, rather than zero or a
-saturated measurement. No precision-reducing quantization is applied. The source convention
-(sensor axes or calibrated body) belongs to the FlightHeaderStore metadata; this low-level
-component does not infer it.
+One record per IMU sample at the full FIFO rate (480 Hz nominal, 476.3 Hz on the current board)
+with raw sensor values, full-rate estimates, barometer only when fresh, and state only when it
+changes. The board stores and transfers raw blocks; only the PC decodes and calibrates.
 
-Output starts use the independently committed FlightHeaderStore table, as required by the flash
-design. Airbrake state and commanded openings are sampled continuously. Normal output starts remain
-in their independent table; samples do not contain their trigger/event journal.
+### Block
 
-| Fields | Stored/exported unit |
-|---|---|
-| t_ms | Milliseconds from the run origin |
-| accelX/Y/Z, az_est | m/s^2 |
-| gyroX/Y/Z | rad/s |
-| pressure | hPa |
-| temp | C |
-| z_est | Launch-relative metres |
-| vz_est | m/s |
-| roll, pitch, yaw | Degrees |
-| state | Numeric phase |
-| battery_v | Stored as integer millivolts, exported in volts; FFFF exports null/CSV nan |
-| abort_reason | Integer 0 none, 1 velocity, 2 tilt; retained through the terminal ABORT phase |
-
-Battery acquisition is real board telemetry at 5 Hz, independently of the navigation sensor
-source. Samples hold the latest acquisition, including during onboard simulation/HIL; Hoppino
-contains no fabricated battery trace. This adds no sample/block space or extra flash writes.
-
-Each 1024-byte block has three 256-byte body pages and a separate 256-byte commit page. Every
-page is programmed once between erases. Integers are little-endian.
+A block is 2048 bytes = 8 pages: pages 0..6 are the 1792-byte body, page 7 the commit page. Every
+page is programmed once between erases, body before commit. Blocks are contiguous after the
+header reservation; two blocks fit one 4 KiB sector.
 
 | Body offset | Width | Meaning |
 |---|---|---|
 | 0 | 4 | Magic 0x4B425350 |
-| 4 | 2 | Block version 3 |
-| 6 | 2 | Sample size 76 |
+| 4 | 2 | Block version 4 |
+| 6 | 2 | Body bytes 1792 |
 | 8 | 8 | Nonzero recording sequence, bound to directory ownership |
 | 16 | 4 | Zero-based block index |
-| 20 | 2 | Sample count 1..9 |
-| 22 | 2 | Reserved FF |
-| 24 | 4 | First sample ordinal within recording |
-| 28 | 4 | Physical block address |
-| 32 | count x 76 | Encoded samples |
-| after samples | remaining | FF padding |
-| 764 | 4 | CRC-32/ISO-HDLC over body bytes 0..763 |
+| 20 | 4 | Physical block address |
+| 24 | 8 | Time of the first FRAME, us from the run origin |
+| 32 | 4 | IMU sequence number of the first FRAME |
+| 36 | 2 | FRAME count, 1..114 |
+| 38 | 2 | Payload bytes used, 1..1724 |
+| 40 | 1 | Phase in effect before the first record (same mapping as v3) |
+| 41 | 1 | Abort reason in effect before the first record |
+| 42 | 2 | Battery mV in effect before the first record; FFFF unavailable |
+| 44 | 2 | Airbrake flags in effect before the first record |
+| 46 | 1 | Airbrake failed-condition bitmask |
+| 47 | 1 | Airbrake channel mask (bits 0..3) |
+| 48 | 8 | Airbrake openings ch 1..4, u16 0..10000; FFFF unassigned |
+| 56 | 8 | Reserved FF |
+| 64 | 1724 | Records, then FF to the end of the payload |
+| 1788 | 4 | CRC-32/ISO-HDLC over body bytes 0..1787 |
 
 Commit page: magic 0x4D435350 at offset 0, body CRC at 4, its uint32 complement at 8; remaining
-bytes are FF. Body pages are programmed and readback-verified before commit. The committed block
-is decoded and checked before advancing writer counters. A full block uses 684 payload bytes for
-9 samples: about 113.8 physical bytes per sample including block overhead. Explicit partial
-flushes cost more space. Four blocks fit one erase sector. This is the current uncompressed
-encoding.
+bytes FF (unchanged from v3). A block is committed once those 12 bytes follow the body. The
+writer programs the 7 body pages with `programErased()` (the extent was verified erased at
+preparation; the driver verifies each page), then the commit page, then reads the 2 KiB back
+once and compares it end to end. A write failure is never retried. Bytes 40..55 make every block decodable on its own: a decoder
+starts each block from this state snapshot, so a damaged earlier block never corrupts a later one.
+Recovery and `flights info` count samples from offset 36 without decoding records; recovery
+checks that each block header starts after the previous block's samples. The saved sample count
+(summary) is the number of FRAMEs. "Full" means a sample was refused, not that the last block
+of the extent is in use.
 
-The logging adapter converts pressure Pa to hPa and Euler radians to degrees. The source-frame
-convention is frozen in the header; it is not inferred from the sample. Final partial blocks
-contain their actual count. Four blocks fit one sector; 1 MiB holds 1024 blocks / 9,216
-samples, before header reservation.
+### Records
+
+Each record starts with a tag byte: bits 7..5 type, bits 4..0 flags. Undefined flag bits must be
+zero. Tag 0xFF ends the payload (erased flash). Records appear in time order. One IMU sample
+produces one group: optional STATUS, BATTERY, AIRBRAKE, GAP, TIME and BARO records, then its
+FRAME. Auxiliary records belong to the FRAME that follows them. A group (at most 63 bytes) is
+never split across blocks.
+
+| Type | Record | Bytes | Fields after the tag |
+|---|---|---|---|
+| 1 | FRAME | 15 or 28 | u16 dt; i16 ax, ay, az, gx, gy, gz; then, with flag bit 0, the estimates below |
+| 2 | BARO | 8 | u16 age us (FRAME time minus barometer sample time); u24 pressure in 1/64 Pa; i16 temperature in 0.01 C |
+| 3 | STATUS | 3 | u8 phase; u8 abort reason |
+| 4 | BATTERY | 3 | u16 mV, FFFF unavailable |
+| 5 | AIRBRAKE | 5 + 2n | u16 flags; u8 failed conditions; u8 channel mask; u16 opening for each set mask bit, ascending |
+| 6 | GAP | 3 | u16 count of IMU samples not stored before the next FRAME (>= 1) |
+| 7 | TIME | 5 | u32 dt for the next FRAME, used when dt > 65534 us; tag must be exactly 0xE0 |
+
+FRAME flags: bit 0 estimates present; bit 1 pre-launch history (written from the pad buffer);
+bit 2 IMU invalid (the six values are then 0; -32768 remains a valid saturated code).
+GAP flags: bit 0 deliberate decimation (pad history), clear for real loss (queue full, FIFO
+overrun, invalid acquisition).
+
+FRAME `dt` is the time since the previous FRAME of the same block, 0 for the first one (whose
+time is body offset 24). `dt = FFFF` means "take dt from the preceding TIME record". The IMU
+sequence number of each FRAME is the previous one + 1 + the counts of GAP records in between.
+The first FRAME of a block takes its time and sequence from the header; a GAP before it is
+informational (the decoder compares with the previous block). A gap beyond 65535 samples or a
+time step beyond 32 bits starts a new block instead.
+
+FRAME estimates, 13 bytes (each field's minimum value means invalid):
+
+| Field | Encoding | Range |
+|---|---|---|
+| Altitude | i24, cm | +/- 83.8 km |
+| Vertical velocity | i16, 0.02 m/s | +/- 655 m/s |
+| Vertical acceleration | i16, 0.01 m/s^2 | +/- 327 m/s^2 (33 g) |
+| Roll, pitch, yaw | i16 each, 0.01 degree | +/- 327 degrees |
+
+### IMU values
+
+The six i16 values are, in order, accelerometer X/Y/Z then gyroscope X/Y/Z. Their meaning
+depends on the header frame convention (descriptor byte 24):
+
+- **0, sensor axes (hardware):** the unmodified LSM6DSV32X output codes from the FIFO, in sensor
+  axes. Saturation is the code itself (-32768 or 32767). Firmware conversion, which decoders
+  must reproduce: accel m/s^2 = code x 0.976 x 9.80665 / 1000; gyro rad/s = code x 70 /
+  1000 x pi / 180.
+- **1, calibrated body (simulation/HIL):** body-axis values already calibrated by the source,
+  quantized with the same two LSBs, rounded to nearest and clamped to the i16 range.
+
+To rebuild calibrated BODY values from sensor-axis codes, the decoder applies the per-flight
+snapshot (descriptor bytes 160..223) exactly as the firmware pipeline does:
+`accel = (a - accelBias) x accelScale`, `gyro = g - gyroBias` per sensor axis, then
+`body[i] = sign x sensor[|m| - 1]` with `m = MountingAxes[upAxis][i]` and `MountingAxes =
+{1,2,3}, {-1,2,-3}, {2,-1,3}, {-2,1,3}, {3,2,-1}, {-3,2,1}` for upAxis 0..5.
+
+### Pre-launch history
+
+While the phase is PAD nothing reaches flash. Core 1 keeps the last 0.5 s of groups at full rate
+and, before that, one group every 100 ms for 10 s (the latest barometer and state travel with
+each kept group). On the first non-PAD frame it encodes the 10 Hz history, then the full-rate
+tail, both with FRAME flag bit 1 and decimation GAPs, then continues live. A run that ends in
+PAD is discarded as today for hardware; simulation/HIL write their buffer at close. Writing the
+buffer (about 11 KB) takes about 40 ms of core 1 while live frames wait in the 128-entry queue
+(about 270 ms at 476 Hz). On the board, the Hoppino replay (200 Hz, 8.2 s of PAD) kept 175
+history samples and 5137 of 6600 overall; the boost-time write was the longest worker job
+(64 ms, queue peak 15 of 128).
+
+### Size
+
+At 476 Hz with valid estimates: FRAME 28 B x 476 + BARO 8 B x 100 = 14.1 KB/s of records; with
+84 % payload efficiency (1724 of 2048 bytes) about 16.8 KB/s of flash. 1 MiB holds about 62 s
+of flight after the pre-launch history; v3 held about 19 s at the same rate. Measured on the
+board: about 55 frames per block and 7.8 ms of worker time per block (write + read-back), i.e.
+about 7 % of core 1 at 476 Hz (v3: about 33 %).
+
+### Transfer
+
+`flights info` reports `sample_transport: "raw-v4"`, `block_body_bytes: 1792` and
+`block_chunk_bytes: 448`. `flights block <sequence> <index> <offset>` returns `bytes` of the
+validated body starting at `offset` as base64 (`data`), with the block's `frames`; four chunks
+make one body. The board validates header, CRC and commit before sending; the PC decoder checks
+everything again and rejects any damaged byte. The Hoppino flight (93 blocks) downloads in
+about 3 s over USB.
+
+### CSV export (PC decoder)
+
+One row per FRAME, in order:
+
+```text
+t_us,imu_seq,pad_history,gap_before,raw_ax,raw_ay,raw_az,raw_gx,raw_gy,raw_gz,accelX,accelY,accelZ,gyroX,gyroY,gyroZ,pressure,temp,z_est,vz_est,az_est,roll,pitch,yaw,state,abort_reason,battery_v,airbrake_1_pct,airbrake_2_pct,airbrake_3_pct,airbrake_4_pct,airbrake_flags,airbrake_failed_conditions,airbrake_channel_mask
+```
+
+`raw_*` are the stored codes (empty for calibrated-body flights); `accel*`/`gyro*` are calibrated
+BODY m/s^2 and rad/s. `pressure` (hPa) and `temp` (C) are filled only on rows whose group had a
+BARO record. State, battery and airbrake columns carry the last value forward. Invalid or
+missing values are empty cells. `gap_before` is the number of samples not stored before the row.
 
 ## Final summary v1
 
@@ -347,17 +422,17 @@ unclosed directory entry does not turn that entry into Completed after a restart
 
 ## Compatibility
 
-Component versions are independent: configuration codec is v3 and recording header is v7;
-sample blocks are v3; directory/start/summary remain v1. Only configuration codec v3 is read and written;
+Component versions are independent: configuration codec is v3 and recording header is v8;
+sample blocks are v4; directory/start/summary remain v1. Only configuration codec v3 is read and written;
 older packages and snapshots are rejected. There is no conversion or legacy decoder.
 No automatic erase or migration writes occur at boot. `flights info` reports `config_version:3`
 and `flights config` exports that codec.
 Directory status values are Recording=1, Completed=2, Interrupted=3,
 StoppedFull=4, Invalidated=5, Corrupt=6. Firmware that only accepts 1..5 cannot mount a bank
 containing Corrupt and must not autoformat it. The frozen whole-image FNV64 regression value is
-`0x5af89f6fd720024f` (current fixture uses zero channel delays).
+`0xf08714d236eb60fb` (header v8, sample blocks v4; the fixture uses zero channel delays).
 
-## Per-flight calibration snapshot (header v7)
+## Per-flight calibration snapshot (header v8)
 
 Descriptor bytes 160..223 store the immutable startup calibration, covered by the same
 CRC and commit as the configuration snapshot. Old header versions are unsupported;

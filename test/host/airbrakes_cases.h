@@ -82,9 +82,11 @@ void run() {
   storage::RecordingInfo info; assert(recorder.inspect(1,info));
   assert(recorder.metadata()->calibration.airbrakeLawVersion==control::AirbrakeLawVersion && recorder.metadata()->calibration.airbrakesEnabled);
   assert(recorder.metadata()->configuration.airbrakes.channelMask==3);
-  storage::SampleBlock block; assert(recorder.readBlock(1,0,block) && block.count==2);
-  assert(block.samples[1].airbrakes.flags&control::InvalidEstimate);
-  assert(block.samples[1].airbrakes.opening[0]==0 && block.samples[1].airbrakes.opening[2]==65535);
+  // The run never left PAD: its two samples are the pre-launch history written at close.
+  storage::RawBlock raw; assert(recorder.readBlock(1,0,raw) && raw.frames==2);
+  const auto block=decodeRaw(raw); assert(block.frame[0].history && block.frame[1].history);
+  assert(block.frame[1].state.airbrakes.flags&control::InvalidEstimate);
+  assert(block.frame[1].state.airbrakes.opening[0]==0 && block.frame[1].state.airbrakes.opening[2]==65535);
   outputs.releasePrepared(); assert(!config.setAirbrakes(false));
   const auto servoWrites=gpio.servoCommands.size();
   assert(!runtime.begin(source,0,200,calibration,0,storage::SensorMode::Simulation,storage::OutputMode::Physical));

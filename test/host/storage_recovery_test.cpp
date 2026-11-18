@@ -42,7 +42,7 @@ struct Device : FlashDevice {
   FlashFailure lastFailure() const override { FlashFailure f; if (failProgram) f.cause=typedCause; return f; }
 };
 bool begin(FlightRecorder &r) { return r.begin(fixture(),limits,4096,SensorMode::Simulation,OutputMode::Virtual,sensors::FrameConvention::LoggedCalibratedBody); }
-void close(FlightRecorder &r,unsigned time=0) { FlightSample s; s.timeMs=time; assert(r.append(s) && r.finish(true)); }
+void close(FlightRecorder &r,unsigned time=0) { FlightSample s; s.timeUs=uint64_t(time)*1000; assert(r.append(s) && r.finish(true)); }
 void run() {
   Device flash; FlightRecorder recorder(flash); assert(recorder.initializeBlank());
   assert(begin(recorder)); const auto first=*recorder.current(); close(recorder);
@@ -115,8 +115,10 @@ void run() {
   // Preserve the first typed storage fault, including the actual operation/address.
   Device faulty; ProfiledFlashDevice profiled(faulty); FlightRecorder failure(profiled);
   assert(failure.initializeBlank() && begin(failure));
-  for (unsigned i=0;i<9;++i) { sample.timeMs=i; assert(failure.append(sample)); }
-  faulty.failProgram=true; assert(!failure.service()); const auto detail=failure.failure();
+  // Airborne samples fill the RAM block; the append that overflows it writes the block.
+  sample.phase=recovery::FlightPhase::Coast; faulty.failProgram=true; bool failed=false;
+  for (unsigned i=0;i<200 && !failed;++i) { sample.timeUs=i*1000; sample.imuSequence=i+1; failed=!failure.append(sample); }
+  assert(failed && !failure.service()); const auto detail=failure.failure();
   assert(detail.error==RecorderError::Sample && std::string(detail.cause)=="Io" && detail.flash.cause==FlashError::Verify && detail.flash.operation==FlashOperation::Program);
   faulty.failProgram=false; uint8_t byte; assert(profiled.read(0,&byte,1));
   assert(!failure.inspect(1,info)); failure.abort();
@@ -125,8 +127,9 @@ void run() {
   faulty.failProgram=true; faulty.typedCause=FlashError::Timeout;
   assert(!begin(failure) && failure.failure().flash.cause==FlashError::Timeout);
   Device verify; FlightRecorder verifying(verify); assert(verifying.initializeBlank() && begin(verifying));
-  for (unsigned i=0;i<9;++i) { sample.timeMs=i; assert(verifying.append(sample)); }
-  verify.corruptAfterProgram=true; assert(!verifying.service());
+  verify.corruptAfterProgram=true; failed=false;
+  for (unsigned i=0;i<200 && !failed;++i) { sample.timeUs=i*1000; sample.imuSequence=i+1; failed=!verifying.append(sample); }
+  assert(failed && !verifying.service());
   assert(verifying.failure().error==RecorderError::Sample && std::string(verifying.failure().cause)=="Verify");
   std::cout<<"Storage lifecycle passed: 513 delete cuts, 513 discard cuts, protected flights, 160 identities with reuse, durable high-water, summaries and first-fault diagnostics.\n";
 }
@@ -170,8 +173,10 @@ void run() {
   FlightSample sample; assert(recorder.append(sample) && recorder.finish(true));
   const auto healthy=*recorder.current();
   assert(begin(recorder)); const auto interrupted=*recorder.current(); const auto layout=recorder.metadata()->layout;
-  for(unsigned i=0;i<9;++i) { sample.timeMs=i; assert(recorder.append(sample)); }
-  assert(recorder.service()); recorder.abort(); const auto seed=flash;
+  // One committed block (114 airborne 15-byte FRAMEs) plus an unwritten RAM tail.
+  sample.phase=recovery::FlightPhase::Coast;
+  for(unsigned i=0;i<120;++i) { sample.timeUs=i*1000; sample.imuSequence=i+1; assert(recorder.append(sample)); }
+  assert(recorder.service() && recorder.committedSamples()==114); recorder.abort(); const auto seed=flash;
   const auto sampleAddress=interrupted.start+layout.headerBytes;
   flash.bytes[sampleAddress+36]^=1; const auto damaged=flash;
   // Power loss during quarantine can leave Recording or Corrupt, never free space.
@@ -213,7 +218,7 @@ void run() {
   for(bool direct : {false,true}) {
     auto closed=seed; closed.bytes[healthy.start+4096+36]^=1;
     FlightRecorder reader(closed); assert(reader.initialize());
-    RecordingInfo info; SampleBlock block;
+    RecordingInfo info; RawBlock block;
     assert(!(direct ? reader.readBlock(healthy.sequence,0,block) : reader.inspect(healthy.sequence,info)));
     assert(reader.error()==RecorderError::Corrupt && reader.directory().corruptCount()==1);
     assert(std::string(reader.failure().component)=="Sample");
@@ -221,10 +226,10 @@ void run() {
   }
 
   // A normal incomplete unpublished tail remains Interrupted, not Corrupt.
-  auto tail=seed; tail.bytes[sampleAddress+1024]=0;
+  auto tail=seed; tail.bytes[sampleAddress+2048]=0;
   FlightRecorder partial(tail); RecordingInfo info;
   assert(partial.initialize() && partial.directory().corruptCount()==0);
-  assert(partial.inspect(interrupted.sequence,info) && info.samples==9 && info.entry.status==FlightStatus::Interrupted);
+  assert(partial.inspect(interrupted.sequence,info) && info.samples==114 && info.entry.status==FlightStatus::Interrupted);
 
   // Transient read failures must not turn into permanent corruption flags.
   auto io=seed; io.failedRead=sampleAddress;
@@ -235,7 +240,7 @@ void run() {
   assert(responsive.initialize() && responsive.directory().corruptCount()==0);
 
   // A valid unsupported header version is not corruption and causes no writes.
-  auto unsupported=seed; auto *p=unsupported.bytes.data()+interrupted.start; p[4]=8;
+  auto unsupported=seed; auto *p=unsupported.bytes.data()+interrupted.start; p[4]=9; // A future header version.
   const auto configPages=(layout.configBytes+255)/256*256;
   const auto crc=binary::extendCrc(binary::extendCrc(binary::CrcInitial,p,252),p+512,configPages)^binary::CrcInitial;
   binary::put(p+252,crc,4); binary::put(p+256+4,crc,4); binary::put(p+256+8,~crc,4);

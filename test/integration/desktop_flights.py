@@ -46,9 +46,9 @@ def check_flight_plots(window,controller,app):
     with tempfile.TemporaryDirectory() as folder:
         target=Path(folder)/'curves.csv'
         with target.open('w',newline='',encoding='utf-8') as stream:
-            writer=csv.writer(stream); writer.writerow(['t_ms','z_est','vz_est','az_est','roll','pitch','yaw','state','gyroX','gyroY','gyroZ','battery_v'])
+            writer=csv.writer(stream); writer.writerow(['t_us','z_est','vz_est','az_est','roll','pitch','yaw','state','gyroX','gyroY','gyroZ','battery_v'])
             for i in range(2401):
-                writer.writerow([i*5,i/2,100-i/12,-9.5,'nan' if i==4 else 12,3,-40,0 if i==0 else 1 if i==1 else 2,math.pi/2,'nan' if i==4 else -math.pi,math.pi/4,8.4-(i//40)*.01])
+                writer.writerow([i*5000,i/2,100-i/12,-9.5,'nan' if i==4 else 12,3,-40,0 if i==0 else 1 if i==1 else 2,math.pi/2,'nan' if i==4 else -math.pi,math.pi/4,8.4-(i//40)*.01])
         saved_rules=[dict(id=10,name='Regola salvata',delay_ms=50,conditions=[dict(kind=1),dict(kind=0,phase_mask=8),dict(kind=8,elapsed_ms=250,reference=20)],outputs=[dict(kind='pyro',channel=1,delay_ms=75),dict(kind='servo',channel=1,delay_ms=200)]),
                      dict(id=20,name='Riferimento salvato',delay_ms=0,conditions=[dict(kind=2,comparison=3,value=80)],outputs=[dict(kind='pyro',channel=2,delay_ms=0)])]
         starts=[dict(rule_id=10,state='recorded',t_ms=5,kind='pyro',channel=1),dict(rule_id=10,state='recorded',t_ms=150,kind='servo',channel=1),dict(rule_id=20,state='invalid',t_ms=None,kind='pyro',channel=2)]
@@ -63,7 +63,7 @@ def check_flight_plots(window,controller,app):
         assert data['phases']==[(0,'PAD'),(.005,'BOOST'),(.010,'COAST')] # Before plot decimation.
         assert next(r for r in data['rows'] if r[0]==.030)[4] is None # A skipped invalid sample still breaks the curve.
         assert next(r for r in data['rows'] if r[0]==.030)[8] is None
-        legacy=Path(folder)/'minimal.csv'; legacy.write_text('t_ms,z_est,vz_est\n0,0,0\n5,1,2\n',encoding='utf-8')
+        legacy=Path(folder)/'minimal.csv'; legacy.write_text('t_us,z_est,vz_est\n0,0,0\n5000,1,2\n',encoding='utf-8')
         assert load_flight(legacy)['rows'][0][3:]==(None,)*8 # Missing optional values are never fake zeroes.
         original=controller.state.flight; controller.state.flight=data; window.recorded_flights_page.render(controller.state)
         details=window.recorded_flights_page.flight_details
@@ -184,7 +184,8 @@ def check_recorded_flights(app,wait):
             window.recorded_flights_page.list_flights_button.click(); wait(lambda:not controller.state.foreground)
         assert controller.state.error and not controller.state.flights_loaded and window.recorded_flights_page.flights_empty.isHidden()
         backend.request('hil begin 0 200 logged_body record 4096')
-        for i in range(22): backend.request(f'hil sample {i*5} 0 0 9.80665 0 0 0 101325')
+        # 90 PAD samples stay in the full-rate pre-launch history: two v4 blocks (4 KiB budget).
+        for i in range(90): backend.request(f'hil sample {i*5} 0 0 9.80665 0 0 0 101325')
         backend.request('hil stop completed')
         controller.list_flights(); wait(lambda:not controller.state.foreground)
         assert len(controller.state.flights)==1
@@ -196,32 +197,32 @@ def check_recorded_flights(app,wait):
             with patch('perpetual_app.recorded_flights_page.QFileDialog.getSaveFileName',return_value=('','CSV (*.csv)')):
                 window.recorded_flights_page.download_button.click()
             assert not controller.state.download and not window.recorded_flights_page.download_progress.isVisible()
-            gate=threading.Event(); backend.gates['flights packed 1 0 0']=gate
+            gate=threading.Event(); backend.gates['flights block 1 0 0']=gate
             with patch('perpetual_app.recorded_flights_page.QFileDialog.getSaveFileName',return_value=(str(target),'CSV (*.csv)')):
                 window.recorded_flights_page.download_button.click()
-            wait(lambda:'flights packed 1 0 0' in backend.commands and controller.state.download.get('total')==22)
+            wait(lambda:'flights block 1 0 0' in backend.commands and controller.state.download.get('total')==90)
             assert window.recorded_flights_page.download_progress.isVisible() and window.recorded_flights_page.download_result.isHidden()
             assert window.recorded_flights_page.download_progress.maximum()==100 and window.recorded_flights_page.download_progress.value()<100
             assert window.recorded_flights_page.download_progress.text()=='0% · Calcolo tempo…'
-            controller._on_progress(controller._epoch-1,11,22,10) # Results from a previous connection cannot change ETA.
+            controller._on_progress(controller._epoch-1,45,90,10) # Results from a previous connection cannot change ETA.
             assert controller.state.download['eta_seconds'] is None
-            controller._on_progress(controller._epoch,11,22,.5)
+            controller._on_progress(controller._epoch,45,90,.5)
             assert controller.state.download['eta_seconds'] is None
-            controller._on_progress(controller._epoch,11,22,10)
+            controller._on_progress(controller._epoch,45,90,10)
             assert controller.state.download['eta_seconds']==10 and window.recorded_flights_page.download_progress.text()=='50% · ~10 s rimanenti'
-            controller._on_progress(controller._epoch,22,22,20)
+            controller._on_progress(controller._epoch,90,90,20)
             assert window.recorded_flights_page.download_progress.text()=='99% · Finalizzazione…'
-            gate.set(); wait(lambda:not controller.state.foreground); backend.gates.pop('flights packed 1 0 0')
-            assert not controller.state.error and controller.state.flight['samples']==22
-            assert target.with_suffix('.json').exists() and len(window.recorded_flights_page.flight_plot.points)==22
-            assert controller.state.download['state']=='completed' and controller.state.download['done']==22
+            gate.set(); wait(lambda:not controller.state.foreground); backend.gates.pop('flights block 1 0 0')
+            assert not controller.state.error and controller.state.flight['samples']==90
+            assert target.with_suffix('.json').exists() and len(window.recorded_flights_page.flight_plot.points)==90
+            assert controller.state.download['state']=='completed' and controller.state.download['done']==90
             assert not window.recorded_flights_page.download_progress.isVisible() and window.recorded_flights_page.download_result.isVisible()
             assert window.recorded_flights_page.download_result.text()=='Scaricato in '+str(target.resolve())
             # Cancel during a real pending reply, after a chunk has been saved.
             cancelled=Path(folder)/'cancelled.csv'; marker=len(backend.commands)
-            gate=threading.Event(); backend.gates['flights packed 1 1 0']=gate
+            gate=threading.Event(); backend.gates['flights block 1 1 0']=gate
             controller.download('1',cancelled)
-            wait(lambda:'flights packed 1 1 0' in backend.commands[marker:] and controller.state.download.get('done')==9)
+            wait(lambda:'flights block 1 1 0' in backend.commands[marker:] and controller.state.download.get('done',0)>0)
             # The app stages the export beside the destination and moves it only after completion.
             assert not cancelled.exists() and list(Path(folder).glob('.flight-download-*/cancelled.csv'))
             assert window.recorded_flights_page.download_button.text()=='Annulla' and window.recorded_flights_page.download_button.isEnabled()
@@ -229,14 +230,14 @@ def check_recorded_flights(app,wait):
             window.recorded_flights_page.download_button.click()
             assert controller.state.download['state']=='cancelling' and controller.state.foreground
             assert window.recorded_flights_page.download_button.text()=='Annullamento…' and not window.recorded_flights_page.download_button.isEnabled()
-            gate.set(); wait(lambda:not controller.state.foreground); backend.gates.pop('flights packed 1 1 0')
+            gate.set(); wait(lambda:not controller.state.foreground); backend.gates.pop('flights block 1 1 0')
             assert controller.state.download['state']=='cancelled' and not controller.state.error and controller.state.connected
             assert window.recorded_flights_page.download_result.text()=='Download annullato' and not window.recorded_flights_page.download_progress.isVisible()
             assert window.recorded_flights_page.download_button.text()=='Scarica selezionato' and window.recorded_flights_page.download_button.isEnabled()
             assert not cancelled.exists() and not cancelled.with_suffix('.json').exists()
             assert not list(Path(folder).glob('.flight-download-*')) # Cancelling removes the staging folder too.
-            assert [command for command in backend.commands[marker:] if command.startswith('flights packed ')]==['flights packed 1 0 0','flights packed 1 1 0']
-            assert backend.request('flights info 1')['samples']==22 # Reply drained; remote recording and connection are intact.
+            assert [command for command in backend.commands[marker:] if command.startswith('flights block ')]==['flights block 1 0 0','flights block 1 0 448','flights block 1 0 896','flights block 1 0 1344','flights block 1 1 0']
+            assert backend.request('flights info 1')['samples']==90 # Reply drained; remote recording and connection are intact.
             controller.download('1',cancelled); wait(lambda:not controller.state.foreground)
             assert controller.state.download['state']=='completed' and cancelled.with_suffix('.json').exists()
             for page in range(6):

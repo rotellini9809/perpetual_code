@@ -7,7 +7,7 @@ map/offsets; [Recording](../testing/RECORDING.md) owns commands and timing usage
 
 ## Driver and verification
 
-`FlashLogger` operates the fixed W25Q128 at the board's 18.75 MHz SPI setting (FLASH_TEST `c`: error-free to 37.5 MHz, 75 MHz fails). Busy waits poll status every 10 us for the first 5 ms (page programs take ~0.4 ms), then every 1 ms. Flight sample blocks use `programErased()`, which skips the pre-write NeedsErase read because preparation erased and verified the whole extent; post-write verification is unchanged. Measured with the onboard Hoppino replay recording (200 Hz): worker 8.3 ms per 1 KiB block (was 21.8 ms at 4 MHz with 1 ms sleeps), about 44% of core 1 at 476 Hz. Preparation erases the new extent with `eraseRange()` (64 KiB block erases where aligned, 4 KiB elsewhere, no read-back); `FlightHeaderStore::create` and `FlightSampleStore::begin` then verify the whole extent erased exactly once. 1 MiB arming went from 7.9 s to 3.3 s and the worker to 6.3 ms per block (about 33% of core 1 at 476 Hz) after also replacing the bitwise CRC with a nibble table and removing fixed microsecond delays around flash transactions. Initialize wakes the
+`FlashLogger` operates the fixed W25Q128 at the board's 18.75 MHz SPI setting (FLASH_TEST `c`: error-free to 37.5 MHz, 75 MHz fails). Busy waits poll status every 10 us for the first 5 ms (page programs take ~0.4 ms), then every 1 ms. Flight sample blocks use `programErased()`, which skips the pre-write NeedsErase read because preparation erased and verified the whole extent; post-write verification is unchanged. Measured with the onboard Hoppino replay recording (200 Hz): worker 8.3 ms per 1 KiB block (was 21.8 ms at 4 MHz with 1 ms sleeps), about 44% of core 1 at 476 Hz. Preparation erases the new extent with `eraseRange()` (64 KiB block erases where aligned, 4 KiB elsewhere, no read-back); `FlightHeaderStore::create` and `FlightSampleStore::begin` then verify the whole extent erased exactly once. 1 MiB arming went from 7.9 s to 3.3 s and the worker to 6.3 ms per block (about 33% of core 1 at 476 Hz) after also replacing the bitwise CRC with a nibble table and removing fixed microsecond delays around flash transactions. With log format v4 ([2 KiB blocks of tagged records](STORAGE_FORMAT.md#samples-and-blocks-v4)) the worker needs about 7.8 ms per block including one end-to-end read-back, about 7% of core 1 at 476 Hz; PAD samples stay in the RAM pre-launch history and reach flash only at the first non-PAD sample. Initialize wakes the
 chip, requires three matching supported JEDEC reads and waits for ready. Read/program/erase
 reject invalid arguments, bounds and alignment. Program preflights the entire range for
 forbidden 0-to-1 changes, splits at page boundaries, checks write-enable and verifies each
@@ -54,11 +54,11 @@ authorize stale bytes left before erasure.
 `append()` accepts samples in RAM. An eleven-sample native staging buffer flushes only in worker
 service; append itself performs no I/O. `recordStart()` preserves the first actual logical
 command-start timestamp against its immutable mapping; an identical duplicate is idempotent and
-a conflicting time/unknown mapping fails. The worker services starts before a full sample block.
+a conflicting time/unknown mapping fails. The worker services starts before samples; a full RAM block is written by the append that overflows it.
 Dedicated start capacity remains usable when sample capacity fills. Every durable block is read
 back and decoded before saved counters advance. Last partial blocks flush at finish.
 
-MAIN has a 64-slot sample FIFO and separate eight-start FIFO. Both are fixed SPSC queues with
+MAIN has a 128-slot sample FIFO (about 270 ms at 476 Hz) and separate eight-start FIFO. Both are fixed SPSC queues with
 release/acquire indices, no allocation/overwrite, and quiescent-only reset. Full queue returns
 Backpressure; full sample extent returns Full. HIL counts producer rejects and worker background
 drops separately and reports their sum. Saved means verified persistence, not successful

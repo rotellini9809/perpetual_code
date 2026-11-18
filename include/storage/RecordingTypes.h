@@ -16,16 +16,22 @@ struct FlightEntry {
   uint32_t allocatedBytes = 0; // Contiguous erase-aligned extent, including padding.
   FlightStatus status = FlightStatus::Recording;
 };
-// Matches the legacy CSV field order without magnetometer fields. No output events.
+// One IMU sample group, produced on core 0 and encoded on core 1 (log format v4).
+// Accel/gyro are in the run's frame convention: sensor-axis values converted from
+// the IMU codes (hardware) or calibrated BODY values (simulation/HIL).
 struct FlightSample {
-  uint32_t timeMs = 0;
+  uint64_t timeUs = 0;        // Run-origin time of this IMU sample.
+  uint32_t imuSequence = 0;   // Increases by 1 per acquired sample; jumps mark gaps.
+  bool imuValid = true;
+  bool baroFresh = false;     // A barometer reading new since the previous sample.
+  uint16_t baroAgeUs = 0;     // Sample time minus barometer time, when fresh.
   control::AirbrakeStatus airbrakes;
   std::array<float, 14> values; // See Field for explicit units and ordering.
   recovery::FlightPhase phase = recovery::FlightPhase::Pad;
   recovery::AbortReason abortReason = recovery::AbortReason::None;
   uint16_t batteryMv = UINT16_MAX; // Latest 5 Hz board measurement; FFFF = unavailable.
   enum Field : std::size_t {
-    AccelX, AccelY, AccelZ, GyroX, GyroY, GyroZ, PressureHpa, TemperatureC,
+    AccelX, AccelY, AccelZ, GyroX, GyroY, GyroZ, PressurePa, TemperatureC,
     AltitudeM, VelocityMps, RollDegrees, PitchDegrees, YawDegrees, VerticalAccelMps2
   };
   FlightSample() { values.fill(std::numeric_limits<float>::quiet_NaN()); }

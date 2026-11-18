@@ -1,3 +1,4 @@
+#include "../fixtures/FlightLogSupport.h"
 #include <cstdio>
 #include "simulation/HilSession.h"
 #include "../fixtures/ReplayFixture.h"
@@ -197,18 +198,22 @@ void run() {
   assert(recorder.initializeBlank());
   assert(!sim.begin(true)); const auto recordOrigin = nowUs;
   for (uint32_t t = 0; t <= source.durationMs(); ++t) { nowUs = recordOrigin+t*1000; sim.poll(); }
-  assert(sim.status().savedSamples == 6600 && sim.status().droppedSamples == 0);
+  // PAD until BOOST at 8202 ms (about 1641 samples) becomes the pre-launch history:
+  // 0.5 s at full rate (101) plus 10 Hz before (77). Everything from BOOST on is kept.
+  const auto saved = sim.status().savedSamples;
+  assert(saved >= 6600 - 1641 + 178 - 5 && saved <= 6600 - 1641 + 178 + 5 && sim.status().droppedSamples == 0);
   assert(recorder.current()->status == storage::FlightStatus::Completed);
   assert(!config.setStateMachine(recovery::StateMachineSettings{}));
   storage::RecordingInfo info; assert(recorder.inspect(1,info));
-  assert(info.samples == 6600);
+  assert(info.samples == saved);
   assert(!sim.begin()); assert(sim.poll()); nowUs += 17000; assert(sim.poll());
   assert(sim.missed() == 2 && sim.status().samples == 2 && sim.status().timeMs == 15);
   sim.stop(); assert(std::string(sim.reason()) == "stopped" && !config.runLocked());
   assert(!sim.begin(true)); flash.fail = true;
   for (unsigned i=0; i<15; ++i) { nowUs += 5000; sim.poll(); }
-  assert(sim.active() && sim.status().recordingError != storage::RecorderError::None);
-  sim.stop(); flash.fail = false;
+  // These PAD samples are still in RAM; the failure appears when close writes the history.
+  assert(sim.active() && sim.status().recordingError == storage::RecorderError::None);
+  sim.stop(); assert(sim.status().recordingError != storage::RecorderError::None); flash.fail = false;
   has(send(usb,"sim timing"),"\"period_us\":5000");
   has(send(usb,"sim stop extra"),"INVALID_ARGUMENT");
   assert(recorder.initialize()); // Recover the preceding injected storage failure.
@@ -342,10 +347,10 @@ void bistage() {
   assert(!config.setStateMachine(recovery::StateMachineSettings{}));
   storage::RecordingInfo info; assert(recorder.inspect(1,info));
   assert(recorder.metadata()->calibration.machine.bistage && recorder.metadata()->calibration.machine.minimumCoastVelocity==1000);
-  storage::SampleBlock block; bool savedAbort=false;
+  storage::RawBlock raw; bool savedAbort=false;
   for (uint32_t index=0;index<(info.entry.committedBytes-info.headerBytes)/storage::FlightSampleStore::BlockBytes;++index) {
-    assert(recorder.readBlock(1,index,block));
-    for (unsigned i=0;i<block.count;++i) if (block.samples[i].abortReason==recovery::AbortReason::Velocity) savedAbort=true;
+    assert(recorder.readBlock(1,index,raw)); const auto block=decodeRaw(raw);
+    for (unsigned i=0;i<block.frames;++i) if (block.frame[i].state.abortReason==uint8_t(recovery::AbortReason::Velocity)) savedAbort=true;
   }
   assert(savedAbort);
 }

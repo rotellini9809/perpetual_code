@@ -171,7 +171,7 @@ class RecordedFlightsPage(QWidget):
             QTreeWidgetItem(self.flight_details,[t('State machine'),t('Bistage')])
             QTreeWidgetItem(self.flight_details,[t('Minimum speed in COAST 1'),str(calibration.get('minimum_coast_velocity'))+' m/s'])
         abort=meta.get('abort')
-        if abort: QTreeWidgetItem(self.flight_details,['ABORT',t('{reason} at {time} s',reason={'Velocity':t('Insufficient speed'),'Tilt':t('Tilt beyond the limit')}.get(abort.get('reason'),t('Not available')),time=f'{abort["t_ms"]/1000:.3f}')])
+        if abort: QTreeWidgetItem(self.flight_details,['ABORT',t('{reason} at {time} s',reason={'Velocity':t('Insufficient speed'),'Tilt':t('Tilt beyond the limit')}.get(abort.get('reason'),t('Not available')),time=f'{abort["t_us"]/1e6:.3f}')])
         air_config=meta.get('configuration',{}).get('airbrakes',{})
         if air_config.get('channel_mask'):
             group=QTreeWidgetItem(self.flight_details,[t('Airbrakes'),t('Enabled') if calibration.get('airbrakes_enabled') else t('Disabled')])
