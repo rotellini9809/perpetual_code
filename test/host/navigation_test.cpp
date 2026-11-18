@@ -260,7 +260,13 @@ void run() {
   assert(source.poll(frame) && frame.timeUs == 15000);
   nowUs = 30000; device.next.imuAgeUs = 100; device.next.imuGap = true; device.pending = true;
   assert(source.poll(frame) && frame.imuSequence == first + 5 && frame.timeUs == 29900);
-  puts("Hardware source FIFO timing passed: period spacing, observation bound, gap re-anchor.");
+  // Frames are never closer than half a period, even when the observation (or a
+  // re-anchor after a gap) would put them closer: distinct milliseconds at 476 Hz.
+  nowUs = 30500; device.next.imuAgeUs = 0; device.next.imuGap = false; device.pending = true; // Observed 30500.
+  assert(source.poll(frame) && frame.timeUs == 30950); // 29900 + 2100/2.
+  nowUs = 31000; device.next.imuAgeUs = 0; device.next.imuGap = true; device.pending = true; // Gap, observed 31000.
+  assert(source.poll(frame) && frame.timeUs == 32000 && frame.imuSequence == first + 8);
+  puts("Hardware source FIFO timing passed: period spacing, observation bound, gap re-anchor, minimum spacing.");
 }
 } // namespace test_hardware_sensor_source
 

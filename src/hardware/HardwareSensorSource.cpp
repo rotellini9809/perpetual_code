@@ -39,12 +39,18 @@ bool HardwareSensorSource::poll(Reading &reading) {
   if (sample.imuGap) imuInterrupted_=true;
   if (imuInterrupted_ && latest_.imuSequence) ++latest_.imuSequence;
   const double observed = elapsed_ > sample.imuAgeUs ? double(elapsed_ - sample.imuAgeUs) : 0.0;
-  if (sample.imuPeriodUs <= 0 || !imuTimed_ || imuInterrupted_) imuTimeUs_ = sample.imuPeriodUs > 0 ? observed : double(elapsed_);
+  if (sample.imuPeriodUs <= 0) imuTimeUs_ = double(elapsed_);
   else {
-    const double predicted = imuTimeUs_ + sample.imuPeriodUs;
-    double next = predicted + (observed - predicted) / 32;
-    if (next > observed) next = observed; // A frame cannot be later than its observation.
-    if (next <= imuTimeUs_) next = imuTimeUs_ + 1;
+    double next = observed; // First frame, or re-anchor after lost samples.
+    if (imuTimed_ && !imuInterrupted_) {
+      const double predicted = imuTimeUs_ + sample.imuPeriodUs;
+      next = predicted + (observed - predicted) / 32;
+      if (next > observed) next = observed; // A frame cannot be later than its observation.
+    }
+    // Consecutive FIFO frames are one IMU period apart; never emit them closer than
+    // half of it. At 476 Hz that keeps every frame in a distinct millisecond, which
+    // the run controller requires (a repeated ms would skip navigation entirely).
+    if (imuTimed_ && next < imuTimeUs_ + sample.imuPeriodUs / 2) next = imuTimeUs_ + sample.imuPeriodUs / 2;
     imuTimeUs_ = next;
   }
   imuTimed_ = sample.imuPeriodUs > 0;
