@@ -1,6 +1,7 @@
 """Small incremental g++ builder shared by host tests and navigation replay."""
 from concurrent.futures import ThreadPoolExecutor
 import json
+import os
 from pathlib import Path
 import shlex
 import shutil
@@ -9,16 +10,37 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 # Same language level as the firmware (Arduino-Pico: -std=gnu++17, GCC 14); strict ISO here.
 FLAGS = ('-std=c++17', '-O2', '-Wall', '-Wextra', '-Werror', '-pedantic', '-Iinclude')
+# Static runtime: test executables never load whatever libstdc++ DLL is first on PATH.
+LINK_FLAGS = ('-static',) if os.name == 'nt' else ()
+
+# Pinned Windows host compiler, same GCC as the firmware toolchain. Installed per user by
+# tools/setup_host_compiler.py (SHA-256 verified) and used by default once present.
+WINLIBS_RELEASE = '14.2.0posix-12.0.0-ucrt-r3'
+WINLIBS_ASSET = 'winlibs-x86_64-posix-seh-gcc-14.2.0-mingw-w64ucrt-12.0.0-r3.zip'
+WINLIBS_SHA256 = '88868d745b807f083a117ff69348d8bc021ad7389aa503379dbed1866efcaeb9'
+
+
+def pinned_root():
+    base = os.environ.get('LOCALAPPDATA') or str(Path.home() / 'AppData' / 'Local')
+    return Path(base) / 'Programs' / 'WinLibs' / WINLIBS_RELEASE
+
+
+def default_compiler():
+    """Pinned WinLibs g++ when installed on Windows, otherwise g++ from PATH."""
+    pinned = pinned_root() / 'mingw64' / 'bin' / 'g++.exe'
+    return str(pinned) if os.name == 'nt' and pinned.is_file() else 'g++'
 
 
 class HostBuild:
-    def __init__(self, compiler='g++', jobs=4, rebuild=False, root=ROOT):
+    def __init__(self, compiler=None, jobs=4, rebuild=False, root=ROOT):
         self.root = Path(root).resolve()
         self.directory = self.root / '.pio/tests'
+        compiler = compiler or default_compiler()
         self.compiler = shutil.which(compiler)
         if not self.compiler:
             raise RuntimeError(f'C++ compiler not found: {compiler}')
         banner = subprocess.check_output([self.compiler, '--version'], text=True).splitlines()[0]
+        self.banner = banner
         self.version = [banner, Path(self.compiler).stat().st_mtime_ns]
         self.jobs, self.rebuild = jobs, rebuild
         self.compiled = self.linked = 0
@@ -76,7 +98,7 @@ class HostBuild:
         for name, sources in targets.items():
             inputs = [objects[source][0] for source in sources]
             output = self.directory / 'bin' / (name + '.exe')
-            command = [self.compiler, *(self._relative(path) for path in inputs), '-o', self._relative(output)]
+            command = [self.compiler, *(self._relative(path) for path in inputs), *LINK_FLAGS, '-o', self._relative(output)]
             if not self._fresh(output, command, inputs):
                 self._run(output, command)
                 self.linked += 1

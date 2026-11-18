@@ -53,7 +53,7 @@ def load_sensor_samples(input_path, pressure_unit='hpa'):
     return rows, samples, reference, hz
 
 
-def replay(input_path, output_path, pressure_unit='hpa', compiler='g++'):
+def replay(input_path, output_path, pressure_unit='hpa', compiler=None):
     rows, samples, reference, hz = load_sensor_samples(input_path, pressure_unit)
     origin = samples[0][0]
     output_path = Path(output_path)
@@ -98,7 +98,7 @@ def main():
     parser.add_argument('--input', type=Path, default=DEFAULT_INPUT)
     parser.add_argument('--output', type=Path)
     parser.add_argument('--pressure-unit', choices=['hpa', 'pa'], default='hpa', help='Explicit input CSV pressure unit; Hoppino is hPa')
-    parser.add_argument('--compiler', default='g++')
+    parser.add_argument('--compiler', default=None)
     args = parser.parse_args()
     replay(args.input, args.output or ROOT / '.pio' / f'hoppino_navigation_{uuid.uuid4().hex}.csv', args.pressure_unit, args.compiler)
 

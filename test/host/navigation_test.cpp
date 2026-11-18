@@ -280,7 +280,8 @@ void test_bistage_detector() {
   for (unsigned i=0;i<8;++i) { detector.confirmCoastVelocity(values[i]); assert(detector.startsAllowed()==(i==7)); }
   assert(detector.velocityMedian()==26.5f); detector.confirmCoastVelocity(-1000); assert(detector.phase()==Phase::Coast);
   detector.update(.01f,40,40,100,0,25,0); assert(detector.phase()==Phase::Boost2); // No angular-rate abort.
-  for (unsigned i=0;i<3;++i) detector.update(.01f,0,0,0,0,25,0); assert(detector.phase()==Phase::Coast2);
+  for (unsigned i=0;i<3;++i) detector.update(.01f,0,0,0,0,25,0);
+  assert(detector.phase()==Phase::Coast2);
   detector.update(.01f,0,0,0,0,-1,0); assert(detector.phase()==Phase::Descent);
   coast(); for (unsigned i=0;i<8;++i) detector.confirmCoastVelocity(20);
   assert(detector.phase()==Phase::Abort && detector.abortReason()==recovery::AbortReason::Velocity);

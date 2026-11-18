@@ -9,7 +9,7 @@ import subprocess
 import sys
 import time
 
-from host_build import HostBuild
+from host_build import HostBuild, default_compiler
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ['src/configuration/' + name + '.cpp' for name in
@@ -73,7 +73,7 @@ def main():
     parser.add_argument('--list', action='store_true', help='List available areas without building')
     parser.add_argument('--quick', nargs='?', const='HEAD', metavar='REF', help='Affected host tests only; defer desktop and recorded-flight integrations to the final check')
     parser.add_argument('--plan', action='store_true', help='Show selected tests without compiling or running them')
-    parser.add_argument('--compiler', default='g++')
+    parser.add_argument('--compiler', default=None, help='Default: pinned WinLibs GCC if installed (tools/setup_host_compiler.py), else g++')
     parser.add_argument('--jobs', type=int, default=min(4, os.cpu_count() or 1), help='Parallel compiler processes (default max 4)')
     parser.add_argument('--rebuild', action='store_true', help='Ignore the C++ build cache')
     parser.add_argument('--verbose', action='store_true', help='Show individual scenario output')
@@ -132,6 +132,9 @@ def main():
                 targets[fixture] = FIXTURES[fixture]
     build_start = time.perf_counter()
     executables = builder.build_many(targets)
+    print(f'Compiler: {builder.banner}', flush=True)
+    if args.compiler is None and default_compiler() == 'g++':
+        print('Warning: not the pinned GCC 14 (firmware toolchain); run python tools/setup_host_compiler.py', flush=True)
     print(f'Build: {builder.compiled} compiled, {builder.linked} linked in {time.perf_counter()-build_start:.2f}s', flush=True)
     logs = builder.directory / 'logs'
     logs.mkdir(exist_ok=True)

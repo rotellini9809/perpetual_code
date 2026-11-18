@@ -11,6 +11,20 @@ intermediate check, not completion of UI or hardware validation. It accepts the
 same optional Git reference as `--changed`. No passing result is cached: an
 explicitly requested suite always runs, including fault and actuator scenarios.
 
+Host C++ tests use the same compiler generation and language level as the firmware
+(Arduino-Pico: GCC 14, `gnu++17`; host: ISO C++17, `-Werror -pedantic`, static runtime).
+Once per Windows PC, install the pinned WinLibs GCC 14.2.0 (SHA-256 checked, per user,
+no administrator rights or PATH changes) into
+`%LOCALAPPDATA%\Programs\WinLibs\14.2.0posix-12.0.0-ucrt-r3`:
+
+```powershell
+python tools/setup_host_compiler.py
+```
+
+`run_tests.py` and `replay_navigation.py` then use it automatically and print the
+compiler banner; without it they fall back to `g++` from PATH with a warning (the
+PlatformIO-bundled GCC 5.1 lacks parts of C++17). `--compiler` overrides both.
+
 From the project root:
 
 ```powershell
