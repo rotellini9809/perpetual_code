@@ -132,6 +132,12 @@ void run() {
   assert(stats.read.time.count == 1 && stats.read.time.totalUs == 7 && stats.read.time.maxUs == 7 && stats.read.bytes == 16);
   assert(stats.program.time.count == 1 && stats.program.time.totalUs == 31 && stats.program.time.maxUs == 31);
   assert(stats.erase.time.maxUs == 500 && stats.erase.bytes == 4096);
+  // Bulk erase: default implementation erases each sector; the profile records one operation.
+  const auto callsBefore = raw.calls;
+  assert(flash.eraseRange(0x15000, 3 * 4096) && raw.calls == callsBefore + 3);
+  assert(stats.erase.time.count == 2 && stats.erase.time.maxUs == 1500 && stats.erase.bytes == 4096 + 3 * 4096);
+  flash.resetTiming();
+  assert(flash.read(0, bytes, sizeof(bytes)) && flash.program(0, bytes, sizeof(bytes)) && flash.eraseSector(0));
   ticks = std::numeric_limits<uint32_t>::max()-10; raw.success = false;
   assert(!flash.program(0, bytes, 8)); // Measured across micros() rollover, including failed calls.
   assert(stats.program.time.count == 2 && stats.program.time.totalUs == 62 && stats.program.bytes == 24);

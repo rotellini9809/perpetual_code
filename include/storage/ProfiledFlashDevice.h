@@ -33,6 +33,10 @@ public:
     const auto start = now(); const bool ok = device_.eraseSector(address);
     record(stats_.erase, start, FlashLayout::SectorBytes, ok); failure(ok, FlashOperation::Erase, address, FlashLayout::SectorBytes); return ok;
   }
+  bool eraseRange(uint32_t address, uint32_t bytes) override {
+    const auto start = now(); const bool ok = device_.eraseRange(address, bytes);
+    record(stats_.erase, start, bytes, ok); failure(ok, FlashOperation::Erase, address, bytes); return ok;
+  }
   bool timingValid() const { return clock_ != nullptr; }
   const FlashTiming &timing() const { return stats_; }
   void resetTiming() { stats_ = {}; } // Caller must exclude active producers.

@@ -7,7 +7,8 @@ import shutil
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
-FLAGS = ('-std=c++11', '-O2', '-Wall', '-Wextra', '-Werror', '-pedantic', '-Iinclude')
+# Same language level as the firmware (Arduino-Pico: -std=gnu++17, GCC 14); strict ISO here.
+FLAGS = ('-std=c++17', '-O2', '-Wall', '-Wextra', '-Werror', '-pedantic', '-Iinclude')
 
 
 class HostBuild:

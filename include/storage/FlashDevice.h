@@ -1,6 +1,7 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include "storage/FlashLayout.h"
 namespace storage {
 enum class FlashError : uint8_t { None, Unknown, NotInitialized, Identification, Bounds, Alignment, InvalidArgument, Timeout, WriteEnable, NeedsErase, Verify };
 enum class FlashOperation : uint8_t { None, Read, Program, Erase };
@@ -29,6 +30,13 @@ public:
   // Owner-guaranteed erased extent: may skip the pre-write erased check, never verification.
   virtual bool programErased(uint32_t address, const void *data, std::size_t length) { return program(address, data, length); }
   virtual bool eraseSector(uint32_t address) = 0;
+  // Sector-aligned bulk erase. Implementations may use larger erase blocks and skip
+  // read-back; callers must verify the erased state before relying on it.
+  virtual bool eraseRange(uint32_t address, uint32_t bytes) {
+    for (uint32_t offset = 0; offset < bytes; offset += FlashLayout::SectorBytes)
+      if (!eraseSector(address + offset)) return false;
+    return true;
+  }
   virtual FlashFailure lastFailure() const { return {}; }
 };
 }

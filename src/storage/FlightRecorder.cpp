@@ -167,8 +167,9 @@ bool FlightRecorder::begin(const recovery::Configuration &config, const recovery
   if (!directory_.update(reservation)) return fault(RecorderError::Directory);
   current_ = reservation; headerBytes_ = planned.headerBytes; sampleBytes_ = sampleBytes; samplesFull_ = false;
   // Ownership is durable before any erase. Erase only the new contiguous extent.
-  for (uint32_t i = 0; i < allocated; i += FlashLayout::SectorBytes)
-    if (!flash_.eraseSector(start + i)) return fault(RecorderError::Io);
+  // eraseRange may skip read-back: header create and sample begin each verify their
+  // part of the extent as erased, together covering all of it exactly once.
+  if (!flash_.eraseRange(start, allocated)) return fault(RecorderError::Io);
   if (!header_.create(start, config, limits, sensorMode, outputMode, frame, calibration)) return fault(RecorderError::Header);
   if (!samples_.begin(reservation.sequence, start + headerBytes_, sampleBytes)) return fault(RecorderError::Sample);
   if (!persistProgress(FlightStatus::Recording)) return false;

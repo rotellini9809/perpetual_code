@@ -10,6 +10,7 @@ public:
   bool program(uint32_t a, const void *p, std::size_t n) override { return result(flash_.program(a, p, n), FlashOperation::Program, a, n); }
   bool programErased(uint32_t a, const void *p, std::size_t n) override { return result(flash_.programErased(a, p, n), FlashOperation::Program, a, n); }
   bool eraseSector(uint32_t a) override { return result(flash_.eraseSector(a), FlashOperation::Erase, a, FlashLogger::SectorSize); }
+  bool eraseRange(uint32_t a, uint32_t n) override { return result(flash_.eraseRange(a, n), FlashOperation::Erase, a, n); }
   FlashFailure lastFailure() const override { return failure_; }
 private:
   bool result(bool ok, FlashOperation operation, uint32_t address, std::size_t bytes) {

@@ -17,14 +17,12 @@ void FlashLogger::end() {
 }
 void FlashLogger::exchange(const uint8_t *tx, uint8_t *rx, std::size_t count) {
   if (!begun_) { if (rx) memset(rx, 0, count); return; }
+  // W25Q128JV CS setup/hold/deselect times are 5-50 ns; GPIO and SPI calls exceed them.
   bus_.beginTransaction(SPISettings(hz_, MSBFIRST, mode_));
   digitalWrite(cs_, LOW);
-  delayMicroseconds(2);
   bus_.transfer(tx, rx, count);
-  delayMicroseconds(2);
   digitalWrite(cs_, HIGH);
   bus_.endTransaction();
-  delayMicroseconds(5);
 }
 void FlashLogger::releasePowerDown() {
   const uint8_t tx[] = {0xAB}; uint8_t rx[1];
@@ -68,11 +66,11 @@ const char *FlashLogger::errorName(Error error) {
 }
 void FlashLogger::select() {
   bus_.beginTransaction(SPISettings(hz_, MSBFIRST, mode_));
-  digitalWrite(cs_, LOW); delayMicroseconds(2);
+  digitalWrite(cs_, LOW);
 }
 void FlashLogger::deselect() {
-  delayMicroseconds(2); digitalWrite(cs_, HIGH);
-  bus_.endTransaction(); delayMicroseconds(5);
+  digitalWrite(cs_, HIGH);
+  bus_.endTransaction();
 }
 void FlashLogger::sendAddress(uint8_t opcode, uint32_t address) {
   const uint8_t header[] = {opcode, uint8_t(address >> 16), uint8_t(address >> 8), uint8_t(address)};
@@ -148,6 +146,21 @@ bool FlashLogger::programPages(uint32_t address, const void *data, std::size_t l
     if (!waitReady(20) || !read(current, buffer, count)) return false;
     if (memcmp(buffer, source + offset, count) != 0) return fail(Error::Verify);
     offset += count;
+  }
+  error_ = Error::None; return true;
+}
+bool FlashLogger::eraseRange(uint32_t address, uint32_t bytes) {
+  uint8_t probe = 0;
+  if (!bytes) { error_ = Error::None; return true; }
+  if (!checkRange(address, &probe, bytes)) return false;
+  if (address % SectorSize || bytes % SectorSize) return fail(Error::Alignment);
+  for (uint32_t offset = 0; offset < bytes;) {
+    const uint32_t current = address + offset;
+    const bool block = current % BlockSize == 0 && bytes - offset >= BlockSize;
+    if (!waitReady(2000) || !writeEnable()) return false;
+    select(); sendAddress(block ? 0xD8 : 0x20, current); deselect();
+    if (!waitReady(block ? 3000 : 1000)) return false; // tBE2 max 2 s, tSE max 400 ms.
+    offset += block ? BlockSize : SectorSize;
   }
   error_ = Error::None; return true;
 }

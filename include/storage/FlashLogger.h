@@ -38,6 +38,10 @@ public:
   // writing over data then fails as Verify after the bits have changed.
   bool programErased(uint32_t address, const void *data, std::size_t length);
   bool eraseSector(uint32_t address); // Must be aligned; verifies all 4096 bytes.
+  // Sector-aligned range: 64 KiB block erases where aligned, 4 KiB elsewhere.
+  // No read-back: the owner must verify the erased state before relying on it.
+  bool eraseRange(uint32_t address, uint32_t bytes);
+  static constexpr uint32_t BlockSize = 65536;
   bool waitReady(uint32_t timeoutMs);
   Error lastError() const { return error_; }
   static const char *errorName(Error error);
