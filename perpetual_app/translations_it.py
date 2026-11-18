@@ -1,5 +1,6 @@
 """Italian UI catalog: English text used in t(...) -> Italian. Placeholders must match exactly."""
 ITALIAN = {
+    'Preparing memory': 'Preparazione memoria',
     'Active': 'Attivo',
     'Conditions satisfied': 'Condizioni soddisfatte',
     'Collecting the 8 velocity samples in COAST 1': 'Raccolta degli 8 campioni di velocità in COAST 1',

@@ -125,9 +125,7 @@ using namespace replay_test;
 uint32_t nowUs = 0;
 uint32_t clockUs() { return nowUs; }
 
-void has(const std::string &reply, const char *part) {
-  if (reply.find(part) == std::string::npos) { std::cerr << reply << " missing " << part << '\n'; assert(false); }
-}
+using command_test::has;
 struct Device : storage::FlashDevice {
   std::vector<uint8_t> bytes = std::vector<uint8_t>(storage::FlashLayout::Capacity, 255);
   unsigned writes = 0; bool fail = false;
@@ -192,7 +190,7 @@ void run() {
   assert(sim.starts()[1].timeMs == sim.starts()[0].timeMs);
   assert(flash.writes == writes && sim.cycles().count == 6600);
   has(send(usb,"sim status"),"\"samples\":6600"); has(send(usb,"sim status"),"\"source\":\"hoppino\"");
-  has(send(usb,"sim events"),"\"phases\":[[0,0],[1,8199],[2,10192],[3,12553]");
+  has(send(usb,"sim events"),"\"phases\":[[0,0],[1,8202],[2,10194],[3,12553]");
   has(send(usb,"hil begin 0 200 logged_body"),"\"active\":true");
   has(send(usb,"sim begin"),"BUSY"); has(send(usb,"sim status"),"\"samples\":6600"); send(usb,"sim stop");
   assert(hil.active()); send(usb,"hil stop");

@@ -149,11 +149,13 @@ bool CommandService::dispatch(const Status &s, char *out, std::size_t cap) {
     else if (std::strcmp(command, "info") == 0) std::snprintf(payload, sizeof(payload),
         "\"device\":\"Perpetual\",\"mcu\":\"RP2350\",\"protocol_version\":1");
     else if (std::strcmp(command, "sensors") == 0) std::snprintf(payload, sizeof(payload),
-        "\"imu_ready\":%s,\"imu_id\":%u,\"imu_error\":%ld,\"baro_ready\":%s,\"baro_id\":%u,\"baro_error\":%ld,\"baro_sample_valid\":%s,\"pressure_pa\":%s,\"temperature_c\":%s,\"sample_age_ms\":%lu,\"imu_sample_valid\":%s,\"imu_sample_age_ms\":%lu,\"accel_mps2\":%s,\"gyro_radps\":%s,\"uptime_ms\":%lu",
+        "\"imu_ready\":%s,\"imu_id\":%u,\"imu_error\":%ld,\"baro_ready\":%s,\"baro_id\":%u,\"baro_error\":%ld,\"baro_sample_valid\":%s,\"pressure_pa\":%s,\"temperature_c\":%s,\"sample_age_ms\":%lu,\"imu_sample_valid\":%s,\"imu_sample_age_ms\":%lu,\"accel_mps2\":%s,\"gyro_radps\":%s,\"uptime_ms\":%lu,\"idle_poll\":[%lu,%lu,%lu],\"idle_samples\":[%lu,%lu]",
         s.imuReady ? "true" : "false", unsigned(s.imuId), static_cast<long>(s.imuError),
         s.baroReady ? "true" : "false", unsigned(s.baroId), static_cast<long>(s.baroError), s.baroSampleValid ? "true" : "false",
         pressure, temperature, static_cast<unsigned long>(s.baroSampleAgeMs),
-        imuValid ? "true" : "false",static_cast<unsigned long>(s.imuSampleAgeMs),acceleration,angularRate,static_cast<unsigned long>(s.uptimeMs));
+        imuValid ? "true" : "false",static_cast<unsigned long>(s.imuSampleAgeMs),acceleration,angularRate,static_cast<unsigned long>(s.uptimeMs),
+        static_cast<unsigned long>(s.idlePolls),static_cast<unsigned long>(s.idleReadUs),static_cast<unsigned long>(s.idleReadMaxUs),
+        static_cast<unsigned long>(s.idleImuSamples),static_cast<unsigned long>(s.idleBaroSamples));
     else std::snprintf(payload, sizeof(payload),
         "\"mode\":\"%s\",\"arming_state\":\"%s\",\"flight_mode\":\"%s\",\"phase\":%s,\"gyro_calibration_skipped\":%s,\"gyro_samples\":%lu,\"gyro_target\":%lu,\"config_valid\":%s,\"config_error\":\"%s\","
         "\"imu_ready\":%s,\"baro_ready\":%s,"

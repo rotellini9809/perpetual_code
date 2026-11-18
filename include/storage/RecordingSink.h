@@ -10,6 +10,12 @@ public:
   virtual ~RecordingSink() = default;
   virtual bool begin(const recovery::Configuration &, const recovery::ValidationLimits &, uint32_t,
                      SensorMode, OutputMode, sensors::FrameConvention, const FlightCalibration & = FlightCalibration{}) = 0;
+  virtual bool beginAsync(const recovery::Configuration &c, const recovery::ValidationLimits &l, uint32_t bytes,
+                          SensorMode s, OutputMode o, sensors::FrameConvention f, const FlightCalibration &cal) {
+    return begin(c,l,bytes,s,o,f,cal);
+  }
+  virtual bool preparing() const { return false; }
+  virtual bool activatePrepared() { return active(); }
   virtual bool append(const FlightSample &) = 0;
   virtual bool recordStart(recovery::RuleId, recovery::OutputKind, uint32_t, uint32_t) = 0;
   virtual bool service() = 0;

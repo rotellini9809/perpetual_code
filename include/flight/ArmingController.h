@@ -5,7 +5,7 @@
 
 namespace flight {
 enum class FlightMode { Physical, Simulation };
-enum class ArmingState { Disarmed, Arming, Armed, Closing };
+enum class ArmingState { Disarmed, Arming, Preparing, Armed, Closing };
 enum class ArmBlocker : uint8_t {
   Busy, DraftActive, ConfigInvalid, NotDisarmed, TimingUnavailable, ImuUnavailable,
   BarometerUnavailable, StorageNotReady, ContinuityFault, ServosNotPrepared,
@@ -60,7 +60,7 @@ public:
   void releaseServoPreview() { if (outputs_) outputs_->releasePreview(); }
   const char *checkPyroContinuity(uint8_t &configured, uint8_t &connected) const; // Read-only; no cached preflight approval.
   ArmingState state() const;
-  bool active() const { return imuCalibration_.active() || state() == ArmingState::Arming || (state() == ArmingState::Armed && runtime_.active()); }
+  bool active() const { return imuCalibration_.active() || state() == ArmingState::Arming || state() == ArmingState::Preparing || (state() == ArmingState::Armed && runtime_.active()); }
   void setImuCalibrationStore(storage::ImuCalibrationStore &store) { imuStore_=&store; }
   const char *imuCalibrationState() const;
   const char *imuCalibrationReason() const;

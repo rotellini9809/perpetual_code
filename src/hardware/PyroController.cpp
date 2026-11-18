@@ -27,6 +27,7 @@ void PyroController::begin() {
   pinMode(CONTINUITY_SELECT_1, OUTPUT);
 
   pinMode(CONTINUITY_SENSE, INPUT);
+  pinMode(BATT_SENSE, INPUT);
   analogReadResolution(12);
 
   enabled_=false; mask_=0;
@@ -57,7 +58,17 @@ PyroController::ContinuityReading PyroController::checkContinuity(uint8_t channe
   }
 
   const uint16_t raw = static_cast<uint16_t>(total / ADC_SAMPLE_COUNT);
-  return {raw, classifyContinuity(raw)};
+  // Read battery presence independently of the selected continuity channel.
+  // Discard the first conversion after switching ADC inputs, as in MAIN.
+  (void)analogRead(BATT_SENSE);
+  uint32_t batteryTotal = 0;
+  for (uint8_t i = 0; i < 8; ++i) {
+    const auto batterySample = uint16_t(analogRead(BATT_SENSE));
+    if (batterySample >= 4095) return {raw, ContinuityState::Uncertain};
+    batteryTotal += batterySample;
+  }
+  const auto batteryRaw = uint16_t((batteryTotal + 4) / 8);
+  return {raw, classifyContinuity(raw, batteryRaw)};
 }
 
 bool PyroController::isValidChannel(uint8_t channel) const {
@@ -74,8 +85,8 @@ void PyroController::selectContinuityChannel(uint8_t channel) {
   digitalWrite(CONTINUITY_SELECT_1, (index & 0x02) ? HIGH : LOW);
 }
 
-PyroController::ContinuityState PyroController::classifyContinuity(uint16_t raw) const {
-  if (raw < CONTINUITY_BATTERY_NOT_CONNECTED_MAX_RAW) {
+PyroController::ContinuityState PyroController::classifyContinuity(uint16_t raw, uint16_t batteryRaw) const {
+  if (batteryRaw < BATTERY_CONNECTED_MIN_RAW) {
     return ContinuityState::BatteryNotConnected;
   }
 

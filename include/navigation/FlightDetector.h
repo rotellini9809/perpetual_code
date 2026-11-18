@@ -9,6 +9,7 @@ public:
   void update(float dt, float accelerationMagnitude, float bodyX, float gyroMagnitude,
               float barometerAltitude, float previousVerticalVelocity, float tiltRadians = 0);
   void confirmCoastVelocity(float velocity);
+  void interruptConfirmation() { boostSamples_=coastSamples_=0; }
   bool startsAllowed() const { return phase_!=Phase::Abort && !(settings_.bistage && phase_==Phase::Coast && samples_<8); }
   bool bistage() const { return settings_.bistage; }
   float velocityMedian() const { return median_; }
@@ -18,6 +19,7 @@ private:
   recovery::StateMachineSettings settings_;
   std::array<float,8> velocities_{};
   unsigned samples_ = 0;
+  unsigned boostSamples_ = 0, coastSamples_ = 0;
   float median_ = 0;
   recovery::AbortReason abortReason_ = recovery::AbortReason::None;
   Phase phase_ = Phase::Pad;

@@ -4,7 +4,7 @@
 #include "shared/Timing.h"
 
 namespace storage {
-// Core 0 prepares storage while idle, then hands exclusive ownership to core 1.
+// beginAsync hands preparation and exclusive flash ownership to core 1.
 // Only poll() accesses the underlying writer until completion/fault acknowledgment.
 class QueuedRecorder : public RecordingSink {
 public:
@@ -18,6 +18,10 @@ public:
   bool poll(); // Consumer/core 1 only; may block on flash. False means no work.
   bool begin(const recovery::Configuration &, const recovery::ValidationLimits &, uint32_t,
              SensorMode, OutputMode, sensors::FrameConvention, const FlightCalibration & = FlightCalibration{}) override;
+  bool beginAsync(const recovery::Configuration &, const recovery::ValidationLimits &, uint32_t,
+                  SensorMode, OutputMode, sensors::FrameConvention, const FlightCalibration &) override;
+  bool preparing() const override { return state_.load(std::memory_order_acquire)==State::Preparing; }
+  bool activatePrepared() override;
   bool append(const FlightSample &) override;
   bool recordStart(recovery::RuleId, recovery::OutputKind, uint32_t, uint32_t) override;
   bool service() override; // Producer/core 0: health check only; never touches flash.
@@ -39,7 +43,15 @@ public:
   std::size_t directoryCount() const { return directoryCount_; } // Frozen while busy.
   const timing::Statistics &workerTiming() const { return workerTiming_; } // Idle/acknowledged only.
 private:
-  enum class State : uint8_t { Idle, Running, Closing, Aborting, Closed, Fault };
+  enum class State : uint8_t { Idle, Preparing, Prepared, Running, Closing, Aborting, Closed, Fault };
+  recovery::Configuration preparationConfig_;
+  recovery::ValidationLimits preparationLimits_;
+  uint32_t preparationBytes_=0;
+  SensorMode preparationSensor_=SensorMode::Hardware;
+  OutputMode preparationOutput_=OutputMode::Physical;
+  sensors::FrameConvention preparationFrame_=sensors::FrameConvention::SensorAxes;
+  FlightCalibration preparationCalibration_;
+  bool preparationOnly_=false; // Published with state_; true until producer activation.
   struct Start { recovery::RuleId rule = 0; recovery::OutputKind kind = recovery::OutputKind::Pyro; uint32_t channel = 0, timeMs = 0; };
   bool fail(RecorderError error) { frontError_ = error; return false; }
   void publish();

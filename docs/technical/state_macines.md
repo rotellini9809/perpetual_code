@@ -197,7 +197,7 @@ verso altri stati di volo e non cancella il log.
 
 | Transizione o caso | Comportamento |
 |---|---|
-| PAD -> BOOST 1 | Modulo accelerazione > 3 * 9.81 m/s^2 |
+| PAD -> BOOST 1 | Modulo accelerazione > 3 * 9.81 m/s^2 per 3 campioni IMU freschi consecutivi |
 | BOOST 1 -> COAST 1 | aX <= 0; apre la finestra di 8 campioni |
 | COAST 1 -> BOOST 2 | Mediana > Vmin, tilt < 40 gradi e modulo accelerazione > 3 * 9.81 m/s^2 |
 | BOOST 2 -> COAST 2 | aX <= 0 |
@@ -254,3 +254,11 @@ ARM/DISARM; l'avvio della simulazione virtuale rilascia la preparazione.
 Riferimenti: [ArmingController.cpp](../../src/flight/ArmingController.cpp),
 [SimulationSession.cpp](../../src/simulation/SimulationSession.cpp),
 [architettura](ARCHITECTURE.md).
+
+La conferma PAD -> BOOST si azzera sotto soglia, con un frame invalido/duplicato,
+una sequenza IMU interrotta o un intervallo superiore a due periodi nominali.
+BOOST 2 conserva il criterio precedente; la finestra di 8 velocita in COAST resta indipendente.
+
+BOOST -> COAST e BOOST 2 -> COAST 2 richiedono tre campioni IMU freschi
+consecutivi con accelerazione assiale bodyX <= 0. Un valore positivo o
+una interruzione/invalidita dei dati azzera la conferma, come per PAD -> BOOST.

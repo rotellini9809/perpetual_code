@@ -678,7 +678,7 @@ class Controller(QObject):
                 status=client.request('status'); result=dict(status=status,control=client.request('control status'))
                 if previous=='sleeping' and status.get('power_mode')=='active':
                     result['preflight']=client.request('preflight'); result['sensors']=client.request('sensors')
-                elif previous_arming in ('armed','arming','closing') and status.get('arming_state')=='disarmed':
+                elif previous_arming in ('armed','arming','preparing','closing') and status.get('arming_state')=='disarmed':
                     result['preflight']=client.request('preflight')
                 if bluetooth_pending: result['bluetooth']=client.request('bluetooth status') # Until it is ready.
                 return result

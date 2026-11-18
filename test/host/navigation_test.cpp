@@ -49,8 +49,10 @@ void run() {
   for (unsigned i = 0; i < 1000; ++i) assert(attitude.step(a, gyro, 0.005f, Phase::Pad));
   float norm = 0; for (float q : attitude.quaternion()) norm += q*q; near(norm, 1);
   FlightDetector detector; detector.reset();
-  detector.update(0.01f, 35, 35, 0, 0, 0); assert(detector.phase() == Phase::Boost);
-  detector.update(0.01f, 1, -1, 0, 1, 10); assert(detector.phase() == Phase::Coast);
+  for (unsigned i=0;i<3;++i) detector.update(0.01f, 35, 35, 0, 0, 0);
+  assert(detector.phase() == Phase::Boost);
+  for (unsigned i=0;i<3;++i) detector.update(0.01f, 1, -1, 0, 1, 10);
+  assert(detector.phase() == Phase::Coast);
   detector.update(0.01f, 1, -1, 0, 1, -0.5f); assert(detector.phase() == Phase::Descent);
   for (unsigned i = 0; i < 220; ++i) detector.update(0.01f, 9.81f, 9.81f, 0, 0, 0);
   assert(detector.phase() == Phase::Landed);
@@ -104,19 +106,23 @@ void run() {
   for (unsigned i = 0; i < 3; ++i) assert(result.gyroBias[i] == reading(0).gyroRadps[i]);
   assert(std::fabs(collector.referenceAltitude() - navigation::Navigation::pressureAltitude(100000)) < 1e-5f);
   collector.clear(); assert(!collector.ready() && collector.samples() == 0 && collector.calibration().gyroBias[0] == 0);
-  collector.begin(device);
-  for (unsigned n = 0; n < 10; ++n) collector.add(reading(n));
-  auto moving = reading(10); moving.gyroRadps[2] = 1;
-  assert(!collector.add(moving) && collector.samples() == 0);
-  for (unsigned n = 11; n < 20; ++n) collector.add(reading(n));
-  auto invalid = reading(20); invalid.imuValid = false;
-  assert(!collector.add(invalid) && collector.samples() == 0);
-  invalid = reading(21); invalid.accelMps2[0] = std::numeric_limits<float>::quiet_NaN();
-  assert(!collector.add(invalid) && collector.samples() == 0);
-  invalid = reading(22); invalid.pressurePa = -1;
-  assert(!collector.add(invalid) && collector.samples() == 0);
-  invalid = reading(23); invalid.baroTimeUs = invalid.timeUs + 1; ++invalid.baroSequence;
-  assert(!collector.add(invalid) && collector.samples() == 0);
+  struct InvalidWindow { const char *name; void (*change)(sensors::Reading &); };
+  const InvalidWindow cases[]={
+    {"motion", [](sensors::Reading &r) { r.gyroRadps[2]=1; }},
+    {"invalid IMU", [](sensors::Reading &r) { r.imuValid=false; }},
+    {"nonfinite acceleration", [](sensors::Reading &r) { r.accelMps2[0]=std::numeric_limits<float>::quiet_NaN(); }},
+    {"invalid pressure", [](sensors::Reading &r) { r.pressurePa=-1; }},
+    {"future pressure", [](sensors::Reading &r) { r.baroTimeUs=r.timeUs+1; ++r.baroSequence; }}
+  };
+  for (const auto &test:cases) {
+    collector.begin(device);
+    for (unsigned n=0;n<10;++n) collector.add(reading(n));
+    auto input=reading(10); test.change(input);
+    const bool accepted=collector.add(input);
+    if (accepted || collector.samples()!=0) std::fprintf(stderr,"Arming window not reset: %s\n",test.name);
+    assert(!accepted && collector.samples()==0);
+  }
+  sensors::Reading invalid;
   // Repeated barometer identity cannot be made fresh by changing its supplied timestamp.
   collector.begin(device); collector.add(reading(0));
   invalid = reading(100); invalid.baroSequence = 1; invalid.baroTimeUs = invalid.timeUs;
@@ -230,6 +236,12 @@ void run() {
   assert(source.poll(frame) && !frame.imuValid && frame.imuSequence == 3);
   device.next.baroFresh = true; device.next.pressurePa = -1; device.pending = true;
   source.poll(frame); assert(!source.latest().baroValid && source.latest().baroSequence == 1);
+  device.next.accelMps2[1]=0; device.next.pressurePa=101325;
+  device.next.imuValid=false; device.pending=true;
+  const auto sequence=source.latest().imuSequence;
+  assert(!source.poll(frame));
+  device.next.imuValid=true; device.pending=true; nowUs+=8333;
+  assert(source.poll(frame) && frame.imuValid && frame.imuSequence==sequence+2);
   puts("Hardware source passed: barometer-only diagnostics, freshness, missing/invalid IMU and timer rollover.");
 }
 } // namespace test_hardware_sensor_source
@@ -238,13 +250,13 @@ void test_bistage_detector() {
   using namespace navigation;
   recovery::StateMachineSettings machine; machine.bistage=true; machine.minimumCoastVelocity=20;
   FlightDetector detector;
-  auto coast=[&]() { detector.reset(machine); detector.update(.01f,40,40,0,0,0,0); assert(detector.phase()==Phase::Boost); detector.update(.01f,0,0,0,0,25,0); assert(detector.phase()==Phase::Coast && !detector.startsAllowed()); };
+  auto coast=[&]() { detector.reset(machine); for (unsigned i=0;i<3;++i) detector.update(.01f,40,40,0,0,0,0); assert(detector.phase()==Phase::Boost); for (unsigned i=0;i<3;++i) detector.update(.01f,0,0,0,0,25,0); assert(detector.phase()==Phase::Coast && !detector.startsAllowed()); };
   coast(); detector.confirmCoastVelocity(std::numeric_limits<float>::quiet_NaN());
   const float values[]={-100,24,25,26,27,28,29,1000};
   for (unsigned i=0;i<8;++i) { detector.confirmCoastVelocity(values[i]); assert(detector.startsAllowed()==(i==7)); }
   assert(detector.velocityMedian()==26.5f); detector.confirmCoastVelocity(-1000); assert(detector.phase()==Phase::Coast);
   detector.update(.01f,40,40,100,0,25,0); assert(detector.phase()==Phase::Boost2); // No angular-rate abort.
-  detector.update(.01f,0,0,0,0,25,0); assert(detector.phase()==Phase::Coast2);
+  for (unsigned i=0;i<3;++i) detector.update(.01f,0,0,0,0,25,0); assert(detector.phase()==Phase::Coast2);
   detector.update(.01f,0,0,0,0,-1,0); assert(detector.phase()==Phase::Descent);
   coast(); for (unsigned i=0;i<8;++i) detector.confirmCoastVelocity(20);
   assert(detector.phase()==Phase::Abort && detector.abortReason()==recovery::AbortReason::Velocity);
@@ -261,14 +273,64 @@ void test_bistage_detector() {
   };
   auto state=step(9.80665f,0,0,10000); assert(state.valid && state.tiltRadians<.001f);
   for (unsigned i=0;i<10;++i) state=step(40,0,0,10000);
-  for (unsigned i=0;i<8;++i) state=step(0,20,0,10000);
+  for (unsigned i=0;i<10;++i) state=step(0,20,0,10000);
   assert(state.phase==Phase::Coast && state.startsAllowed && state.tiltRadians<.001f); // Axial spin alone is allowed.
   state=step(0,0,20,50000);
   assert(state.phase==Phase::Abort && state.abortReason==recovery::AbortReason::Tilt && !state.startsAllowed);
 
 }
 
+
+void testBoostConfirmation() {
+  using namespace navigation;
+  FlightDetector d;
+  auto high=[&] { d.update(.01f,40,40,0,0,0); };
+  auto low=[&] { d.update(.01f,9.81f,9.81f,0,0,0); };
+  d.reset(); high(); high(); assert(d.phase()==Phase::Pad);
+  low(); high(); high(); assert(d.phase()==Phase::Pad); high(); assert(d.phase()==Phase::Boost);
+  d.reset(); high(); high(); d.update(.2f,40,40,0,0,0);
+  high(); high(); assert(d.phase()==Phase::Pad); high(); assert(d.phase()==Phase::Boost);
+  for (unsigned scenario=0;scenario<5;++scenario) {
+    Navigation n; assert(n.begin(0,100));
+    uint64_t time=0, sequence=0;
+    auto frame=[&] { SensorFrame f; f.timeUs=(time+=10000); f.imuSequence=++sequence;
+      f.imuValid=true; f.accel[0]=40; return f; };
+    n.step(frame()); assert(n.step(frame()).phase==Phase::Pad);
+    auto bad=frame();
+    if (scenario==0) bad.imuValid=false;
+    if (scenario==1) bad.accel[0]=std::numeric_limits<float>::quiet_NaN();
+    if (scenario==2) { time+=200000; bad.timeUs=time; }
+    if (scenario==3) { bad.imuSequence=2; bad.timeUs=20000; }
+    if (scenario==4) { bad.imuSequence=++sequence; } // Missing sequence restarts at this good sample.
+    n.step(bad);
+    assert(n.step(frame()).phase==Phase::Pad);
+    if (scenario!=4) assert(n.step(frame()).phase==Phase::Pad);
+    assert(n.step(frame()).phase==Phase::Boost);
+  }
+  for (bool secondStage : {false,true}) {
+    recovery::StateMachineSettings settings; settings.bistage=secondStage;
+    FlightDetector detector; detector.reset(settings);
+    auto high=[&] { detector.update(.01f,40,40,0,0,25); };
+    auto low=[&] { detector.update(.01f,0,0,0,0,25); };
+    high(); high(); high();
+    if (secondStage) {
+      low(); low(); low();
+      for (unsigned i=0;i<8;++i) detector.confirmCoastVelocity(25);
+      high();
+    }
+    const auto boost=secondStage ? Phase::Boost2 : Phase::Boost;
+    const auto coast=secondStage ? Phase::Coast2 : Phase::Coast;
+    low(); low(); assert(detector.phase()==boost);
+    high(); low(); low(); assert(detector.phase()==boost);
+    detector.update(.2f,0,0,0,0,25); // Invalid timing breaks the sequence.
+    low(); low(); assert(detector.phase()==boost);
+    low(); assert(detector.phase()==coast);
+  }
+  puts("BOOST confirmation passed: three fresh samples, low/invalid/gap/duplicate/missing-sequence reset.");
+}
+
 int main() {
+  testBoostConfirmation();
   test_bistage_detector();
   std::puts("  navigation"); std::fflush(stdout);
   test_navigation::run();

@@ -25,7 +25,7 @@ def check_navigation_replay():
         transitions = {}
         for row in actual:
             transitions.setdefault(int(row['phase']), int(row['t_ms']))
-        assert transitions == {0: 0, 1: 8199, 2: 10192, 3: 12553, 4: 30223}, transitions
+        assert transitions == {0: 0, 1: 8202, 2: 10194, 3: 12553, 4: 30223}, transitions
         assert sum(row['baro_updated'] == '1' for row in actual) == 1506
         subprocess.run([sys.executable,str(ROOT/'tools/replay/trim_hoppino.py'),'--check'],check=True,capture_output=True)
         # Compare physical rotations, not Euler components near pitch=-90 degrees.
@@ -104,7 +104,7 @@ def check_sensor_hil_usb(navigation_reference):
             for name in ('z_est', 'vz_est', 'ba_est', 'az_est'):
                 assert abs(float(hil[name]) - float(pc[name])) < 1e-5, (name, hil[name], pc[name])
         starts = [start for row in actual for start in json.loads(row['starts'])]
-        assert starts == [[10, 'pyro', 1, 12553], [10, 'servo', 1, 12553], [20, 'pyro', 2, 18491]], starts
+        assert starts == [[10, 'pyro', 1, 12553], [10, 'servo', 1, 12553], [20, 'pyro', 2, 18500]], starts
         assert final['cancelled_pending'] == 0
         print('Sensor HIL integration passed: all 6600 navigation results match PC replay; 3 virtual starts.')
 

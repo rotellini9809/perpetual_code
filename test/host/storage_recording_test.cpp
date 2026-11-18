@@ -176,7 +176,7 @@ namespace {
 struct Device : FlashDevice {
   std::vector<uint8_t> bytes = std::vector<uint8_t>(FlashLayout::Capacity, 255);
   const std::thread::id producer = std::this_thread::get_id();
-  std::atomic<bool> workerOnly{false}, failProgram{false};
+  std::atomic<bool> workerOnly{false}, failProgram{false}, failErase{false}, holdErase{false}, erasing{false};
   std::atomic<unsigned> operations{0};
   void touch() { assert(!workerOnly.load() || std::this_thread::get_id() != producer); ++operations; }
   bool read(uint32_t a, void *p, std::size_t n) override {
@@ -188,7 +188,7 @@ struct Device : FlashDevice {
     for (std::size_t i = 0; i < n; ++i) { assert((bytes[a+i] & in[i]) == in[i]); bytes[a+i] &= in[i]; }
     return true;
   }
-  bool eraseSector(uint32_t a) override { touch(); assert(a%4096 == 0 && a+4096 <= bytes.size()); memset(bytes.data()+a, 255, 4096); return true; }
+  bool eraseSector(uint32_t a) override { touch(); erasing.store(true); while (holdErase.load()) std::this_thread::yield(); if (failErase.load()) return false; assert(a%4096 == 0 && a+4096 <= bytes.size()); memset(bytes.data()+a, 255, 4096); return true; }
 };
 struct Runner {
   QueuedRecorder &recorder; std::atomic<bool> paused{true}, pauseAcknowledged{false}, quit{false}; std::thread thread;
@@ -305,6 +305,37 @@ void run() {
   consumer.join(); assert(queue.empty());
   puts("Queued recorder tests passed: producer performs no flash I/O, concurrent FIFO, starts, drain, fullness, faults, abort, asynchronous discard and recovery.");
 }
+
+void testAsyncPreparation() {
+  Device flash; FlightRecorder writer(flash); assert(writer.initializeBlank());
+  QueuedRecorder q(writer); Runner runner(q); auto config=allOutputs();
+  auto begin=[&] { return q.beginAsync(config,limits,12288,SensorMode::Hardware,OutputMode::Physical,sensors::FrameConvention::SensorAxes,FlightCalibration{}); };
+  auto drain=[&] { runner.paused.store(false); while(q.busy()) std::this_thread::yield(); runner.pause(); };
+  flash.workerOnly.store(true);
+  const auto before=flash.operations.load(); assert(begin());
+  assert(q.busy() && q.preparing() && !q.active() && !q.current() && q.initialized());
+  assert(flash.operations.load()==before && !q.activatePrepared());
+  runner.paused.store(false); while(q.preparing()) std::this_thread::yield(); runner.pause();
+  assert(q.busy() && !q.active() && !q.current() && q.activatePrepared() && q.active());
+  assert(q.current()->sequence==1);
+  assert(q.finish(true,RecordingSummary{},RecordingRetention::Discard)); drain();
+  // Cancellation before the worker runs never starts flash preparation.
+  const auto cancelledBefore=flash.operations.load(); assert(begin()); q.abort(); drain();
+  assert(q.initialized() && q.error()==RecorderError::None && flash.operations.load()==cancelledBefore);
+  // A blocked erase cannot delay core 0 cancellation or diagnostic snapshots.
+  flash.holdErase.store(true); flash.erasing.store(false); assert(begin());
+  runner.paused.store(false); while(!flash.erasing.load()) std::this_thread::yield();
+  const auto blocked=flash.operations.load();
+  for(unsigned i=0;i<100;++i) assert(q.busy() && q.preparing() && !q.active() && !q.current() && q.initialized());
+  q.abort(); assert(q.busy() && !q.active() && flash.operations.load()==blocked);
+  flash.holdErase.store(false); drain();
+  assert(q.initialized() && q.error()==RecorderError::None && writer.directory().retainedCount()==0);
+  // Failed preparation never becomes active and exposes the error after acknowledgment.
+  flash.failErase.store(true); assert(begin()); drain();
+  assert(!q.active() && !q.initialized() && q.error()!=RecorderError::None && !q.activatePrepared());
+  flash.workerOnly.store(false); flash.failErase.store(false); assert(writer.initialize());
+  puts("Async preparation passed: worker-only flash, activation barrier, cancellation before/during erase, fault acknowledgment.");
+}
 } // namespace test_queued_recorder
 
 int main() {
@@ -312,4 +343,5 @@ int main() {
   test_flight_recorder::run();
   std::puts("  queued_recorder"); std::fflush(stdout);
   test_queued_recorder::run();
+  test_queued_recorder::testAsyncPreparation();
 }

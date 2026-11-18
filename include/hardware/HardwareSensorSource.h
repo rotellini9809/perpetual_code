@@ -21,6 +21,7 @@ private:
   SensorDevice &device_;
   timing::Clock clock_;
   bool started_ = false;
+  bool imuInterrupted_ = false;
   uint32_t lastClock_ = 0;
   uint64_t elapsed_ = 0;
   Reading latest_;

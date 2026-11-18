@@ -128,7 +128,7 @@ def check_recording_usb():
                     except RuntimeError: pass
                 assert metadata['configuration']['rules'][0]['name'] == 'Example apogee'
                 timestamps=[stamp-prepared[1][0][0] for stamp,_ in prepared[1]]
-                expected=[next(t for t in timestamps if t>=start+delay) for start,delay in zip((12553,12553,18491),(75,200,325))]
+                expected=[next(t for t in timestamps if t>=start+delay) for start,delay in zip((12553,12553,18500),(75,200,325))]
                 assert [s['t_ms'] for s in metadata['output_starts']] == expected
                 assert [a['delay_ms'] for r in metadata['configuration']['rules'] for a in r['outputs']]==[75,200,325]
                 assert all(s['state'] == 'recorded' for s in metadata['output_starts'])

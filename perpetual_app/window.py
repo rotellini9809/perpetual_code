@@ -215,7 +215,7 @@ class MainWindow(QMainWindow):
         self.render_connection(s.connection)
         arming=s.status.get('arming_state','—')
         state=arming if connected else 'unknown'
-        self.arming_state.setText({'disarmed':'DISARMED','armed':'ARMED','arming':'ARMING','closing':'CLOSING'}.get(state,'—'))
+        self.arming_state.setText({'disarmed':'DISARMED','armed':'ARMED','arming':'ARMING','preparing':t('Preparing memory'),'closing':'CLOSING'}.get(state,'—'))
         if self.arming_state.property('state')!=state:
             self.arming_state.setProperty('state',state)
             self.arming_state.style().unpolish(self.arming_state); self.arming_state.style().polish(self.arming_state)

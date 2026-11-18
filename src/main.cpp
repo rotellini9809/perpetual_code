@@ -259,7 +259,14 @@ void loop() {
   if (!power.sleeping() && !run.active() && !physicalFlight.active() && uint32_t(nowUs - lastHardwarePollUs) >= 2000) {
     lastHardwarePollUs = nowUs;
     sensors::Reading unused;
+    const auto readStart = micros();
     hardwareSource.poll(unused);
+    const uint32_t elapsed = micros() - readStart;
+    ++commandStatus.idlePolls;
+    commandStatus.idleReadUs += elapsed;
+    if (elapsed > commandStatus.idleReadMaxUs) commandStatus.idleReadMaxUs = elapsed;
+    if (sensorDevice.sample().imuFresh && sensorDevice.sample().imuValid) ++commandStatus.idleImuSamples;
+    if (sensorDevice.sample().baroFresh && sensorDevice.sample().baroValid) ++commandStatus.idleBaroSamples;
   }
   const bool connected = static_cast<bool>(Serial);
   if (connected != usbConnected) {
@@ -290,7 +297,7 @@ void loop() {
   commandStatus.gyroSamples = owner ? owner->calibrationSamples() : 0;
   commandStatus.gyroTarget = flight::ArmingCalibration::TargetSamples;
   updateHardwareStatus();
-  const auto ledMode=power.sleeping() ? LedMode::PowerSaving : physicalFlight.state()==flight::ArmingState::Arming ? LedMode::Calibrating :
+  const auto ledMode=power.sleeping() ? LedMode::PowerSaving : (physicalFlight.state()==flight::ArmingState::Arming || physicalFlight.state()==flight::ArmingState::Preparing) ? LedMode::Calibrating :
       commandStatus.phase==5 ? LedMode::Boost : commandStatus.phase==6 ? LedMode::Coast :
       commandStatus.phase==7 ? LedMode::Abort : commandStatus.phase>=0 ? static_cast<LedMode>(commandStatus.phase) : LedMode::Disarmed;
   statusLed.update(millis(),ledMode);

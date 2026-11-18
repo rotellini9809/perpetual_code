@@ -35,6 +35,7 @@ const char *armingStateName(ArmingState s) {
   switch (s) {
     case ArmingState::Disarmed: return "disarmed";
     case ArmingState::Arming: return "arming";
+    case ArmingState::Preparing: return "preparing";
     case ArmingState::Armed: return "armed";
     case ArmingState::Closing: return "closing";
   }
@@ -121,9 +122,11 @@ const char *ArmingController::startRuntime(float reference, const navigation::Se
   // Core 0 is cooperative: transfer the configuration reservation without yielding.
   if (reserved_) { config_.releaseRun(); reserved_ = false; }
   const auto error = runtime_.begin(*source_, reference, hz_, calibration, recordBytes_,
-      mode_ == FlightMode::Simulation ? storage::SensorMode::Simulation : storage::SensorMode::Hardware, outputMode_);
+      mode_ == FlightMode::Simulation ? storage::SensorMode::Simulation : storage::SensorMode::Hardware, outputMode_, mode_==FlightMode::Physical);
   if (error) { error_ = error; stop(); return error; }
-  source_->start(); state_ = ArmingState::Armed; return nullptr;
+  if (runtime_.preparing()) state_=ArmingState::Preparing;
+  else { source_->start(); state_=ArmingState::Armed; }
+  return nullptr;
 }
 const char *ArmingController::arm(sensors::SensorSource &source, FlightMode mode, float reference, float hz,
                                  const navigation::SensorCalibration &device, uint32_t bytes, PhysicalChecks *checks, storage::OutputMode outputMode) {
@@ -199,6 +202,7 @@ PollResult ArmingController::poll(FrameResult &result) {
   }
   if (state() == ArmingState::Closing) return {};
   const auto p = runtime_.poll(result);
+  if (state_==ArmingState::Preparing && !runtime_.preparing() && !p.error) state_=ArmingState::Armed;
   if (approvalReserved_ && runtime_.status().boostReached) { boostConsumed_=true; approvalReserved_=false; }
   if (p.processed && result.navigation.valid) navigation_ = result.navigation;
   if (p.error && std::strcmp(p.error, "INVALID_TIMESTAMP")) { error_ = p.error; stop(); }

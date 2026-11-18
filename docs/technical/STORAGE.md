@@ -65,8 +65,13 @@ drops separately and reports their sum. Saved means verified persistence, not su
 enqueue. Queue size cannot fix insufficient sustained throughput; the 1 MHz measurements
 demonstrated that.
 
-Core 0 prepares while idle, then release-publishes Running to core 1. Only core 1 touches native
-stores/profile buffers until completion. Core 0 keeps an immutable mapping/identity snapshot and
+Physical arming submits preparation to core 1 with `beginAsync`: Preparing -> Prepared -> Running.
+Core 0 keeps servicing USB/Bluetooth and accepts disarm while erase/verification runs.
+Prepared is an acknowledgment barrier: only then does core 0 adopt metadata and start the flight
+epoch/outputs. Cancellation stays Closing until core 1 finishes its in-progress preparation
+and invalidates the unused reservation. A preparation fault never arms the board.
+The synchronous `begin` entry remains available for HIL/simulation and host fixtures.
+Only core 1 touches native stores/profile buffers during asynchronous ownership. Core 0 keeps an immutable mapping/identity snapshot and
 atomic progress; detailed native inspection is BUSY. Core 1 has a separate 8 KiB stack and event
 wake/sleep. One physical flash owner also serializes settings and downloads; this is not
 arbitrary concurrent SPI access.
@@ -86,8 +91,8 @@ samples and start records, and leaves data sectors for later reuse. The director
 extent are preserved in that transition. A full queue or sample extent cannot hide a computed
 BOOST or cause a launched flight to be discarded. Simulation/HIL retain PAD-only logs for
 analysis. Processing failures retain their diagnostic recording; abort/storage faults and
-reset recovery retain uncertain interrupted logs. This is not failed-arming reservation
-cleanup, which remains pending.
+reset recovery retain uncertain interrupted logs. Cancelled asynchronous preparations invalidate their unused reservation on the worker;
+preparation faults retain uncertain metadata for recovery.
 
 Close and abort return without waiting. `recording_busy` stays true until worker release; a
 stopped sensor run may still be closing. Final status acquires that acknowledgment before

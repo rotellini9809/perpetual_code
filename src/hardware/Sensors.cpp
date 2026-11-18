@@ -1,4 +1,6 @@
 #include "hardware/Sensors.h"
+#include "hardware/SensorRates.h"
+static_assert(sensors::ImuRateHz == 240, "Update the IMU ODR selections with the runtime rate");
 
 #include "hardware/board_pins.h"
 
@@ -188,7 +190,7 @@ bool Sensors::beginBaro() {
     return false;
   }
 
-  bmpConfig.odr = BMP5_ODR_50_HZ;
+  bmpConfig.odr = BMP5_ODR_100_2_HZ;
   bmpConfig.press_en = BMP5_ENABLE;
   bmpConfig.osr_t = BMP5_OVERSAMPLING_4X;
   bmpConfig.osr_p = BMP5_OVERSAMPLING_4X;
@@ -245,8 +247,8 @@ bool Sensors::beginImu() {
   imuError += lsm6dsv32x_spi_mode_set(&imuCtx, LSM6DSV32X_SPI_4_WIRE);
   imuError += lsm6dsv32x_xl_full_scale_set(&imuCtx, LSM6DSV32X_32g);
   imuError += lsm6dsv32x_gy_full_scale_set(&imuCtx, LSM6DSV32X_2000dps);
-  imuError += lsm6dsv32x_xl_data_rate_set(&imuCtx, LSM6DSV32X_ODR_AT_120Hz);
-  imuError += lsm6dsv32x_gy_data_rate_set(&imuCtx, LSM6DSV32X_ODR_AT_120Hz);
+  imuError += lsm6dsv32x_xl_data_rate_set(&imuCtx, LSM6DSV32X_ODR_AT_240Hz);
+  imuError += lsm6dsv32x_gy_data_rate_set(&imuCtx, LSM6DSV32X_ODR_AT_240Hz);
 
   return imuError == 0;
 }

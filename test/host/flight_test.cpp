@@ -58,22 +58,7 @@ void run() {
   run.disconnect(); assert(!run.active() && !config.runLocked());
   assert(flash.mutations == mutations);
 
-  uint32_t n; float f;
-  assert(protocol::unsignedNumber("4294967295", n) && n == UINT32_MAX);
-  assert(!protocol::unsignedNumber("4294967296", n));
-  assert(!protocol::unsignedNumber("-1", n));
-  assert(protocol::floating("nan", f) && !protocol::finiteNumber("nan", f));
-  assert(!protocol::floating("1e999", f));
-  protocol::Tokens quoted("add 10 \"escaped \\\"name\\\"\"");
-  assert(quoted.valid && quoted.count == 3 && quoted.is(2, "escaped \"name\""));
-  assert(!protocol::Tokens("\"unfinished").valid);
-  assert(!protocol::Tokens(std::string(129, 'x').c_str()).valid);
-  assert(!protocol::Tokens("a b c d e f g h i j k l m").valid);
-  protocol::Json json; json.quoted("a\n\"\\");
-  assert(strcmp(json.bytes, "\"a\\u000a\\\"\\\\\"") == 0);
-  json.add("%s", std::string(800, 'x').c_str()); assert(!json.ok);
-  const auto length = json.length; json.add("ignored"); assert(json.length == length);
-  puts("Run/controller and protocol tests passed: ownership, settings lock, cancellation, bounds and escaping.");
+  puts("Run/controller tests passed: ownership, settings lock and cancellation.");
 }
 } // namespace test_run_controller
 
@@ -226,7 +211,7 @@ struct Checks : flight::PhysicalChecks {
   void healthy() { readiness.imuReady=readiness.baroReady=true; }
 };
 
-void has(const std::string &s, const char *expected) { if (s.find(expected)==std::string::npos) { puts(s.c_str()); puts(expected); assert(false); } }
+using command_test::has;
 void acquire(FakeSensorDevice &device, unsigned n) {
   device.next.imuValid=device.next.imuFresh=device.next.baroValid=true;
   device.next.accelMps2[0]=9.80665f+.25f;
@@ -524,8 +509,9 @@ void run() {
   // Worker stays paused: BOOST is computed on a sample rejected by a full queue.
   const auto launched=begin(SensorMode::Hardware);
   for (unsigned i=0;i<QueuedRecorder::SampleCapacity;++i) sample(i,9.80665f);
-  assert(sample(QueuedRecorder::SampleCapacity,40).navigation.phase==recovery::FlightPhase::Boost);
-  assert(runtime.status().boostReached && runtime.status().droppedSamples==1 && runtime.active());
+  sample(QueuedRecorder::SampleCapacity,40); sample(QueuedRecorder::SampleCapacity+1,40);
+  assert(sample(QueuedRecorder::SampleCapacity+2,40).navigation.phase==recovery::FlightPhase::Boost);
+  assert(runtime.status().boostReached && runtime.status().droppedSamples==3 && runtime.active());
   runtime.stop(); drain();
   assert(!runtime.status().recordingDiscarded && writer.inspect(launched,info));
   assert(info.entry.status==FlightStatus::StoppedFull && info.samples==36 && info.summaryState==SummaryState::Valid);
@@ -575,6 +561,27 @@ void run() {
   assert(!live.arm(hardware,flight::FlightMode::Physical,0,200,calibration,1048576,&checks,storage::OutputMode::Virtual));
   flight::FrameResult result;
   for (unsigned n=0;n<500;++n) { nowUs+=10000; acquire(device,n); live.poll(result); }
+  assert(live.state()==flight::ArmingState::Preparing && !live.armed() && !outputs.owner());
+  ArmingCommands preparationCommands(live,hardware,checks);
+  CommandService preparationUsb; preparationUsb.setExtension(&preparationCommands);
+  has(send(preparationUsb,"ping"),"PONG");
+  has(send(preparationUsb,"preflight"),"preparing");
+  const auto beforeCancel=flash.writes;
+  has(send(preparationUsb,"disarm"),"closing");
+  assert(!live.active() && !outputs.owner() && queued.busy() && flash.writes==beforeCancel);
+  assert(queued.poll()); live.maintainImuApproval();
+  assert(live.state()==flight::ArmingState::Disarmed && !queued.busy());
+  auto prepareAgain=[&] {
+    assert(!live.arm(hardware,flight::FlightMode::Physical,0,200,calibration,1048576,&checks));
+    for (unsigned n=0;n<500;++n) { nowUs+=10000; acquire(device,n); live.poll(result); }
+    assert(live.state()==flight::ArmingState::Preparing && !outputs.owner());
+  };
+  prepareAgain(); flash.fail=true; assert(queued.poll());
+  const auto failedPreparation=live.poll(result);
+  assert(failedPreparation.error && !live.armed() && !outputs.owner() && !gpio.enabled && !gpio.mask);
+  flash.fail=false; assert(writer.initialize()); live.maintainImuApproval();
+  prepareAgain();
+  assert(queued.poll()); live.poll(result);
   assert(live.armed() && live.runtime().status().outputMode==storage::OutputMode::Physical);
   assert(writer.metadata()->sensorMode==storage::SensorMode::Hardware && writer.metadata()->outputMode==storage::OutputMode::Physical);
   const auto commands=gpio.servoCommands.size(); assert(commands==1); // Only explicit preparation commanded Initial.

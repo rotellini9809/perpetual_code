@@ -110,8 +110,9 @@ Autonomous simulation and physical arming/flight keep running and permit a new o
 
 ## Core and flash ownership
 
-Core 0 performs sensor processing, rules, USB/Bluetooth and RAM queue submission. It prepares recording
-storage synchronously while idle, then publishes exclusive ownership to core 1. `QueuedRecorder`
+Core 0 performs sensor processing, rules, USB/Bluetooth and RAM queue submission. Physical arming publishes
+asynchronous preparation to core 1 and remains `preparing` until acknowledgment; only then
+can it enter `armed`. HIL/simulation retain the synchronous preparation entry. `QueuedRecorder`
 wraps the synchronous `FlightRecorder` behind `RecordingSink`; producer-facing headers expose
 shared values without pulling in concrete stores. Fixed queues hold 64 samples and eight
 independent starts. The worker uses a separate 8 KiB stack and sleeps on events when idle.

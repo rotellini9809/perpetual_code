@@ -41,8 +41,8 @@ samples. Physical preflight/arming requests now exist, but actual activation rem
 the IMU and any reported configuration/continuity/preparation faults. See
 [USB diagnostics](technical/USB.md#sensor-diagnostics).
 
-`Sensors` currently configures accelerometer +/-32 g and gyro +/-2000 deg/s, both at 120 Hz,
-with a 50 Hz pressure-enabled BMP581 and 4x pressure/temperature oversampling. Returned
+`Sensors` currently configures accelerometer +/-32 g and gyro +/-2000 deg/s, both at 240 Hz,
+with a 100.2 Hz pressure-enabled BMP581 and 4x pressure/temperature oversampling. Returned
 measurements are m/s^2, rad/s, C and Pa. It probes SPI modes, with a lower-speed barometer
 attempt. These settings are not the autonomous simulator's 200 Hz IMU rate. Reads now check
 accel/gyro data-ready flags and BMP581 data-ready status before declaring a new sample. Barometer

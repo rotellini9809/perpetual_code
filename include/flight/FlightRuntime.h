@@ -54,7 +54,8 @@ public:
   const char *begin(sensors::SensorSource &source, float referenceAltitude, float nominalHz,
                     const navigation::SensorCalibration &calibration = navigation::SensorCalibration{},
                     uint32_t recordBytes = 0, storage::SensorMode sensorMode = storage::SensorMode::Simulation,
-                    storage::OutputMode outputMode = storage::OutputMode::Virtual);
+                    storage::OutputMode outputMode = storage::OutputMode::Virtual, bool asyncPreparation = false);
+  bool preparing() const { return active() && preparing_; }
   PollResult poll(FrameResult &result);
   unsigned stop(storage::RecordingEnd reason = storage::RecordingEnd::Stopped);
   bool active() const { return started_ && identity_ == run_.identity() && run_.active(RunMode::Sensors); }
@@ -87,6 +88,8 @@ private:
   storage::RecorderError recordingError_ = storage::RecorderError::None;
   uint64_t identity_ = 0;
   bool started_ = false;
+  bool preparing_ = false;
+  uint32_t preparationStartUs_ = 0;
   bool landed_ = false, closingStarts_ = false;
   uint32_t landingClockUs_ = 0;
   uint32_t maxComputeUs_ = 0;

@@ -11,7 +11,7 @@ bool HardwareSensorSource::begin() {
 }
 void HardwareSensorSource::start() {
   if (!clock_) return;
-  lastClock_ = clock_(); elapsed_ = 0; latest_ = {}; started_ = true;
+  lastClock_ = clock_(); elapsed_ = 0; latest_ = {}; started_ = true; imuInterrupted_=false;
 }
 bool HardwareSensorSource::poll(Reading &reading) {
   if (!started_) return false;
@@ -27,11 +27,17 @@ bool HardwareSensorSource::poll(Reading &reading) {
   latest_.baroValid = validPressure && latest_.baroSequence != 0;
   // Barometer-only bring-up is diagnostic, not an IMU substitute or flight frame.
   // In particular, never synthesize zero gyro / 1g acceleration for the bad-solder IMU.
-  if (!sample.imuFresh || !latest_.imuValid) return false;
+  if (!sample.imuFresh || !latest_.imuValid) {
+    if (!latest_.imuValid) imuInterrupted_=true;
+    return false;
+  }
   for (unsigned i = 0; i < 3; ++i) {
     latest_.accelMps2[i] = sample.accelMps2[i]; latest_.gyroRadps[i] = sample.gyroRadps[i];
     latest_.imuValid = latest_.imuValid && std::isfinite(sample.accelMps2[i]) && std::isfinite(sample.gyroRadps[i]);
   }
+  // A skipped invalid acquisition interrupts consecutive-frame confirmation.
+  if (imuInterrupted_ && latest_.imuSequence) ++latest_.imuSequence;
+  imuInterrupted_=false;
   latest_.timeUs = elapsed_; ++latest_.imuSequence;
   reading = latest_; return true;
 }

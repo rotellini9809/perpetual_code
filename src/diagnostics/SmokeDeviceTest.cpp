@@ -3,6 +3,7 @@
 #include <Adafruit_NeoPixel.h>
 #include "hardware/board_pins.h"
 #include "hardware/BoardOutputs.h"
+#include "hardware/BatteryMonitor.h"
 #include "hardware/Sensors.h"
 #include "storage/FlashLogger.h"
 #include "configuration/ActuatorPolicy.h"
@@ -48,6 +49,21 @@ void report() {
   else Serial.printf("IMU sample unavailable | error=%ld\n",long(sensors.lastImuError()));
   if (baroValid) Serial.printf("BARO P=%.3fPa T=%.3fC\n",sample.pressurePa,sample.baroTempC);
   else Serial.printf("BARO sample unavailable | error=%d\n",int(sensors.lastBaroError()));
+  // Same ADC resolution, averaging and voltage conversion as MAIN; diagnostics only.
+  (void)analogRead(BATT_SENSE);
+  uint32_t batteryTotal=0;
+  uint16_t batteryMin=4095, batteryMax=0;
+  for (unsigned i=0;i<8;++i) {
+    const auto raw=uint16_t(analogRead(BATT_SENSE));
+    batteryTotal+=raw;
+    if (raw<batteryMin) batteryMin=raw;
+    if (raw>batteryMax) batteryMax=raw;
+  }
+  const auto batteryRaw=uint16_t((batteryTotal+4)/8);
+  const auto batteryMv=BatteryMonitor::fromAdc(batteryMax>=4095 ? 4095 : batteryRaw);
+  Serial.printf("BATTERY GP29 raw=%u min=%u max=%u",batteryRaw,batteryMin,batteryMax);
+  if (batteryMv==BatteryMonitor::Missing) Serial.println(" voltage=UNAVAILABLE");
+  else Serial.printf(" voltage=%.3f V\n",double(batteryMv)/1000);
   for (uint8_t channel=1;channel<=4;++channel) {
     const auto reading=pyros.checkContinuity(channel);
     Serial.printf("PYRO %u continuity=%u / %s\n",channel,reading.raw,continuityName(reading.state));

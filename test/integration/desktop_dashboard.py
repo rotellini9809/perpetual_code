@@ -80,6 +80,16 @@ def check_orientation_and_pyros(app,wait):
     """Older firmware without orientation still loads; pyro continuity is separate from preflight."""
     with session(app,wait) as s:
         controller,window,backend=s.controller,s.window,s.backend
+        # Memory preparation must remain cancellable, without presenting the board as armed.
+        saved_status=deepcopy(controller.state.status)
+        controller.state.status['arming_state']='preparing'
+        window.render()
+        assert window.arming_state.text()=='Preparazione memoria'
+        assert window.dashboard_page.arm_button.isEnabled()
+        with patch.object(controller,'command') as command:
+            window.dashboard_page.toggle_arming()
+            assert command.call_args.args[0]=='disarm'
+        controller.state.status=saved_status; window.render()
         # Older firmware may lack orientation; its valid plan must still load on initial sync.
         old_request=backend.request
         for code in ('NO_DRAFT','INVALID_ARGUMENT','UNKNOWN_COMMAND'):

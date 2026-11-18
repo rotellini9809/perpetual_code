@@ -3,7 +3,7 @@
 namespace storage {
 bool QueuedRecorder::busy() const {
   const auto s = state_.load(std::memory_order_acquire);
-  return s == State::Running || s == State::Closing || s == State::Aborting;
+  return s == State::Preparing || s == State::Prepared || s == State::Running || s == State::Closing || s == State::Aborting;
 }
 bool QueuedRecorder::active() const { return state_.load(std::memory_order_acquire) == State::Running; }
 const FlightEntry *QueuedRecorder::current() const {
@@ -36,7 +36,32 @@ bool QueuedRecorder::begin(const recovery::Configuration &config, const recovery
   current_ = *writer_.current(); directoryCount_ = writer_.directory().count();
   assignments_ = writer_.metadata()->starts; assignmentCount_ = writer_.metadata()->layout.slotCount;
   frontError_ = RecorderError::None; publish();
+  preparationOnly_=false;
   state_.store(State::Running, std::memory_order_release);
+  if (notify_) notify_();
+  return true;
+}
+bool QueuedRecorder::beginAsync(const recovery::Configuration &config, const recovery::ValidationLimits &limits, uint32_t bytes,
+                              SensorMode sensorMode, OutputMode outputMode, sensors::FrameConvention frame, const FlightCalibration &calibration) {
+  if (busy()) return fail(RecorderError::Busy);
+  if (!online() || !writer_.initialized()) return fail(RecorderError::NotInitialized);
+  preparationConfig_=config; preparationLimits_=limits; preparationBytes_=bytes;
+  preparationSensor_=sensorMode; preparationOutput_=outputMode; preparationFrame_=frame; preparationCalibration_=calibration;
+  samples_.reset(); starts_.reset(); peak_=0; dropped_.store(0); saved_.store(0); full_.store(false);
+  current_={}; assignmentCount_=0; directoryCount_=writer_.directory().count(); workerTiming_={};
+  ready_.store(true); workerError_.store(RecorderError::None); frontError_=RecorderError::None;
+  preparationOnly_=true;
+  state_.store(State::Preparing,std::memory_order_release);
+  if (notify_) notify_();
+  return true;
+}
+bool QueuedRecorder::activatePrepared() {
+  if (state_.load(std::memory_order_acquire)!=State::Prepared) return false;
+  // Worker is parked in Prepared; transfer immutable metadata before resuming it.
+  current_=*writer_.current(); directoryCount_=writer_.directory().count();
+  assignments_=writer_.metadata()->starts; assignmentCount_=writer_.metadata()->layout.slotCount;
+  preparationOnly_=false;
+  state_.store(State::Running,std::memory_order_release);
   if (notify_) notify_();
   return true;
 }
@@ -84,7 +109,7 @@ bool QueuedRecorder::finish(bool producerClosed, const RecordingSummary &summary
 }
 void QueuedRecorder::abort() {
   auto s = state_.load(std::memory_order_acquire);
-  while (s == State::Running || s == State::Closing) {
+  while (s == State::Preparing || s == State::Prepared || s == State::Running || s == State::Closing) {
     if (state_.compare_exchange_weak(s, State::Aborting, std::memory_order_acq_rel)) break;
   }
   if (notify_) notify_();
@@ -105,8 +130,21 @@ void QueuedRecorder::close(uint32_t start) {
 }
 bool QueuedRecorder::poll() {
   auto state = state_.load(std::memory_order_acquire);
+  if (state==State::Preparing) {
+    const auto start=now();
+    const bool ok=writer_.begin(preparationConfig_,preparationLimits_,preparationBytes_,preparationSensor_,preparationOutput_,preparationFrame_,preparationCalibration_);
+    if (!ok) { fault(writer_.error(),start); return true; }
+    publish(); workerTiming_.add(uint32_t(now()-start));
+    State expected=State::Preparing;
+    if (state_.compare_exchange_strong(expected,State::Prepared,std::memory_order_acq_rel)) return true;
+    state=expected; // Cancellation arrived during erase: finish on this core.
+  }
   if (state != State::Running && state != State::Closing && state != State::Aborting) return false;
   const auto start = now();
+  if (state==State::Aborting && preparationOnly_) {
+    if (writer_.active() && !writer_.finish(true,RecordingSummary{},RecordingRetention::Discard)) { fault(writer_.error(),start); return true; }
+    publish(); state_.store(State::Closed,std::memory_order_release); return true;
+  }
   if (state == State::Aborting) { fault(RecorderError::NotRecording, start); return true; }
   // An orderly PAD discard need not persist queued samples/starts. The producer
   // cannot reuse flash until the directory invalidation is acknowledged here.

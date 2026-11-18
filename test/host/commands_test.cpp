@@ -28,6 +28,23 @@ struct FakePowerHardware : PowerHardware {
 
 // Each namespace isolates one component scenario and its fault model.
 namespace test_usb_command_service {
+void protocolValues() {
+  uint32_t n; float f;
+  assert(protocol::unsignedNumber("4294967295", n) && n == UINT32_MAX);
+  assert(!protocol::unsignedNumber("4294967296", n));
+  assert(!protocol::unsignedNumber("-1", n));
+  assert(protocol::floating("nan", f) && !protocol::finiteNumber("nan", f));
+  assert(!protocol::floating("1e999", f));
+  protocol::Tokens quoted("add 10 \"escaped \\\"name\\\"\"");
+  assert(quoted.valid && quoted.count == 3 && quoted.is(2, "escaped \"name\""));
+  assert(!protocol::Tokens("\"unfinished").valid);
+  assert(!protocol::Tokens(std::string(129, 'x').c_str()).valid);
+  assert(!protocol::Tokens("a b c d e f g h i j k l m").valid);
+  protocol::Json json; json.quoted("a\n\"\\");
+  assert(strcmp(json.bytes, "\"a\\u000a\\\"\\\\\"") == 0);
+  json.add("%s", std::string(800, 'x').c_str()); assert(!json.ok);
+  const auto length = json.length; json.add("ignored"); assert(json.length == length);
+}
 std::vector<std::string> send(CommandService &service, const std::string &bytes, uint16_t batteryMv=UINT16_MAX) {
   CommandService::Status status;
   status.uptimeMs = 1234; status.flashJedec = 0xEF4018; status.flashIdentified = true;
@@ -166,83 +183,81 @@ public:
 };
 const recovery::ValidationLimits limits{1000, 2000, 1000, 3600000};
 
-void contains(const std::string &text, const char *part) {
-  if (text.find(part) == std::string::npos) { std::cerr << text << "Missing: " << part << '\n'; assert(false); }
-}
+using command_test::has;
 void run() {
   MemoryFlash flash; ConfigurationStore store(flash); ConfigurationService settings(store, limits); ConfigurationCommands config(settings);
   CommandService usb; usb.setExtension(&config); config.boot(true);
   assert(!config.configValid() && flash.mutations == 0);
-  contains(send(usb, "config show"), "\"available\":false");
-  contains(send(usb, "capabilities"), "\"max_rules\":8");
-  contains(send(usb, "pyro set 1 100"), "NO_DRAFT");
-  contains(send(usb, "@1 config begin"), "\"ok\":true");
-  contains(send(usb, "@1 config begin"), "\"ok\":true");
-  contains(send(usb, "@1 config discard"), "ID_CONFLICT");
-  contains(send(usb, "@0 config discard"), "STALE_REQUEST");
-  contains(send(usb, "config begin"), "DRAFT_ACTIVE");
-  contains(send(usb, "config validate"), "EmptyPlan");
-  contains(send(usb, "rule add 10 \"Main \\\"example\\\"\""), "\"ok\":true");
-  contains(send(usb, "rule show 10"), "Main \\\"example\\\"");
-  contains(send(usb, "rule add 10 Duplicate"), "DUPLICATE_RULE_ID");
-  contains(send(usb, "condition add 10 apogee"), "\"ok\":true");
-  contains(send(usb, "output assign 10 pyro 1"), "\"ok\":true");
-  contains(send(usb, "output assign 10 pyro 2 100"), "\"ok\":true");
-  contains(send(usb, "output show 10 1"), "\"delay_ms\":100");
-  contains(send(usb, "output unassign 10 pyro 2"), "\"ok\":true");
-  contains(send(usb, "output assign 10 pyro 2 -1"), "INVALID_ARGUMENT");
-  contains(send(usb, "output assign 10 pyro 2 3600001"), "INVALID_ARGUMENT");
-  contains(send(usb, "output assign 10 pyro 2 1 2"), "INVALID_ARGUMENT");
-  contains(send(usb, "output delay 10 pyro 1 100"), "INVALID_ARGUMENT");
-  contains(send(usb, "config validate"), "\"valid\":true");
-  contains(send(usb, "pyro show 1"), "\"pulse_ms\":1000");
-  contains(send(usb, "rule delay 10 250"), "\"ok\":true");
-  contains(send(usb, "rule show 10"), "\"delay_ms\":250");
-  contains(send(usb, "rule delay 10 0"), "\"ok\":true");
-  contains(send(usb, "pyro set 1 -1"), "INVALID_ARGUMENT");
-  contains(send(usb, "pyro set 1 100000"), "INVALID_ARGUMENT");
-  contains(send(usb, "pyro set 1 100"), "\"ok\":true");
-  contains(send(usb, "config validate"), "\"valid\":true"); assert(flash.mutations == 0);
-  contains(send(usb, "@2 config apply"), "\"persisted\":true"); assert(config.configValid());
+  has(send(usb, "config show"), "\"available\":false");
+  has(send(usb, "capabilities"), "\"max_rules\":8");
+  has(send(usb, "pyro set 1 100"), "NO_DRAFT");
+  has(send(usb, "@1 config begin"), "\"ok\":true");
+  has(send(usb, "@1 config begin"), "\"ok\":true");
+  has(send(usb, "@1 config discard"), "ID_CONFLICT");
+  has(send(usb, "@0 config discard"), "STALE_REQUEST");
+  has(send(usb, "config begin"), "DRAFT_ACTIVE");
+  has(send(usb, "config validate"), "EmptyPlan");
+  has(send(usb, "rule add 10 \"Main \\\"example\\\"\""), "\"ok\":true");
+  has(send(usb, "rule show 10"), "Main \\\"example\\\"");
+  has(send(usb, "rule add 10 Duplicate"), "DUPLICATE_RULE_ID");
+  has(send(usb, "condition add 10 apogee"), "\"ok\":true");
+  has(send(usb, "output assign 10 pyro 1"), "\"ok\":true");
+  has(send(usb, "output assign 10 pyro 2 100"), "\"ok\":true");
+  has(send(usb, "output show 10 1"), "\"delay_ms\":100");
+  has(send(usb, "output unassign 10 pyro 2"), "\"ok\":true");
+  has(send(usb, "output assign 10 pyro 2 -1"), "INVALID_ARGUMENT");
+  has(send(usb, "output assign 10 pyro 2 3600001"), "INVALID_ARGUMENT");
+  has(send(usb, "output assign 10 pyro 2 1 2"), "INVALID_ARGUMENT");
+  has(send(usb, "output delay 10 pyro 1 100"), "INVALID_ARGUMENT");
+  has(send(usb, "config validate"), "\"valid\":true");
+  has(send(usb, "pyro show 1"), "\"pulse_ms\":1000");
+  has(send(usb, "rule delay 10 250"), "\"ok\":true");
+  has(send(usb, "rule show 10"), "\"delay_ms\":250");
+  has(send(usb, "rule delay 10 0"), "\"ok\":true");
+  has(send(usb, "pyro set 1 -1"), "INVALID_ARGUMENT");
+  has(send(usb, "pyro set 1 100000"), "INVALID_ARGUMENT");
+  has(send(usb, "pyro set 1 100"), "\"ok\":true");
+  has(send(usb, "config validate"), "\"valid\":true"); assert(flash.mutations == 0);
+  has(send(usb, "@2 config apply"), "\"persisted\":true"); assert(config.configValid());
   const auto mutations = flash.mutations;
-  contains(send(usb, "@2 config apply"), "\"persisted\":true"); assert(flash.mutations == mutations);
-  contains(send(usb, "@3 config show"), "\"available\":true");
-  contains(send(usb, "@2 config apply"), "STALE_REQUEST"); assert(flash.mutations == mutations);
+  has(send(usb, "@2 config apply"), "\"persisted\":true"); assert(flash.mutations == mutations);
+  has(send(usb, "@3 config show"), "\"available\":true");
+  has(send(usb, "@2 config apply"), "STALE_REQUEST"); assert(flash.mutations == mutations);
   ConfigurationService rebootSettings(store, limits); ConfigurationCommands reboot(rebootSettings); reboot.boot(true); assert(reboot.configValid());
   usb.reset(); usb.setExtension(&reboot);
-  contains(send(usb, "rule show 10"), "Main \\\"example\\\"");
-  contains(send(usb, "config begin"), "\"ok\":true");
-  contains(send(usb, "rule rename 10 Changed"), "\"ok\":true");
-  contains(send(usb, "config discard"), "\"ok\":true");
-  contains(send(usb, "rule show 10"), "Main \\\"example\\\"");
-  contains(send(usb, "config begin"), "\"ok\":true");
-  contains(send(usb, "rule add 20 Backup"), "\"ok\":true");
-  contains(send(usb, "condition add 20 since_rule_ms 10 250"), "\"ok\":true");
-  contains(send(usb, "output assign 20 pyro 1"), "OUTPUT_ALREADY_ASSIGNED");
-  contains(send(usb, "output assign 20 servo 1"), "\"ok\":true");
-  contains(send(usb, "servo set 1 1000 2000"), "\"hardware_moved\":false");
-  contains(send(usb, "servo set 1 1000 2000 500"), "INVALID_ARGUMENT");
-  contains(send(usb, "rule remove 10"), "RULE_REFERENCED");
-  contains(send(usb, "condition add 10 since_rule_ms 20 0"), "\"ok\":true");
-  contains(send(usb, "config validate"), "DependencyCycle");
-  contains(send(usb, "condition remove 10 1"), "\"ok\":true");
+  has(send(usb, "rule show 10"), "Main \\\"example\\\"");
+  has(send(usb, "config begin"), "\"ok\":true");
+  has(send(usb, "rule rename 10 Changed"), "\"ok\":true");
+  has(send(usb, "config discard"), "\"ok\":true");
+  has(send(usb, "rule show 10"), "Main \\\"example\\\"");
+  has(send(usb, "config begin"), "\"ok\":true");
+  has(send(usb, "rule add 20 Backup"), "\"ok\":true");
+  has(send(usb, "condition add 20 since_rule_ms 10 250"), "\"ok\":true");
+  has(send(usb, "output assign 20 pyro 1"), "OUTPUT_ALREADY_ASSIGNED");
+  has(send(usb, "output assign 20 servo 1"), "\"ok\":true");
+  has(send(usb, "servo set 1 1000 2000"), "\"hardware_moved\":false");
+  has(send(usb, "servo set 1 1000 2000 500"), "INVALID_ARGUMENT");
+  has(send(usb, "rule remove 10"), "RULE_REFERENCED");
+  has(send(usb, "condition add 10 since_rule_ms 20 0"), "\"ok\":true");
+  has(send(usb, "config validate"), "DependencyCycle");
+  has(send(usb, "condition remove 10 1"), "\"ok\":true");
   for (const char *condition : {"phase descent", "altitude < 100", "altitude_range -5 100", "speed >= 10", "speed_range 0 20", "since_launch_ms 100", "since_apogee_ms 100"}) {
-    contains(send(usb, std::string("condition replace 10 0 ") + condition), "\"ok\":true");
-    contains(send(usb, "config validate"), "\"valid\":true");
+    has(send(usb, std::string("condition replace 10 0 ") + condition), "\"ok\":true");
+    has(send(usb, "config validate"), "\"valid\":true");
   }
-  contains(send(usb, "condition replace 10 0 altitude < nan"), "INVALID_ARGUMENT");
-  contains(send(usb, "condition replace 10 0 altitude < inf"), "INVALID_ARGUMENT");
-  contains(send(usb, "condition replace 10 0 altitude_range 100 -1"), "\"ok\":true");
-  contains(send(usb, "config validate"), "InvalidCondition");
-  contains(send(usb, "condition replace 10 0 apogee"), "\"ok\":true");
+  has(send(usb, "condition replace 10 0 altitude < nan"), "INVALID_ARGUMENT");
+  has(send(usb, "condition replace 10 0 altitude < inf"), "INVALID_ARGUMENT");
+  has(send(usb, "condition replace 10 0 altitude_range 100 -1"), "\"ok\":true");
+  has(send(usb, "config validate"), "InvalidCondition");
+  has(send(usb, "condition replace 10 0 apogee"), "\"ok\":true");
   reboot.setDisarmed(false);
-  contains(send(usb, "pyro set 1 200"), "ARMED");
-  contains(send(usb, "config show"), "\"ok\":true");
+  has(send(usb, "pyro set 1 200"), "ARMED");
+  has(send(usb, "config show"), "\"ok\":true");
   reboot.setDisarmed(true); reboot.disconnect(); usb.reset();
-  contains(send(usb, "config apply"), "NO_DRAFT");
-  contains(send(usb, "config begin"), "\"ok\":true");
+  has(send(usb, "config apply"), "NO_DRAFT");
+  has(send(usb, "config begin"), "\"ok\":true");
   flash.failProgram = true;
-  contains(send(usb, "config apply"), "STORAGE_ERROR"); assert(!reboot.configValid());
+  has(send(usb, "config apply"), "STORAGE_ERROR"); assert(!reboot.configValid());
   assert(!reboot.storageReady());
   std::cout << "Configuration USB integration tests passed.\n";
 }
@@ -252,9 +267,7 @@ namespace test_estimate_replay {
 using command_test::send;
 using namespace replay_test;
 
-void has(const std::string &s, const char *part) {
-  if (s.find(part) == std::string::npos) { std::cerr << s << " missing " << part << '\n'; assert(false); }
-}
+using command_test::has;
 void run() {
   MemoryFlash flash; storage::ConfigurationStore store(flash);
   assert(store.save(fixture(), limits, true));
@@ -321,9 +334,7 @@ namespace test_sensor_hil {
 using command_test::send;
 using namespace replay_test;
 
-void has(const std::string &value, const char *part) {
-  if (value.find(part) == std::string::npos) { std::cerr << value << " missing " << part << '\n'; assert(false); }
-}
+using command_test::has;
 uint32_t fakeClock() { static uint32_t time = 0xFFFFFFF0u; time += 20; return time; }
 class FakeHardwareSource : public sensors::SensorSource {
 public:
@@ -449,6 +460,8 @@ void run() {
   }
   assert(store.save(all, limits, true)); config.boot(true);
   send(usb, "hil begin 0 200 logged_body");
+  send(usb, "hil sample 4294967285 35 0 0 0 0 0 nan");
+  send(usb, "hil sample 4294967290 35 0 0 0 0 0 nan");
   const auto burst = send(usb, "hil sample 4294967295 35 0 0 0 0 0 nan");
   has(burst, "[4294967295,\"pyro\",1,4294967295]");
   has(burst, "[4294967288,\"servo\",4,4294967295]");
@@ -485,9 +498,7 @@ struct Device : storage::FlashDevice {
   }
 };
 
-void has(const std::string &reply, const char *part) {
-  if (reply.find(part) == std::string::npos) { std::cerr << reply << " missing " << part << '\n'; assert(false); }
-}
+using command_test::has;
 void run() {
   Device flash; const timing::Clock clock = clockUs;
   storage::ProfiledFlashDevice profiled(flash, clock);
@@ -667,7 +678,7 @@ bool pending=false;
 uint32_t powerMs=0;
 uint32_t powerClock() { return powerMs; }
 bool transportBusy() { return pending; }
-void has(const std::string &reply, const char *part) { assert(reply.find(part)!=std::string::npos); }
+using command_test::has;
 std::string drain(CommandEndpoint &endpoint, unsigned chunk) {
   std::string result;
   while(endpoint.pending()) {
@@ -897,6 +908,7 @@ void run() {
 int main() {
   test_command_policy_and_fragments::run();
   std::puts("  usb_command_service"); std::fflush(stdout);
+  test_usb_command_service::protocolValues();
   test_usb_command_service::run();
   std::puts("  configuration_commands"); std::fflush(stdout);
   test_configuration_commands::run();

@@ -71,12 +71,18 @@ def main():
     parser.add_argument('--timeout', type=float, default=120, help='Seconds before a stuck suite is stopped; Python suites print the stack of every thread (default 120)')
     parser.add_argument('--changed', nargs='?', const='HEAD', metavar='REF', help='Run only suites/areas affected by files changed since REF (default HEAD: uncommitted and new files)')
     parser.add_argument('--list', action='store_true', help='List available areas without building')
+    parser.add_argument('--quick', nargs='?', const='HEAD', metavar='REF', help='Affected host tests only; defer desktop and recorded-flight integrations to the final check')
+    parser.add_argument('--plan', action='store_true', help='Show selected tests without compiling or running them')
     parser.add_argument('--compiler', default='g++')
     parser.add_argument('--jobs', type=int, default=min(4, os.cpu_count() or 1), help='Parallel compiler processes (default max 4)')
     parser.add_argument('--rebuild', action='store_true', help='Ignore the C++ build cache')
     parser.add_argument('--verbose', action='store_true', help='Show individual scenario output')
     parser.add_argument('--skip-recorded-data', action='store_true', help='Exclude recorded integrations, including with --full')
     args = parser.parse_args()
+    if args.quick is not None:
+        if args.changed or args.suite or args.area or args.desktop or args.full:
+            parser.error('--quick selects affected host tests; do not combine with other selection options')
+        args.changed=args.quick
     if args.jobs < 1:
         parser.error('--jobs must be positive')
     if args.list:
@@ -89,12 +95,14 @@ def main():
         parser.error('--changed chooses suites itself; do not combine it with --suite or --area')
     desktop_python=ROOT/'.venv/Scripts/python.exe'
     default = [] if args.area else [*CPP, *(n for n in PYTHON if n!='desktop')] # --area alone runs only those areas.
-    if args.changed and desktop_python.exists(): default.append('desktop')
+    if args.changed and args.quick is None and desktop_python.exists(): default.append('desktop')
     selected = list(dict.fromkeys(args.suite or default))
     if (args.desktop or args.area) and 'desktop' not in selected: selected.append('desktop')
     if (not args.full and not args.suite) or args.skip_recorded_data:
         selected = [name for name in selected if name not in RECORDED]
     areas = args.area or list(desktop_areas())
+    if args.quick is not None:
+        print('Quick check: desktop and recorded-flight integrations are deferred; finish with --changed.')
     if args.changed:
         selected, areas = select_changed(args.changed, selected, areas)
         if not selected:
@@ -102,6 +110,15 @@ def main():
             return 0
     elif not selected:
         parser.error('No suites remain after excluding recorded-data tests')
+    if 'desktop' in selected:
+        unknown = [area for area in areas if area not in desktop_areas()]
+        if unknown:
+            parser.error('Unknown desktop areas: ' + ', '.join(unknown) + '. Available: ' + ', '.join(desktop_areas()))
+    if args.plan:
+        names=[item for name in selected for item in (
+            [f'desktop/{area}' for area in areas] if name=='desktop' else [name])]
+        print(f'Plan ({len(names)} runs): ' + ', '.join(names))
+        return 0
     start = time.perf_counter()
     if 'desktop' in selected and not desktop_python.exists():
         parser.error('Create .venv and install perpetual_app/requirements.txt first (see README.md)')
@@ -124,9 +141,6 @@ def main():
             runs.append((name, [str(executables[name])]))
         elif name == 'desktop':
             # One process per area: a fresh app and firmware fixture, and a failure names its area.
-            unknown = [area for area in areas if area not in desktop_areas()]
-            if unknown:
-                parser.error('Unknown desktop areas: ' + ', '.join(unknown) + '. Available: ' + ', '.join(desktop_areas()))
             runs += [(f'desktop/{area}', watched(desktop_python, args.timeout, DESKTOP_TEST, area)) for area in areas]
         else:
             runs.append((name, watched(sys.executable, args.timeout, f'test/integration/{name}_test.py')))
@@ -238,7 +252,7 @@ def select_changed(ref, selected, areas):
         if kept_areas: keep.append('desktop')
     uncovered = sorted(name for name in changed - covered if not name.endswith('.md'))
     if uncovered:
-        print('Not exercised by host tests (check them on the board or by hand):\n  ' + '\n  '.join(uncovered))
+        print('Not exercised by this selection (deferred or requiring board/manual checks):\n  ' + '\n  '.join(uncovered))
     print(f'Selected: {", ".join(n for n in keep if n != "desktop") or "no suites"}'
           + (f'; desktop areas: {", ".join(kept_areas)}' if kept_areas else ''), flush=True)
     return keep, kept_areas

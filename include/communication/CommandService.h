@@ -36,6 +36,9 @@ public:
     float temperatureC = std::numeric_limits<float>::quiet_NaN();
     float accelMps2[3] = {}, gyroRadps[3] = {};
     uint32_t imuSampleAgeMs = 0, baroSampleAgeMs = 0;
+    // Cumulative idle acquisition diagnostics, excluding flight/simulation work.
+    uint32_t idlePolls = 0, idleReadUs = 0, idleReadMaxUs = 0;
+    uint32_t idleImuSamples = 0, idleBaroSamples = 0;
     const char *armingState = "disarmed", *flightMode = "none";
     int phase = -1;
     uint32_t gyroSamples = 0, gyroTarget = 0;

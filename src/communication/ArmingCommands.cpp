@@ -1,4 +1,5 @@
 #include "communication/ArmingCommands.h"
+#include "hardware/SensorRates.h"
 #include "communication/ArmingReply.h"
 #include "communication/RecordingReply.h"
 #include "simulation/SimulationSession.h"
@@ -91,7 +92,7 @@ bool ArmingCommands::dispatch(const char *command, const char *arguments, bool h
   } else if (arm) {
     navigation::SensorCalibration device;
     device.upAxis=static_cast<navigation::UpAxis>(physical_.deviceUpAxis());
-    error = physical_.arm(source_, flight::FlightMode::Physical, 0, 120, device, 1048576, &checks_);
+    error = physical_.arm(source_, flight::FlightMode::Physical, 0, sensors::ImuRateHz, device, 1048576, &checks_);
     protocol::appendPreflight(data, physical_.lastPreflight());
   } else if (simulation_ && (simulation_->active() || simulation_->controller().state() == flight::ArmingState::Closing)) { owner = &simulation_->controller(); error = simulation_->disarm(); }
   else if (hil_ && (hil_->active() || hil_->controller().state() == flight::ArmingState::Closing)) { owner = &hil_->controller(); error = hil_->disarm(); }

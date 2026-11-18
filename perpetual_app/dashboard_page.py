@@ -92,7 +92,7 @@ class DashboardPage(QWidget):
 
     def toggle_arming(self):
         arming=self.controller.state.status.get('arming_state')
-        if arming in ('armed','arming'): self.controller.command('disarm',t('Disarm request'))
+        if arming in ('armed','arming','preparing'): self.controller.command('disarm',t('Disarm request'))
         elif arming=='disarmed': self.controller.command('arm',t('Arm request'))
 
     def prepare_selected_servos(self):
@@ -167,10 +167,10 @@ class DashboardPage(QWidget):
         if self.arm_button.property('blocked')!=blocked:
             self.arm_button.setProperty('blocked',blocked)
             self.arm_button.style().unpolish(self.arm_button); self.arm_button.style().polish(self.arm_button)
-        disarming=arming in ('armed','arming','closing')
+        disarming=arming in ('armed','arming','preparing','closing')
         self.arm_button.set_disarming(disarming)
         self.arm_button.set_request_pending(bool(s.foreground))
-        self.arm_button.setEnabled(usable and s.owns_control and (arming in ('armed','arming') if disarming else ready and not reasons and not s.dirty and not s.staged and arming=='disarmed'))
+        self.arm_button.setEnabled(usable and s.owns_control and (arming in ('armed','arming','preparing') if disarming else ready and not reasons and not s.dirty and not s.staged and arming=='disarmed'))
         self.arm_button.setToolTip(t('Hold for 1.5 s to disarm; the firmware verifies the request.') if disarming else
             t('Preflight blocked by the board. Press Recheck after solving the problems.') if blocked else
             t('Requires a ready preflight from the board. Hold for 1.5 s; the board checks again before arming.'))

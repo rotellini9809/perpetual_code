@@ -489,9 +489,43 @@ def check_build_cache():
     print('Host cache passed: skipped unchanged build, header/flag invalidation, paths with spaces and failed-build recovery.')
 
 
+def check_test_selection():
+    import contextlib
+    import io
+    from unittest.mock import patch
+    import run_tests
+
+    def plan(*arguments):
+        output=io.StringIO()
+        with patch.object(sys,'argv',['run_tests.py',*arguments,'--plan']), \
+             patch.object(run_tests,'changed_files',return_value={'tools/run_tests.py'}), \
+             patch.object(run_tests,'HostBuild',side_effect=AssertionError('A plan must not build')), \
+             contextlib.redirect_stdout(output):
+            assert run_tests.main()==0
+        return output.getvalue().split('Plan (',1)[1].split(': ',1)[1].strip().split(', ')
+
+    quick=plan('--quick')
+    assert set(quick)==set(run_tests.CPP)|{'clients','replay'}
+    assert plan('--suite','flight','flight')==['flight']
+    assert plan('--area','arm_button')==['desktop/arm_button']
+    release=plan('--full','--desktop')
+    assert set(run_tests.RECORDED)<=set(release)
+    assert all('desktop/'+area in release for area in run_tests.desktop_areas())
+    for arguments in (('--quick','--full'),('--quick','--desktop'),('--quick','--suite','flight'),('--area','unknown')):
+        with patch.object(sys,'argv',['run_tests.py',*arguments,'--plan']), contextlib.redirect_stderr(io.StringIO()):
+            try:
+                run_tests.main()
+            except SystemExit as error:
+                assert error.code==2
+            else:
+                raise AssertionError('Conflicting or unknown selection accepted')
+    print('Test selection passed: quick/focused/release plans, deduplication and no build in plan mode.')
+
+
 if __name__ == "__main__":
     check_replay_pacing()
     check_simulation_client()
     check_bluetooth_client()
     check_shared_connection()
     check_build_cache()
+    check_test_selection()

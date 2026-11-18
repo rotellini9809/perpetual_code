@@ -1,9 +1,24 @@
 # Build, test and device diagnostics
 
+Use one level of checking at a time. While editing, run a known area with `--suite`
+or use `--quick` to select affected host tests. Finish with one `--changed` run;
+reserve `--full --desktop` for releases or changes spanning the whole system.
+Do not follow a successful full run with the same unchanged focused suites.
+`--plan` previews any selection without compiling, launching Qt or running tests.
+
+`--quick` deliberately excludes Qt and recorded-flight integrations. It is an
+intermediate check, not completion of UI or hardware validation. It accepts the
+same optional Git reference as `--changed`. No passing result is cached: an
+explicitly requested suite always runs, including fault and actuator scenarios.
+
 From the project root:
 
 ```powershell
-python tools/run_tests.py                       # Daily checks: all C++, synthetic CSV and clients
+python tools/run_tests.py --quick               # Editing: affected host tests, no Qt/long replay
+python tools/run_tests.py --changed --plan       # Preview the final selection, without running it
+python tools/run_tests.py --changed             # Finish: affected suites and desktop areas
+python tools/run_tests.py --full --desktop       # Release: all host, recorded-flight and Qt checks
+python tools/run_tests.py                       # All standard host checks (legacy default)
 python tools/run_tests.py --suite bluetooth     # One area
 python tools/run_tests.py --suite storage_recording storage_recovery
 python tools/run_tests.py --full                # Also replay, record and download all Hoppino samples
@@ -381,3 +396,19 @@ Failures report NO_RESPONSE, MODULE_REJECTED, UNSUPPORTED_MODULE or NAME_READBAC
 If a setter may already have reached the module, `may_have_changed:true` remains set even when
 an ACK is lost or the second profile fails. No automatic setter retry, rollback, reset or rename of
 unconfirmed modules occurs; do not display failure as a fully applied name change.
+## Live sensor acquisition timing
+
+With MAIN loaded and the board awake and disarmed, run:
+
+```powershell
+.venv/Scripts/python.exe tools/measure_live_sensors.py --port COM11 --seconds 30 --output .pio/cpu-live/result.json
+```
+
+This read-only measurement requires no arming or output commands. `sensors` exposes
+`idle_poll` (poll count, cumulative acquisition microseconds, maximum acquisition
+microseconds since boot) and `idle_samples` (valid fresh IMU and barometer counts).
+Counters cover idle acquisition only; the cumulative microsecond counter wraps at
+32 bits. The script reports counter deltas over board uptime, not USB snapshot rate.
+The acquisition wall-time percentage excludes navigation, recording, and other loop
+work. It is not total CPU utilization or proof of zero sensor overruns. Sample validity
+is checked at USB snapshot times only. Flight/simulation load needs a separate test.

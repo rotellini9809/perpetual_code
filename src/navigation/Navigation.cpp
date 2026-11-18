@@ -27,17 +27,20 @@ NavigationOutput Navigation::output(const SensorFrame &f) const {
 }
 NavigationOutput Navigation::step(const SensorFrame &f) {
   auto out = output(f);
-  if (!initialized_ || (haveImu_ && (f.timeUs <= lastTime_ || f.imuSequence <= lastImuSequence_))) return out;
+  if (!initialized_ || (haveImu_ && (f.timeUs <= lastTime_ || f.imuSequence <= lastImuSequence_))) {
+    detector_.interruptConfirmation(); return out;
+  }
   const float dt = haveImu_ ? float(f.timeUs - lastTime_) * 1e-6f : firstDt_;
+  if (haveImu_ && (f.imuSequence!=lastImuSequence_+1 || dt>2*firstDt_)) detector_.interruptConfirmation();
   // Consume fresh frames even if invalid: recovery must not integrate across gaps.
   lastTime_ = f.timeUs; lastImuSequence_ = f.imuSequence; haveImu_ = true;
-  if (!f.imuValid || !std::isfinite(dt) || dt <= 0 || dt > 0.1f) return out;
+  if (!f.imuValid || !std::isfinite(dt) || dt <= 0 || dt > 0.1f) { detector_.interruptConfirmation(); return out; }
   float a2 = 0, g2 = 0;
   for (unsigned i = 0; i < 3; ++i) {
-    if (!std::isfinite(f.accel[i]) || !std::isfinite(f.gyro[i])) return out;
+    if (!std::isfinite(f.accel[i]) || !std::isfinite(f.gyro[i])) { detector_.interruptConfirmation(); return out; }
     a2 += f.accel[i]*f.accel[i]; g2 += f.gyro[i]*f.gyro[i];
   }
-  if (!std::isfinite(a2) || !std::isfinite(g2)) return out;
+  if (!std::isfinite(a2) || !std::isfinite(g2)) { detector_.interruptConfirmation(); return out; }
   if (!attitudeAligned_) {
     const float magnitude=std::sqrt(a2);
     if (std::fabs(magnitude-9.80665f)>1.0f) return out;
@@ -46,7 +49,7 @@ NavigationOutput Navigation::step(const SensorFrame &f) {
     if (!attitude_.reset(aligned)) return out;
     attitudeAligned_=true;
   }
-  if (!attitude_.step(f.accel, f.gyro, dt, detector_.phase())) return out;
+  if (!attitude_.step(f.accel, f.gyro, dt, detector_.phase())) { detector_.interruptConfirmation(); return out; }
   const auto vertical = attitude_.verticalInBody();
   const float force = vertical[0]*f.accel[0] + vertical[1]*f.accel[1] + vertical[2]*f.accel[2];
   float baro = std::numeric_limits<float>::quiet_NaN();

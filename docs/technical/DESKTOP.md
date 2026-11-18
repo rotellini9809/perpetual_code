@@ -132,9 +132,9 @@ pyros are read for continuity, sequentially. It never prepares/fires outputs or 
 recording. Busy checks run before hardware inspection. Simulation preflight checks common
 configuration/ownership only; it skips physical readiness and does not request recording.
 
-`arm` requests physical mode (120 Hz nominal, 1 MiB sample budget). On the present board it
-returns `ok:false`, normally `IMU_UNAVAILABLE`, with the complete blocker list. Depending on the
-current state this also includes `STORAGE_NOT_READY`, `CONTINUITY_FAULT`, `SERVOS_NOT_PREPARED`,
+`arm` requests physical mode (240 Hz nominal, 1 MiB sample budget). Failed readiness checks
+return `ok:false` with the complete blocker list, including `IMU_UNAVAILABLE` when applicable.
+Depending on the current state this also includes `STORAGE_NOT_READY`, `CONTINUITY_FAULT`, `SERVOS_NOT_PREPARED`,
 `SERVOS_NOT_CONFIGURED` (an assigned servo has no saved endpoints),
 and `ORIENTATION_NOT_READY` (no explicitly saved mounting).
 Mount/recovery failures remain visible in `flights status` and `flights failure`. Boot prepares only a never-used
