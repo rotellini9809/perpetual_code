@@ -168,7 +168,7 @@ def run(client, prepared, output, record_bytes=0, measure_timing=False, realtime
     names = {rule: client.request(f'rule show {rule}')['name'] for rule in view['rule_ids']}
     if measure_timing:
         client.request('flights timing reset')
-    fields = ['t_ms', 'source_t_ms', 'phase', 'imu_valid', 'baro_updated', 'z_est', 'vz_est',
+    fields = ['t_ms', 'source_t_us', 'phase', 'imu_valid', 'baro_updated', 'z_est', 'vz_est',
               'ba_est', 'az_est', 'compute_us', 'triggered', 'starts', 'mode',
               'recorded_z_est', 'recorded_vz_est', 'recorded_legacy_state']
     if realtime:
@@ -226,7 +226,7 @@ def run(client, prepared, output, record_bytes=0, measure_timing=False, realtime
                     print(f'{stamp} ms: VIRTUAL {kind} {channel}')
                 invalid += not response['imu_valid']
                 result = {key: response[key] for key in fields[:1] + fields[2:10]}
-                result.update(source_t_ms=old['t_ms'], triggered=json.dumps(response['triggered']),
+                result.update(source_t_us=old['t_us'] if 't_us' in old else str(int(old['t_ms']) * 1000), triggered=json.dumps(response['triggered']),
                               starts=json.dumps(response['starts']), mode='VIRTUAL',
                               recorded_z_est=old.get('z_est', ''), recorded_vz_est=old.get('vz_est', ''),
                               recorded_legacy_state=old.get('state', ''))

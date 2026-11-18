@@ -31,7 +31,7 @@ def check_navigation_replay():
         # Compare physical rotations, not Euler components near pitch=-90 degrees.
         with contextlib.redirect_stdout(io.StringIO()):
             full=module.replay(ROOT/'datasets/hoppino_VOLO_UFFICIALE_original.csv',folder/'full.csv')
-        original={int(r['source_t_ms']):r for r in full}
+        original={int(r['source_t_us']):r for r in full}
         def quaternion(row):
             a,b,c=(float(row[k])/2 for k in ('roll_rad','pitch_rad','yaw_rad'))
             cr,sr,cp,sp,cy,sy=math.cos(a),math.sin(a),math.cos(b),math.sin(b),math.cos(c),math.sin(c)
@@ -39,7 +39,7 @@ def check_navigation_replay():
         differences=[]
         for row in actual:
             if row['phase']=='0': continue
-            before=original[int(row['t_ms'])+2003]
+            before=original[int(row['t_us'])+2003000] # The excerpt starts 2.003 s into the original log.
             assert before['phase']==row['phase']
             dot=abs(sum(a*b for a,b in zip(quaternion(row),quaternion(before))))
             differences.append(math.degrees(2*math.acos(min(1,dot))))

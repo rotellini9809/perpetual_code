@@ -94,7 +94,9 @@ std::vector<Row> readRows(const std::string &path) {
   std::map<std::string, std::size_t> columns;
   for (std::size_t i = 0; i < header.size(); ++i)
     if (!columns.emplace(header[i], i).second) throw std::runtime_error("Duplicate column: " + header[i]);
-  for (const char *name : {"t_ms", "z_est", "vz_est", "state"})
+  // The dataset is microseconds (t_us); rules run on whole milliseconds. t_ms also works.
+  const bool micros = columns.count("t_us") != 0;
+  for (const char *name : {micros ? "t_us" : "t_ms", "z_est", "vz_est", "state"})
     if (!columns.count(name)) throw std::runtime_error(std::string("Missing column: ") + name);
   std::vector<Row> rows;
   std::size_t lineNumber = 1;
@@ -104,7 +106,9 @@ std::vector<Row> readRows(const std::string &path) {
       const auto fields = split(line);
       if (fields.size() != header.size()) throw std::runtime_error("Wrong column count");
       Row r;
-      r.time = integer(fields[columns.at("t_ms")]);
+      const auto stamp = integer(fields[columns.at(micros ? "t_us" : "t_ms")]);
+      if (micros && stamp % 1000) throw std::runtime_error("t_us must be whole milliseconds");
+      r.time = micros ? stamp / 1000 : stamp;
       r.phase = phase(integer(fields[columns.at("state")]));
       r.altitude = number(fields[columns.at("z_est")]);
       r.velocity = number(fields[columns.at("vz_est")]);

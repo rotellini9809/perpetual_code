@@ -5,12 +5,12 @@ from pathlib import Path
 ROOT=Path(__file__).resolve().parents[2]
 ORIGINAL=ROOT/'datasets/hoppino_VOLO_UFFICIALE_original.csv'
 OUTPUT=ROOT/'datasets/hoppino_VOLO_UFFICIALE.csv'
-START_MS,END_MS=2000,35000
+START_US,END_US=2000000,35000000 # Microseconds, like the t_us column.
 
 
 def generate():
     lines=ORIGINAL.read_text(encoding='utf-8-sig').splitlines()
-    rows=[line for line in lines[1:] if START_MS<=int(line.split(',',1)[0])<END_MS]
+    rows=[line for line in lines[1:] if START_US<=int(line.split(',',1)[0])<END_US]
     origin=int(rows[0].split(',',1)[0])
     # Preserve every sensor/estimate field verbatim; only rebase timestamps.
     return '\n'.join([lines[0]]+[str(int(line.split(',',1)[0])-origin)+','+line.split(',',1)[1] for line in rows])+'\n'

@@ -5,7 +5,7 @@
 namespace sensors {
 namespace {
 struct LoggedSample {
-  uint32_t timeMs;
+  uint32_t timeUs; // Relative to the first sample.
   float accel[3], gyro[3], pressurePa, temperatureC;
 };
 #include "data/HoppinoData.inc"
@@ -50,16 +50,16 @@ bool SimulatedSensorSource::poll(Reading &reading) {
     if (index==5000) { running_=false; finished_=true; }
     return true;
   }
-  const uint32_t dueUs = HoppinoSamples[next_].timeMs * 1000;
+  const uint32_t dueUs = HoppinoSamples[next_].timeUs;
   if (elapsed < dueUs) return false;
   const auto late = elapsed - dueUs;
   if (late > maxLate_) maxLate_ = late;
   // Skip stale frames on overrun; never feed a burst of historical IMU readings.
   uint32_t index = next_;
-  while (index+1 < sampleCount() && HoppinoSamples[index+1].timeMs*1000 <= elapsed) ++index;
+  while (index+1 < sampleCount() && HoppinoSamples[index+1].timeUs <= elapsed) ++index;
   missed_ += index-next_; next_ = index+1;
   const auto &sample = HoppinoSamples[index];
-  reading = {}; reading.timeUs = uint64_t(sample.timeMs)*1000;
+  reading = {}; reading.timeUs = sample.timeUs;
   reading.imuSequence = uint64_t(index)+1; reading.imuValid = true;
   for (unsigned i=0;i<3;++i) {
     reading.accelMps2[i]=sample.accel[i]; reading.gyroRadps[i]=sample.gyro[i];

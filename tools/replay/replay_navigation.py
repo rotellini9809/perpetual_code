@@ -1,7 +1,8 @@
 """Recompute navigation from recorded BODY IMU/pressure, not recorded estimates.
 
-Accepts a Hoppino-style dataset (t_ms, pressure on every row) or a downloaded v4
-flight CSV (t_us, calibrated BODY accel/gyro, pressure only on fresh-barometer rows)."""
+Accepts the Hoppino dataset (t_us, BODY IMU, pressure in hPa) or a downloaded v4 flight CSV
+(t_us, calibrated BODY accel/gyro, pressure only on fresh-barometer rows); older t_ms CSVs also
+work."""
 import argparse
 import csv
 import io
@@ -71,12 +72,12 @@ def replay(input_path, output_path, pressure_unit='hpa', compiler=None):
     computed = list(csv.DictReader(io.StringIO(result.stdout)))
     if len(computed) != len(rows):
         raise RuntimeError('Navigation row count mismatch')
-    fields = list(computed[0]) + ['source_t_ms', 'recorded_z_est', 'recorded_vz_est', 'recorded_legacy_state']
+    fields = list(computed[0]) + ['source_t_us', 'recorded_z_est', 'recorded_vz_est', 'recorded_legacy_state']
     with output_path.open('x', newline='', encoding='utf-8') as destination:
         writer = csv.DictWriter(destination, fieldnames=fields)
         writer.writeheader()
         for new, old in zip(computed, rows):
-            new.update(source_t_ms=old['t_ms'] if 't_ms' in old else f"{int(old['t_us'])/1000:.3f}", recorded_z_est=old.get('z_est', ''),
+            new.update(source_t_us=old['t_us'] if 't_us' in old else str(int(old['t_ms']) * 1000), recorded_z_est=old.get('z_est', ''),
                        recorded_vz_est=old.get('vz_est', ''), recorded_legacy_state=old.get('state', ''))
             writer.writerow(new)
     labels = {0: 'PAD', 1: 'BOOST', 2: 'COAST', 3: 'DESCENT', 4: 'LANDED'}

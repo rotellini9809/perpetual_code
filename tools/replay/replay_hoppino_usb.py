@@ -19,17 +19,19 @@ def load_samples(path):
     with Path(path).open(newline='', encoding='utf-8-sig') as source:
         reader = csv.DictReader(source)
         names = reader.fieldnames or []
-        if len(names) != len(set(names)) or not {'t_ms', 'state', 'z_est', 'vz_est'} <= set(names):
+        clock = 't_us' if 't_us' in names else 't_ms'
+        if len(names) != len(set(names)) or not {clock, 'state', 'z_est', 'vz_est'} <= set(names):
             raise ValueError('Missing or duplicate CSV columns')
         for line, row in enumerate(reader, 2):
             try:
                 if None in row or any(value is None for value in row.values()):
                     raise ValueError('Wrong column count')
-                if not row['t_ms'].isascii() or not row['t_ms'].isdigit():
+                if not row[clock].isascii() or not row[clock].isdigit() or (clock == 't_us' and int(row[clock]) % 1000):
                     raise ValueError('Invalid timestamp')
                 if row['state'] not in ('0', '1', '2', '3', '4', '5'):
                     raise ValueError('Unknown legacy state')
-                stamp, state = int(row['t_ms']), int(row['state'])
+                # Rule evaluation uses milliseconds; the dataset is whole milliseconds in us.
+                stamp, state = int(row[clock]) // (1000 if clock == 't_us' else 1), int(row['state'])
                 altitude, velocity = float(row['z_est']), float(row['vz_est'])
                 if any(math.isfinite(value) and abs(value) > 3.402823466e38 for value in (altitude, velocity)):
                     raise ValueError('Estimate exceeds float32 range')
