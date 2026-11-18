@@ -25,6 +25,10 @@ public:
     const auto start = now(); const bool ok = device_.program(address, data, length);
     record(stats_.program, start, length, ok); failure(ok, FlashOperation::Program, address, length); return ok;
   }
+  bool programErased(uint32_t address, const void *data, std::size_t length) override {
+    const auto start = now(); const bool ok = device_.programErased(address, data, length);
+    record(stats_.program, start, length, ok); failure(ok, FlashOperation::Program, address, length); return ok;
+  }
   bool eraseSector(uint32_t address) override {
     const auto start = now(); const bool ok = device_.eraseSector(address);
     record(stats_.erase, start, FlashLayout::SectorBytes, ok); failure(ok, FlashOperation::Erase, address, FlashLayout::SectorBytes); return ok;

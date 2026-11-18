@@ -87,13 +87,16 @@ bool FlashLogger::initialize(uint32_t hz, uint8_t mode) {
 }
 bool FlashLogger::waitReady(uint32_t timeoutMs) {
   if (!begun_) return fail(Error::NotInitialized);
-  const uint32_t start = millis();
+  // Page programs finish in ~0.4 ms (3 ms max): poll every 10 us for the first
+  // 5 ms instead of sleeping a whole millisecond; erases then fall back to 1 ms.
+  const uint32_t start = millis(), fineStart = micros();
   do {
     if (!(readStatus1() & 1)) { error_ = Error::None; return true; }
     if (uint32_t(millis() - start) >= timeoutMs) {
       ready_ = false; return fail(Error::Timeout);
     }
-    delay(1);
+    if (uint32_t(micros() - fineStart) < 5000) delayMicroseconds(10);
+    else delay(1);
   } while (true);
 }
 bool FlashLogger::checkRange(uint32_t address, const void *data, std::size_t length) {
@@ -105,7 +108,9 @@ bool FlashLogger::checkRange(uint32_t address, const void *data, std::size_t len
 bool FlashLogger::read(uint32_t address, void *data, std::size_t length) {
   if (!checkRange(address, data, length) || !waitReady(2000)) return false;
   if (length) {
-    select(); sendAddress(0x03, address); bus_.transfer(nullptr, data, length); deselect();
+    select(); sendAddress(fastRead_ ? 0x0B : 0x03, address);
+    if (fastRead_) { const uint8_t dummy = 0; bus_.transfer(&dummy, nullptr, 1); }
+    bus_.transfer(nullptr, data, length); deselect();
   }
   error_ = Error::None; return true;
 }
@@ -116,11 +121,17 @@ bool FlashLogger::writeEnable() {
   return true;
 }
 bool FlashLogger::program(uint32_t address, const void *data, std::size_t length) {
+  return programPages(address, data, length, true);
+}
+bool FlashLogger::programErased(uint32_t address, const void *data, std::size_t length) {
+  return programPages(address, data, length, false);
+}
+bool FlashLogger::programPages(uint32_t address, const void *data, std::size_t length, bool preflight) {
   if (!checkRange(address, data, length)) return false;
   const auto *source = static_cast<const uint8_t *>(data);
   uint8_t buffer[PageSize];
   // Preflight the complete range before making any changes.
-  for (std::size_t offset = 0; offset < length;) {
+  for (std::size_t offset = 0; preflight && offset < length;) {
     const std::size_t count = (length - offset < PageSize) ? length - offset : PageSize;
     if (!read(address + offset, buffer, count)) return false;
     for (std::size_t i = 0; i < count; ++i)

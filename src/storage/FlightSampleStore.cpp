@@ -92,11 +92,11 @@ bool FlightSampleStore::flush() {
   // Any attempted mutation can have completed despite an I/O failure: never retry.
   active_ = false;
   for (unsigned i = 0; i < BodyBytes; i += sizeof(page_)) {
-    const auto error = writeVerifiedPage(flash_, address + i, body_ + i, page_);
+    const auto error = writeVerifiedPage(flash_, address + i, body_ + i, page_, true); // Extent verified erased at begin.
     if (error != PageWriteError::None) return fail(error == PageWriteError::Io ? SampleError::Io : SampleError::Verify);
   }
   memset(page_, 255, sizeof(page_)); put(page_, Commit, 4); put(page_ + 4, checksum, 4); put(page_ + 8, ~checksum, 4);
-  if (!flash_.program(address + BodyBytes, page_, sizeof(page_))) return fail(SampleError::Io);
+  if (!flash_.programErased(address + BodyBytes, page_, sizeof(page_))) return fail(SampleError::Io);
   SampleBlock verified;
   if (!readBlock(address, sequence_, blocks_, verified)) return error_==SampleError::Io ? false : fail(SampleError::Verify);
   if (verified.count != buffered_ || verified.firstSample != committedSamples_) return fail(SampleError::Verify);

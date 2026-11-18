@@ -7,7 +7,7 @@ map/offsets; [Recording](../testing/RECORDING.md) owns commands and timing usage
 
 ## Driver and verification
 
-`FlashLogger` operates the fixed W25Q128 at the board's 4 MHz SPI setting. Initialize wakes the
+`FlashLogger` operates the fixed W25Q128 at the board's 18.75 MHz SPI setting (FLASH_TEST `c`: error-free to 37.5 MHz, 75 MHz fails). Busy waits poll status every 10 us for the first 5 ms (page programs take ~0.4 ms), then every 1 ms. Flight sample blocks use `programErased()`, which skips the pre-write NeedsErase read because preparation erased and verified the whole extent; post-write verification is unchanged. Measured with the onboard Hoppino replay recording (200 Hz): worker 8.3 ms per 1 KiB block (was 21.8 ms at 4 MHz with 1 ms sleeps), about 44% of core 1 at 476 Hz. Initialize wakes the
 chip, requires three matching supported JEDEC reads and waits for ready. Read/program/erase
 reject invalid arguments, bounds and alignment. Program preflights the entire range for
 forbidden 0-to-1 changes, splits at page boundaries, checks write-enable and verifies each

@@ -11,7 +11,7 @@ bool HardwareSensorSource::begin() {
 }
 void HardwareSensorSource::start() {
   if (!clock_) return;
-  lastClock_ = clock_(); elapsed_ = 0; latest_ = {}; started_ = true; imuInterrupted_=false;
+  lastClock_ = clock_(); elapsed_ = 0; latest_ = {}; started_ = true; imuInterrupted_=false; imuTimed_=false;
 }
 bool HardwareSensorSource::poll(Reading &reading) {
   if (!started_) return false;
@@ -25,8 +25,8 @@ bool HardwareSensorSource::poll(Reading &reading) {
     latest_.pressurePa = sample.pressurePa; latest_.temperatureC = sample.baroTempC;
   }
   latest_.baroValid = validPressure && latest_.baroSequence != 0;
-  // Barometer-only bring-up is diagnostic, not an IMU substitute or flight frame.
-  // In particular, never synthesize zero gyro / 1g acceleration for the bad-solder IMU.
+  // Barometer-only data is diagnostic, not an IMU substitute or flight frame.
+  // In particular, never synthesize zero gyro / 1g acceleration for a missing IMU.
   if (!sample.imuFresh || !latest_.imuValid) {
     if (!latest_.imuValid) imuInterrupted_=true;
     return false;
@@ -35,10 +35,21 @@ bool HardwareSensorSource::poll(Reading &reading) {
     latest_.accelMps2[i] = sample.accelMps2[i]; latest_.gyroRadps[i] = sample.gyroRadps[i];
     latest_.imuValid = latest_.imuValid && std::isfinite(sample.accelMps2[i]) && std::isfinite(sample.gyroRadps[i]);
   }
-  // A skipped invalid acquisition interrupts consecutive-frame confirmation.
+  // A skipped invalid acquisition or lost FIFO data interrupts consecutive-frame confirmation.
+  if (sample.imuGap) imuInterrupted_=true;
   if (imuInterrupted_ && latest_.imuSequence) ++latest_.imuSequence;
+  const double observed = elapsed_ > sample.imuAgeUs ? double(elapsed_ - sample.imuAgeUs) : 0.0;
+  if (sample.imuPeriodUs <= 0 || !imuTimed_ || imuInterrupted_) imuTimeUs_ = sample.imuPeriodUs > 0 ? observed : double(elapsed_);
+  else {
+    const double predicted = imuTimeUs_ + sample.imuPeriodUs;
+    double next = predicted + (observed - predicted) / 32;
+    if (next > observed) next = observed; // A frame cannot be later than its observation.
+    if (next <= imuTimeUs_) next = imuTimeUs_ + 1;
+    imuTimeUs_ = next;
+  }
+  imuTimed_ = sample.imuPeriodUs > 0;
   imuInterrupted_=false;
-  latest_.timeUs = elapsed_; ++latest_.imuSequence;
+  latest_.timeUs = uint64_t(imuTimeUs_); ++latest_.imuSequence;
   reading = latest_; return true;
 }
 }

@@ -7,7 +7,7 @@ bench report and its temporary pin/capacity assumptions.
 
 | Interface | Current assignment |
 |---|---|
-| W25Q128JV, SPI0 | MISO GP0, CS GP1, CLK GP2, MOSI GP3; board clock 4 MHz |
+| W25Q128JV, SPI0 | MISO GP0, CS GP1, CLK GP2, MOSI GP3; board clock 18.75 MHz (works to 37.5 MHz, see FLASH_TEST `c`) |
 | LSM6DSV32X / BMP581, SPI1 | MISO GP12, CLK GP14, MOSI GP15; IMU CS GP27, barometer CS GP26 |
 | Bluetooth JDY-34 | Hardware UART1 (`Serial2`): MCU RX GP5 receives module TXD; MCU TX GP4 drives module RXD; PWRC GP17 (AT/wake control); no assigned connection-status pin |
 | Pyro 1..4 / shared enable | GP9, GP13, GP6, GP7 / GP8 |
@@ -41,15 +41,30 @@ samples. Physical preflight/arming requests now exist, but actual activation rem
 the IMU and any reported configuration/continuity/preparation faults. See
 [USB diagnostics](technical/USB.md#sensor-diagnostics).
 
-`Sensors` currently configures accelerometer +/-32 g and gyro +/-2000 deg/s, both at 240 Hz,
-with a 100.2 Hz pressure-enabled BMP581 and 4x pressure/temperature oversampling. Returned
-measurements are m/s^2, rad/s, C and Pa. It probes SPI modes, with a lower-speed barometer
-attempt. These settings are not the autonomous simulator's 200 Hz IMU rate. Reads now check
-accel/gyro data-ready flags and BMP581 data-ready status before declaring a new sample. Barometer
-updates remain available after failed IMU initialization. The source preserves independent
-acquisition identities and extends micros rollover; timestamps describe polled register
-acquisition, not interrupt edges. Cadence, pairing/overruns and mounting/bias calibration must be
-verified on hardware before live flight qualification.
+`Sensors` currently configures accelerometer +/-32 g and gyro +/-2000 deg/s, both at 480 Hz
+nominal (476.3 Hz on the current board: ODR scales with the factory trim INTERNAL_FREQ_FINE,
+0.13 %/LSB), with a 100.2 Hz pressure-enabled BMP581 and 4x pressure/temperature oversampling.
+Returned measurements are m/s^2, rad/s, C and Pa. Both devices run SPI at a 10 MHz request
+(9.375 MHz actual): the SENSOR_TEST `f` sweep read IDs, configuration bursts and live data without
+error from 1 to 25 MHz and the IMU failed at 37.5 MHz. These settings are not the autonomous
+simulator's 200 Hz IMU rate.
+
+The IMU runs its FIFO in stream mode (accel + gyro at 480 Hz, temperature at 15 Hz). When its RAM
+queue is empty, `read()` performs two transactions, FIFO_STATUS1/2 then one burst of tagged words,
+pairs accel/gyro words into frames and returns one frame per call; overruns and unexpected tags
+are counted and mark the next frame as a gap. A single-transaction STATUS_REG + data burst was
+rejected: reading the outputs clears data-ready, so a sample arriving mid-burst was lost (74 Hz in
+a tight loop). The barometer status is only read once a new 100 Hz sample can be due. Barometer
+updates remain available after failed IMU initialization.
+
+`HardwareSensorSource` timestamps FIFO frames on the IMU period: each frame advances by exactly
+one period and is pulled 1/32 toward the observed arrival estimate (status-read time minus newer
+queued frames), never later than it, so dt stays regular and drift cannot accumulate. A gap
+re-anchors on the observation and breaks sequence continuity. Measured idle over 30 s: 476.2 Hz,
+0 sequence gaps/overruns/tag errors despite loop stalls up to 3.5 ms, dt 1809-2165 us around
+2100 us. Timestamps are estimates within about one poll period, not interrupt edges (the IMU
+interrupt pins are not routed). Mounting/bias calibration must be verified on hardware before
+live flight qualification.
 
 The low-level `PyroController` currently permits one active sequence, 10 ms shared enable
 settling and a fixed 1000 ms pulse, with fired flags in RAM until begin. It does not require

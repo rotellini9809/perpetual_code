@@ -1,13 +1,20 @@
 #include "hardware/Sensors.h"
 #include "hardware/SensorRates.h"
-static_assert(sensors::ImuRateHz == 240, "Update the IMU ODR selections with the runtime rate");
+static_assert(sensors::ImuRateHz == 480, "Update the IMU ODR selections with the runtime rate");
 
 #include "hardware/board_pins.h"
 
 namespace {
-constexpr uint32_t BMP581_SPI_HZ = 1000000;
+// SENSOR_TEST `f` sweep on this board: both devices error-free from 1 to 25 MHz,
+// IMU fails at 37.5 MHz. Run at the datasheet-safe 10 MHz request (9.375 MHz
+// actual on SPI1), ~2.7x below the highest clock seen working.
+constexpr uint32_t BMP581_SPI_HZ = 10000000;
 constexpr uint32_t BMP581_PROBE_SPI_HZ = 100000;
-constexpr uint32_t LSM6DSV32X_SPI_HZ = 1000000;
+constexpr uint32_t LSM6DSV32X_SPI_HZ = 10000000;
+// BMP581 at 100.2 Hz: skip status reads until a new sample can be due.
+constexpr uint32_t BARO_CHECK_AFTER_US = 9000;
+// FIFO words are a tag byte plus 6 data bytes; one burst reads at most 32 words (16 frames).
+constexpr unsigned FIFO_WORD_BYTES = 7, FIFO_MAX_WORDS = 32;
 constexpr float STANDARD_GRAVITY = 9.80665f;
 constexpr float DEG_TO_RAD_F = 0.017453292519943295f;
 
@@ -109,7 +116,7 @@ void lsm6dsv32xDelayMs(uint32_t periodMs) {
 }
 
 bool Sensors::begin() {
-  latest = {}; imuReady = baroReady = false;
+  latest = {}; imuReady = baroReady = false; accelPending = gyroPending = baroSampled = fifoGap = false; imuHead = imuCount = 0;
   initChipSelects();
   sensorSpi.begin(false);
   delay(5);
@@ -129,8 +136,8 @@ bool Sensors::read() {
 
 bool Sensors::suspend() {
   bool success=true;
-  // BRING-UP: the unsoldered/unavailable IMU has no valid driver context. It must
-  // not prevent suspending a working barometer or be replaced by fake readiness.
+  // An unavailable IMU has no valid driver context. It must not prevent
+  // suspending a working barometer or be replaced by fake readiness.
   if (imuReady) {
     imuError=lsm6dsv32x_xl_data_rate_set(&imuCtx,LSM6DSV32X_ODR_OFF);
     const auto gyroError=lsm6dsv32x_gy_data_rate_set(&imuCtx,LSM6DSV32X_ODR_OFF);
@@ -141,7 +148,7 @@ bool Sensors::suspend() {
     baroError=bmp5_set_power_mode(BMP5_POWERMODE_DEEP_STANDBY,&bmpDev);
     success=success && baroError==BMP5_OK;
   }
-  imuReady=baroReady=false; latest={};
+  imuReady=baroReady=false; latest={}; accelPending=gyroPending=baroSampled=fifoGap=false; imuHead=imuCount=0;
   deselectAllSensors();
   if (success) sensorSpi.end();
   return success;
@@ -247,8 +254,19 @@ bool Sensors::beginImu() {
   imuError += lsm6dsv32x_spi_mode_set(&imuCtx, LSM6DSV32X_SPI_4_WIRE);
   imuError += lsm6dsv32x_xl_full_scale_set(&imuCtx, LSM6DSV32X_32g);
   imuError += lsm6dsv32x_gy_full_scale_set(&imuCtx, LSM6DSV32X_2000dps);
-  imuError += lsm6dsv32x_xl_data_rate_set(&imuCtx, LSM6DSV32X_ODR_AT_240Hz);
-  imuError += lsm6dsv32x_gy_data_rate_set(&imuCtx, LSM6DSV32X_ODR_AT_240Hz);
+  imuError += lsm6dsv32x_xl_data_rate_set(&imuCtx, LSM6DSV32X_ODR_AT_480Hz);
+  imuError += lsm6dsv32x_gy_data_rate_set(&imuCtx, LSM6DSV32X_ODR_AT_480Hz);
+  // Stream FIFO: every accel/gyro sample is queued on the IMU, so slow polls never
+  // lose data; temperature rides along at a low rate.
+  imuError += lsm6dsv32x_fifo_mode_set(&imuCtx, LSM6DSV32X_BYPASS_MODE);
+  imuError += lsm6dsv32x_fifo_xl_batch_set(&imuCtx, LSM6DSV32X_XL_BATCHED_AT_480Hz);
+  imuError += lsm6dsv32x_fifo_gy_batch_set(&imuCtx, LSM6DSV32X_GY_BATCHED_AT_480Hz);
+  imuError += lsm6dsv32x_fifo_temp_batch_set(&imuCtx, LSM6DSV32X_TEMP_BATCHED_AT_15Hz);
+  imuError += lsm6dsv32x_fifo_mode_set(&imuCtx, LSM6DSV32X_STREAM_MODE);
+  // Factory trim of the IMU oscillator: ODR = nominal * (1 + 0.0013 * FREQ_FINE).
+  int8_t freqFine = 0;
+  imuError += lsm6dsv32x_read_reg(&imuCtx, LSM6DSV32X_INTERNAL_FREQ, reinterpret_cast<uint8_t *>(&freqFine), 1);
+  imuPeriodUs = 1000000.0f / (float(sensors::ImuRateHz) * (1.0f + 0.0013f * freqFine));
 
   return imuError == 0;
 }
@@ -259,6 +277,8 @@ bool Sensors::readBaro() {
     return false;
   }
 
+  const uint32_t now = micros();
+  if (baroSampled && uint32_t(now - lastBaroUs) < BARO_CHECK_AFTER_US) return true;
   uint8_t status = 0;
   baroError = bmp5_get_interrupt_status(&status, &bmpDev);
   if (baroError != BMP5_OK) { latest.baroValid = false; return false; }
@@ -273,6 +293,7 @@ bool Sensors::readBaro() {
   latest.pressurePa = sensorData.pressure;
   latest.baroTempC = sensorData.temperature;
   latest.baroValid = true;
+  baroSampled = true; lastBaroUs = now;
   latest.baroFresh = true;
   return true;
 }
@@ -282,39 +303,79 @@ bool Sensors::readImu() {
     latest.imuValid = false;
     return false;
   }
+  // One queued frame per read(); the FIFO is only touched when the RAM queue is empty.
+  if (popImuFrame()) return true;
+  if (!drainImuFifo()) { latest.imuValid = false; return false; }
+  popImuFrame();
+  return true;
+}
 
-  lsm6dsv32x_data_ready_t ready = {};
-  imuError = lsm6dsv32x_flag_data_ready_get(&imuCtx, &ready);
-  if (imuError != 0) { latest.imuValid = false; return false; }
-  if (!ready.drdy_xl || !ready.drdy_gy) return true;
-  int16_t accelRaw[3] = {};
-  int16_t gyroRaw[3] = {};
-  int16_t tempRaw = 0;
-
-  int32_t result = lsm6dsv32x_acceleration_raw_get(&imuCtx, accelRaw);
-  if (result == 0) {
-    result = lsm6dsv32x_angular_rate_raw_get(&imuCtx, gyroRaw);
-  }
-  if (result == 0) {
-    result = lsm6dsv32x_temperature_raw_get(&imuCtx, &tempRaw);
-  }
-
-  imuError = result;
-  if (result != 0) {
-    latest.imuValid = false;
-    return false;
-  }
-
+bool Sensors::popImuFrame() {
+  if (!imuCount) return false;
+  const ImuFrame &frame = imuQueue[imuHead];
+  imuHead = (imuHead + 1) % ImuQueueSize; --imuCount;
   for (uint8_t axis = 0; axis < 3; axis++) {
-    const float accelMg = lsm6dsv32x_from_fs32_to_mg(accelRaw[axis]);
-    const float gyroMdps = lsm6dsv32x_from_fs2000_to_mdps(gyroRaw[axis]);
-    latest.accelMps2[axis] = accelMg * STANDARD_GRAVITY / 1000.0f;
-    latest.gyroRadps[axis] = gyroMdps * DEG_TO_RAD_F / 1000.0f;
+    latest.accelMps2[axis] = frame.accel[axis];
+    latest.gyroRadps[axis] = frame.gyro[axis];
   }
-
-  latest.imuTempC = lsm6dsv32x_from_lsb_to_celsius(tempRaw);
+  latest.imuPeriodUs = imuPeriodUs;
+  latest.imuAgeUs = micros() - frame.stampUs;
+  latest.imuGap = frame.gap;
   latest.imuValid = true;
   latest.imuFresh = true;
+  return true;
+}
+
+// Two transactions: FIFO_STATUS1/2 (level + overrun), then one burst of tagged words.
+// Accel and gyro words of the same ODR slot are paired into frames; a word may wait
+// in pending* for its partner across reads.
+bool Sensors::drainImuFifo() {
+  uint8_t status[2] = {};
+  imuError = lsm6dsv32xRead(&imuSpi, LSM6DSV32X_FIFO_STATUS1, status, sizeof(status));
+  if (imuError != 0) return false;
+  const uint32_t readUs = micros();
+  if (status[1] & 0x48) { ++fifoOverruns; fifoGap = true; } // FIFO_OVR_IA | FIFO_OVR_LATCHED
+  unsigned words = status[0] | ((status[1] & 0x01u) << 8);
+  const unsigned room = (ImuQueueSize - imuCount) * 2;
+  if (words > room) words = room;
+  if (words > FIFO_MAX_WORDS) words = FIFO_MAX_WORDS;
+  if (!words) return true;
+  uint8_t raw[FIFO_MAX_WORDS * FIFO_WORD_BYTES];
+  imuError = lsm6dsv32xRead(&imuSpi, LSM6DSV32X_FIFO_DATA_OUT_TAG, raw, uint16_t(words * FIFO_WORD_BYTES));
+  if (imuError != 0) return false;
+  const unsigned firstNew = imuCount;
+  for (unsigned i = 0; i < words; ++i) {
+    const uint8_t *word = raw + i * FIFO_WORD_BYTES;
+    const auto value = [word](unsigned axis) { return int16_t(uint16_t(word[1 + 2 * axis]) | uint16_t(word[2 + 2 * axis]) << 8); };
+    switch (word[0] >> 3) {
+      case LSM6DSV32X_GY_NC_TAG:
+        if (gyroPending) { ++fifoErrors; fifoGap = true; } // Unpaired gyro: keep the newer one.
+        for (uint8_t axis = 0; axis < 3; axis++)
+          pendingGyro[axis] = lsm6dsv32x_from_fs2000_to_mdps(value(axis)) * DEG_TO_RAD_F / 1000.0f;
+        gyroPending = true;
+        break;
+      case LSM6DSV32X_XL_NC_TAG:
+        if (accelPending) { ++fifoErrors; fifoGap = true; }
+        for (uint8_t axis = 0; axis < 3; axis++)
+          pendingAccel[axis] = lsm6dsv32x_from_fs32_to_mg(value(axis)) * STANDARD_GRAVITY / 1000.0f;
+        accelPending = true;
+        break;
+      case LSM6DSV32X_TEMPERATURE_TAG:
+        latest.imuTempC = lsm6dsv32x_from_lsb_to_celsius(value(0));
+        break;
+      default: ++fifoErrors; break; // Unexpected tag: counted, never decoded as motion data.
+    }
+    if (accelPending && gyroPending) {
+      ImuFrame &frame = imuQueue[(imuHead + imuCount) % ImuQueueSize];
+      for (uint8_t axis = 0; axis < 3; axis++) { frame.accel[axis] = pendingAccel[axis]; frame.gyro[axis] = pendingGyro[axis]; }
+      frame.gap = fifoGap; fifoGap = false;
+      ++imuCount; accelPending = gyroPending = false;
+    }
+  }
+  // The newest frame was produced no later than the status read; older ones one period apart.
+  const unsigned added = imuCount - firstNew;
+  for (unsigned k = 0; k < added; ++k)
+    imuQueue[(imuHead + firstNew + k) % ImuQueueSize].stampUs = readUs - uint32_t((added - 1 - k) * imuPeriodUs);
   return true;
 }
 

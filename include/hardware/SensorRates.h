@@ -3,5 +3,5 @@
 
 namespace sensors {
 // Keep the driver ODR selection and physical runtime timing in agreement.
-constexpr uint16_t ImuRateHz = 240;
+constexpr uint16_t ImuRateHz = 480;
 }

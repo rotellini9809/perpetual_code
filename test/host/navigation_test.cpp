@@ -243,6 +243,24 @@ void run() {
   device.next.imuValid=true; device.pending=true; nowUs+=8333;
   assert(source.poll(frame) && frame.imuValid && frame.imuSequence==sequence+2);
   puts("Hardware source passed: barometer-only diagnostics, freshness, missing/invalid IMU and timer rollover.");
+  // FIFO timing: frames advance by the device period, never later than observed, and a
+  // reported FIFO gap breaks sequence continuity and re-anchors on the observation.
+  nowUs = 0; assert(source.begin());
+  device.next = {}; device.next.imuFresh = device.next.imuValid = true; device.next.imuPeriodUs = 2100;
+  device.next.imuAgeUs = 300; nowUs = 10000; device.pending = true;
+  assert(source.poll(frame) && frame.timeUs == 9700);
+  const auto first = frame.imuSequence;
+  // Burst after a stall: two queued frames read back to back at the same MCU time.
+  nowUs = 14500; device.next.imuAgeUs = 2600; device.pending = true; // Observed 11900.
+  assert(source.poll(frame) && frame.imuSequence == first + 1 && frame.timeUs == 11803); // 11800 + 100/32.
+  device.next.imuAgeUs = 500; device.pending = true; // Observed 14000; predicted 13903.
+  assert(source.poll(frame) && frame.imuSequence == first + 2 && frame.timeUs == 13906);
+  // Observation earlier than prediction clamps to it; time stays monotonic.
+  nowUs = 15000; device.next.imuAgeUs = 0; device.pending = true; // Predicted 16006 > observed 15000.
+  assert(source.poll(frame) && frame.timeUs == 15000);
+  nowUs = 30000; device.next.imuAgeUs = 100; device.next.imuGap = true; device.pending = true;
+  assert(source.poll(frame) && frame.imuSequence == first + 5 && frame.timeUs == 29900);
+  puts("Hardware source FIFO timing passed: period spacing, observation bound, gap re-anchor.");
 }
 } // namespace test_hardware_sensor_source
 

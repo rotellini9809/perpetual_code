@@ -26,6 +26,8 @@ public:
   virtual ~FlashDevice() = default;
   virtual bool read(uint32_t address, void *data, std::size_t length) = 0;
   virtual bool program(uint32_t address, const void *data, std::size_t length) = 0;
+  // Owner-guaranteed erased extent: may skip the pre-write erased check, never verification.
+  virtual bool programErased(uint32_t address, const void *data, std::size_t length) { return program(address, data, length); }
   virtual bool eraseSector(uint32_t address) = 0;
   virtual FlashFailure lastFailure() const { return {}; }
 };

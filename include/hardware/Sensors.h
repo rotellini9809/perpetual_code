@@ -30,6 +30,8 @@ public:
   uint8_t baroSpiMode() const { return baroSpi.mode; }
   uint32_t baroSpiClockHz() const { return baroSpi.clockHz; }
   int32_t lastImuError() const { return imuError; }
+  uint32_t imuFifoOverruns() const { return fifoOverruns; }
+  uint32_t imuFifoErrors() const { return fifoErrors; }
   int8_t lastBaroError() const { return baroError; }
 
   const SensorSample &sample() const override { return latest; }
@@ -38,6 +40,8 @@ private:
   bool beginImu();
   bool beginBaro();
   bool readImu();
+  bool drainImuFifo();
+  bool popImuFrame();
   bool readBaro();
   bool probeImuSpiMode(uint8_t spiMode);
   bool probeBaroSpiSettings();
@@ -58,5 +62,15 @@ private:
   uint8_t baroRawId = 0;
   int32_t imuError = 0;
   int8_t baroError = 0;
+  struct ImuFrame { float accel[3], gyro[3]; uint32_t stampUs; bool gap; };
+  static constexpr unsigned ImuQueueSize = 16;
+  ImuFrame imuQueue[ImuQueueSize] = {};
+  unsigned imuHead = 0, imuCount = 0;
+  float pendingAccel[3] = {}, pendingGyro[3] = {};
+  bool accelPending = false, gyroPending = false, fifoGap = false;
+  float imuPeriodUs = 0;
+  uint32_t fifoOverruns = 0, fifoErrors = 0;
+  bool baroSampled = false;
+  uint32_t lastBaroUs = 0;
   SensorSample latest;
 };

@@ -83,7 +83,7 @@ void runDiagnostics() {
   softwareProbe();
   Serial.print("Hardware matching reads: "); Serial.print(matches); Serial.print('/'); Serial.println(reads);
   Serial.println("An ID match verifies identification only, not memory integrity.");
-  Serial.println("=== END: r + Enter repeats ID checks; w + Enter tests the last flight-data sector ===");
+  Serial.println("=== END: r + Enter repeats ID checks; w + Enter tests the last flight-data sector; c + Enter sweeps SPI clocks 4-75 MHz ===");
   Serial.println("w saves/restores that sector in RAM; power loss can destroy its original contents.");
   Serial.println("w never touches the IMU identity policy sector (0xFFF000), which nothing may erase.");
   Serial.println("ERASE ALL + Enter erases the entire 16MiB device: settings, flights and the IMU identity policy.");
@@ -105,13 +105,99 @@ void eraseAll() {
   }
   Serial.println("=== FULL FLASH ERASE VERIFIED: 16777216 bytes ===");
 }
+// Last flight-data sector: the following one holds the IMU identity policy and is never erased here.
+constexpr uint32_t TestSector = storage::FlashLayout::DataEnd - FlashLogger::SectorSize;
+static_assert(TestSector + FlashLogger::SectorSize <= storage::FlashLayout::IdentityPolicyBegin, "Test sector overlaps the policy");
+uint8_t backup[FlashLogger::SectorSize];
+bool backupAtRisk = false; // Shared by w and c: a failed restore blocks both until reboot.
+uint32_t crc32(const uint8_t *p, std::size_t n, uint32_t crc) {
+  for (std::size_t i = 0; i < n; ++i) {
+    crc ^= p[i];
+    for (unsigned bit = 0; bit < 8; ++bit) crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
+  }
+  return crc;
+}
+// Clock sweep. Read-only part: JEDEC repeats and CRC of 64 KiB from the start of
+// flight data, with 0x03 and 0x0B, against a 4 MHz reference. Write part: only
+// TestSector (backup in RAM, restored and verified at the end, like `w`): one
+// pseudo-random page per clock is programmed at that clock, then read at 4 MHz.
+void clockSweep() {
+  if (backupAtRisk) { Serial.println("Previous restore failed. Sweep blocked to preserve the RAM backup; do not reboot."); return; }
+  inactiveOutputs();
+  constexpr uint32_t Reference = 4000000, RegionBegin = storage::FlashLayout::DataBegin, RegionBytes = 65536;
+  static uint8_t chunk[4096];
+  uint8_t page[FlashLogger::PageSize], check[FlashLogger::PageSize];
+  const auto regionCrc = [&](uint32_t &crc, unsigned &nonErased) {
+    crc = 0xFFFFFFFFu; nonErased = 0;
+    for (uint32_t offset = 0; offset < RegionBytes; offset += sizeof(chunk)) {
+      if (!logger.read(RegionBegin + offset, chunk, sizeof(chunk))) return false;
+      for (auto byte : chunk) nonErased += byte != 0xFF;
+      crc = crc32(chunk, sizeof(chunk), crc);
+    }
+    crc = ~crc; return true;
+  };
+  if (!logger.initialize(Reference)) { Serial.print("INIT FAILED: "); Serial.println(FlashLogger::errorName(logger.lastError())); return; }
+  const uint32_t jedec = logger.readJEDEC();
+  uint32_t referenceCrc = 0; unsigned nonErased = 0;
+  if (!regionCrc(referenceCrc, nonErased)) { Serial.println("Reference read failed."); return; }
+  if (!logger.read(TestSector, backup, sizeof(backup))) { Serial.println("Backup read failed; no erase attempted."); return; }
+  for (uint32_t offset = 0; offset < sizeof(backup); offset += sizeof(check))
+    if (!logger.read(TestSector + offset, check, sizeof(check)) || memcmp(check, backup + offset, sizeof(check))) {
+      Serial.println("Backup unstable; no erase attempted."); return;
+    }
+  Serial.printf("=== FLASH CLOCK SWEEP: JEDEC=%06lX, region 0x%06lX+64KiB CRC=%08lX (%u non-FF bytes), test sector 0x%06lX ===\n",
+      (unsigned long)jedec, (unsigned long)RegionBegin, (unsigned long)referenceCrc, nonErased, (unsigned long)TestSector);
+  backupAtRisk = true;
+  bool erased = logger.eraseSector(TestSector);
+  if (!erased) Serial.println("Test sector erase FAILED; write checks skipped.");
+  const uint32_t speeds[] = {4000000, 8000000, 12500000, 18750000, 25000000, 30000000, 37500000, 50000000, 75000000};
+  for (unsigned index = 0; index < sizeof(speeds) / sizeof(speeds[0]); ++index) {
+    const uint32_t hz = speeds[index];
+    const bool init = logger.initialize(hz);
+    flashSpi.beginTransaction(SPISettings(hz, MSBFIRST, SPI_MODE0));
+    const uint32_t actual = spi_get_baudrate(FLASH_SPI_PORT);
+    flashSpi.endTransaction();
+    unsigned jedecBad = 0, slowBad = 0, fastBad = 0; uint32_t slowUs = 0, fastUs = 0, programUs = 0;
+    bool written = false;
+    if (init) {
+      for (unsigned i = 0; i < 200; ++i) jedecBad += logger.readJEDEC() != jedec;
+      for (unsigned fast = 0; fast < 2; ++fast) {
+        logger.setFastRead(fast);
+        for (unsigned repeat = 0; repeat < 4; ++repeat) {
+          uint32_t crc = 0; unsigned ignored = 0; const uint32_t start = micros();
+          const bool ok = regionCrc(crc, ignored) && crc == referenceCrc;
+          (fast ? fastUs : slowUs) += micros() - start;
+          (fast ? fastBad : slowBad) += !ok;
+        }
+      }
+      if (erased) {
+        uint32_t random = 0x9E3779B9u ^ hz;
+        for (auto &byte : page) { random ^= random << 13; random ^= random >> 17; random ^= random << 5; byte = uint8_t(random); }
+        logger.setFastRead(hz > 50000000);
+        const uint32_t start = micros();
+        logger.programErased(TestSector + index * FlashLogger::PageSize, page, sizeof(page)); // Verifies at this clock.
+        programUs = micros() - start;
+        logger.setFastRead(false);
+        written = logger.initialize(Reference) && logger.read(TestSector + index * FlashLogger::PageSize, check, sizeof(check)) &&
+                  !memcmp(check, page, sizeof(page));
+      }
+    }
+    logger.setFastRead(false);
+    const bool pass = init && !jedecBad && !slowBad && !fastBad && written;
+    Serial.printf("FLASH SWEEP req=%lu actual=%lu init=%u JEDEC_bad=%u/200 read03_bad=%u/4 read0B_bad=%u/4 64KiB_us 03=%lu 0B=%lu page_program_us=%lu write@4MHz=%s %s\n",
+        (unsigned long)hz, (unsigned long)actual, init, jedecBad, slowBad, fastBad, (unsigned long)(slowUs / 4), (unsigned long)(fastUs / 4),
+        (unsigned long)programUs, erased ? (written ? "OK" : "BAD") : "SKIPPED", pass ? "PASS" : "FAIL");
+  }
+  bool restored = logger.initialize(Reference) && logger.eraseSector(TestSector) && logger.program(TestSector, backup, sizeof(backup));
+  for (uint32_t offset = 0; restored && offset < sizeof(backup); offset += sizeof(check))
+    restored = logger.read(TestSector + offset, check, sizeof(check)) && !memcmp(check, backup + offset, sizeof(check));
+  backupAtRisk = !restored;
+  Serial.println(restored ? "Test sector RESTORED and VERIFIED." : "RESTORE FAILED: test sector backup exists only in RAM; do not reboot.");
+  Serial.println("=== END FLASH SWEEP (0x03 above 50 MHz is outside the datasheet; reported for margin only) ===");
+}
 void runStorageTest() {
-  // Last flight-data sector: the following one holds the IMU identity policy and is never erased here.
-  constexpr uint32_t address = storage::FlashLayout::DataEnd - FlashLogger::SectorSize;
-  static_assert(address + FlashLogger::SectorSize <= storage::FlashLayout::IdentityPolicyBegin, "Test sector overlaps the policy");
-  static uint8_t backup[FlashLogger::SectorSize];
+  constexpr uint32_t address = TestSector;
   static uint8_t expected[FlashLogger::SectorSize];
-  static bool backupAtRisk = false;
   uint8_t verify[FlashLogger::PageSize];
   if (backupAtRisk) {
     Serial.println("Previous restore failed. Test blocked to preserve the RAM backup; do not reboot.");
@@ -203,6 +289,7 @@ void loop() {
       if (!overflow) {
         if (!strcmp(command,"r") || !strcmp(command,"R")) runDiagnostics();
         else if (!strcmp(command,"w") || !strcmp(command,"W")) runStorageTest();
+        else if (!strcmp(command,"c") || !strcmp(command,"C")) clockSweep();
         else if (!strcmp(command,"ERASE ALL")) eraseAll();
       }
       used=0; overflow=false;

@@ -39,6 +39,8 @@ public:
     // Cumulative idle acquisition diagnostics, excluding flight/simulation work.
     uint32_t idlePolls = 0, idleReadUs = 0, idleReadMaxUs = 0;
     uint32_t idleImuSamples = 0, idleBaroSamples = 0;
+    uint32_t idleLateGaps = 0, idleGapMaxUs = 0; // Poll gaps longer than one IMU period.
+    uint32_t idleDtMinUs = 0, idleDtMaxUs = 0, idleSequenceGaps = 0, imuFifoOverruns = 0, imuFifoErrors = 0;
     const char *armingState = "disarmed", *flightMode = "none";
     int phase = -1;
     uint32_t gyroSamples = 0, gyroTarget = 0;

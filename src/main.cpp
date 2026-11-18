@@ -9,6 +9,7 @@
 #include "hardware/BoardOutputs.h"
 #include "hardware/Sensors.h"
 #include "hardware/HardwareSensorSource.h"
+#include "hardware/SensorRates.h"
 #include "communication/CommandService.h"
 #include "communication/CommandEndpoint.h"
 #include "hardware/Jdy34Link.h"
@@ -71,8 +72,8 @@ public:
   flight::PhysicalReadiness inspect() override {
     flight::PhysicalReadiness r;
     r.imuReady = hardwareSource.imuReady(); r.baroReady = hardwareSource.baroReady();
-    // BRING-UP: the IMU solder fault remains a physical-mode blocker. Never fake
-    // hardware measurements. Simulation explicitly skips physical hardware checks.
+    // A missing IMU or barometer blocks physical mode. Never fake hardware
+    // measurements. Simulation explicitly skips physical hardware checks.
     // Output preparation/continuity are shared with simulation in OutputExecutor.
     return r;
   }
@@ -139,8 +140,8 @@ public:
     if (!flash.initialize(FLASH_CLOCK_HZ)) return "FLASH_WAKE_FAILED";
     commandStatus.flashJedec=flash.readJEDEC();
     commandStatus.flashIdentified=FlashLogger::isW25Q128(commandStatus.flashJedec);
-    // BRING-UP: wake reprobes real devices. Missing IMU remains unavailable and
-    // blocks physical arming; a working barometer can still resume independently.
+    // Wake reprobes real devices. A missing IMU stays unavailable and blocks
+    // physical arming; a working barometer still resumes independently.
     hardwareSource.begin();
     lastBaroSequence=lastImuSequence=0; lastHardwarePollUs=micros();
     sensors::Reading unused; hardwareSource.poll(unused);
@@ -234,8 +235,7 @@ void setup() {
   // (no directory, erased banks) is prepared here, like `flights init`; used or
   // damaged storage is never formatted and its failure stays visible.
   if (flashReady) recorder.prepareAtBoot();
-  // BOARD BRING-UP: IMU soldering is currently faulty; barometer was verified on USB.
-  // Probe both independently; barometer diagnostics remain usable if the IMU fails.
+  // Probe both sensors independently; barometer diagnostics remain usable if the IMU fails.
   // Missing IMU frames are never faked and still block physical arming.
   hardwareSource.begin();
   // Hardware UART1: MCU TX GP4, RX GP5. PWRC is AT access, not power/reset.
@@ -256,12 +256,28 @@ void loop() {
   if (!run.active() && !physicalFlight.active()) outputExecutor.reconcile(settings.applied());
   // Idle-only hardware diagnostics: simulation/HIL use their chosen source exclusively.
   const auto nowUs = micros();
-  if (!power.sleeping() && !run.active() && !physicalFlight.active() && uint32_t(nowUs - lastHardwarePollUs) >= 2000) {
+  if (!power.sleeping() && !run.active() && !physicalFlight.active() && uint32_t(nowUs - lastHardwarePollUs) >= 1000) { // Below the 2083 us IMU period at 480 Hz.
+    const uint32_t gap = nowUs - lastHardwarePollUs;
+    if (commandStatus.idlePolls) {
+      if (gap > 1000000u / sensors::ImuRateHz) ++commandStatus.idleLateGaps;
+      if (gap > commandStatus.idleGapMaxUs) commandStatus.idleGapMaxUs = gap;
+    }
     lastHardwarePollUs = nowUs;
-    sensors::Reading unused;
+    sensors::Reading frame;
     const auto readStart = micros();
-    hardwareSource.poll(unused);
+    const bool emitted = hardwareSource.poll(frame);
     const uint32_t elapsed = micros() - readStart;
+    // Frame-time quality as navigation would see it (dt and sequence continuity).
+    static uint64_t lastFrameUs = 0; static uint32_t lastSequence = 0;
+    if (emitted) {
+      if (lastSequence && frame.imuSequence == lastSequence + 1 && frame.timeUs > lastFrameUs) {
+        const auto dt = uint32_t(frame.timeUs - lastFrameUs);
+        if (!commandStatus.idleDtMinUs || dt < commandStatus.idleDtMinUs) commandStatus.idleDtMinUs = dt;
+        if (dt > commandStatus.idleDtMaxUs) commandStatus.idleDtMaxUs = dt;
+      } else if (lastSequence) ++commandStatus.idleSequenceGaps;
+      lastFrameUs = frame.timeUs; lastSequence = frame.imuSequence;
+    }
+    commandStatus.imuFifoOverruns = sensorDevice.imuFifoOverruns(); commandStatus.imuFifoErrors = sensorDevice.imuFifoErrors();
     ++commandStatus.idlePolls;
     commandStatus.idleReadUs += elapsed;
     if (elapsed > commandStatus.idleReadMaxUs) commandStatus.idleReadMaxUs = elapsed;

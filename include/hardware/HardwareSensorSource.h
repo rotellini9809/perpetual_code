@@ -4,8 +4,10 @@
 #include "shared/Timing.h"
 
 namespace sensors {
-// Polling adapter shared with the flight runtime. Timestamps are register acquisition
-// times, not interrupt-edge timestamps; FIFO/overrun qualification remains future work.
+// Polling adapter shared with the flight runtime. Without a device timing model frames
+// are stamped at acquisition. With a FIFO period, consecutive frames advance by exactly
+// that period and are pulled 1/32 per frame toward the observed arrival estimate (never
+// later than it), so dt is regular and drift cannot accumulate. Overruns break sequence.
 class HardwareSensorSource : public SensorSource {
 public:
   HardwareSensorSource(SensorDevice &device, timing::Clock clock) : device_(device), clock_(clock) {}
@@ -22,6 +24,8 @@ private:
   timing::Clock clock_;
   bool started_ = false;
   bool imuInterrupted_ = false;
+  bool imuTimed_ = false;
+  double imuTimeUs_ = 0; // Last emitted IMU frame time on the source epoch.
   uint32_t lastClock_ = 0;
   uint64_t elapsed_ = 0;
   Reading latest_;

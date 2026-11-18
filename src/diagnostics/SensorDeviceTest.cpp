@@ -162,6 +162,87 @@ void baroChecks() {
   imuSeen = baroSeen = false; imuFresh = baroFresh = 0;
   lastRead = lastReport = millis();
 }
+void readBurst(uint8_t cs, uint8_t address, uint8_t *out, unsigned count, const Probe &p) {
+  probeSpi.beginTransaction(SPISettings(p.hz, MSBFIRST, p.mode));
+  deselect(p.driven);
+  digitalWrite(cs, LOW); pinMode(cs, OUTPUT);
+  probeSpi.transfer(address | 0x80);
+  for (unsigned i = 0; i < count; ++i) out[i] = probeSpi.transfer(0);
+  deselect(p.driven); probeSpi.endTransaction();
+}
+// Read-only clock sweep with production chip-select handling (release to pull-up).
+// Each speed: ID reads, config bursts compared with a 1 MHz reference, and
+// plausibility of live data bursts (|a| near 1 g at rest, pressure in range).
+void speedSweep() {
+  streaming = false;
+  if (!device.imuOk() || !device.baroOk()) { Serial.println("SWEEP skipped: run i first; IMU and BARO must be READY."); return; }
+  constexpr unsigned Rounds = 2000;
+  const Probe imuRef{1000000, SPI_MODE3, false, 0}, baroRef{1000000, device.baroSpiMode(), false, 0};
+  uint8_t imuCfg[10], baroCfg[2];
+  readBurst(CS_IMU, LSM6DSV32X_CTRL1, imuCfg, sizeof(imuCfg), imuRef);
+  readBurst(CS_BARO, BMP5_REG_OSR_CONFIG, baroCfg, sizeof(baroCfg), baroRef);
+  Serial.printf("=== SPI SPEED SWEEP: %u rounds/speed, CS=PULLUP, IMU mode3, BARO mode%u ===\n", Rounds, device.baroSpiMode() == SPI_MODE3 ? 3 : 0);
+  const uint32_t speeds[] = {1000000, 2000000, 4000000, 6000000, 8000000, 10000000, 12500000,
+                             15000000, 18750000, 25000000, 37500000};
+  for (const auto hz : speeds) {
+    Probe imu{hz, SPI_MODE3, false, 0}, baro{hz, device.baroSpiMode(), false, 0};
+    probeSpi.beginTransaction(SPISettings(hz, MSBFIRST, SPI_MODE3));
+    const uint32_t actual = spi_get_baudrate(SENSOR_SPI_PORT);
+    probeSpi.endTransaction();
+    unsigned imuId = 0, imuConfig = 0, imuData = 0, baroId = 0, baroConfig = 0, baroData = 0;
+    uint32_t imuBurstUs = 0;
+    for (unsigned round = 0; round < Rounds; ++round) {
+      imuId += readRegister(CS_IMU, LSM6DSV32X_WHO_AM_I, imu) != LSM6DSV32X_ID;
+      uint8_t cfg[10]; readBurst(CS_IMU, LSM6DSV32X_CTRL1, cfg, sizeof(cfg), imu);
+      imuConfig += memcmp(cfg, imuCfg, sizeof(cfg)) != 0;
+      uint8_t data[16];
+      const auto t0 = micros();
+      readBurst(CS_IMU, LSM6DSV32X_STATUS_REG, data, sizeof(data), imu);
+      imuBurstUs += micros() - t0;
+      float norm = 0;
+      for (unsigned axis = 0; axis < 3; ++axis) {
+        const float g = lsm6dsv32x_from_fs32_to_mg(int16_t(data[10+2*axis] | (data[11+2*axis] << 8))) / 1000.0f;
+        norm += g*g;
+      }
+      imuData += norm < 0.7f*0.7f || norm > 1.3f*1.3f;
+      baroId += !validId(CS_BARO, readRegister(CS_BARO, BMP5_REG_CHIP_ID, baro));
+      uint8_t bcfg[2]; readBurst(CS_BARO, BMP5_REG_OSR_CONFIG, bcfg, sizeof(bcfg), baro);
+      baroConfig += memcmp(bcfg, baroCfg, sizeof(bcfg)) != 0;
+      uint8_t bytes[6]; readBurst(CS_BARO, BMP5_REG_TEMP_DATA_XLSB, bytes, sizeof(bytes), baro);
+      const float pressure = (uint32_t(bytes[3]) | (uint32_t(bytes[4]) << 8) | (uint32_t(bytes[5]) << 16)) / 64.0f;
+      baroData += pressure < 30000.0f || pressure > 110000.0f;
+    }
+    const bool pass = !(imuId || imuConfig || imuData || baroId || baroConfig || baroData);
+    Serial.printf("SWEEP req=%lu actual=%lu IMU bad id/cfg/data=%u/%u/%u BARO bad id/cfg/data=%u/%u/%u imu16_us=%.1f %s\n",
+        (unsigned long)hz, (unsigned long)actual, imuId, imuConfig, imuData, baroId, baroConfig, baroData,
+        double(imuBurstUs)/Rounds, pass ? "PASS" : "FAIL");
+  }
+  Serial.println("=== END SWEEP (read-only; IMU data check assumes the board is at rest) ===");
+  imuSeen = baroSeen = false; imuFresh = baroFresh = 0;
+  lastRead = lastReport = millis();
+}
+// True IMU output rate: 10 s tight polling with the production driver (no other work),
+// plus the factory oscillator trim INTERNAL_FREQ_FINE (0x4F, signed).
+void odrCheck() {
+  streaming = false;
+  if (!device.imuOk()) { Serial.println("ODR check skipped: run i first; IMU must be READY."); return; }
+  const Probe p{1000000, SPI_MODE3, false, 0};
+  const auto fine = int8_t(readRegister(CS_IMU, LSM6DSV32X_INTERNAL_FREQ, p));
+  unsigned frames = 0; uint32_t maxGap = 0, last = 0;
+  const uint32_t start = micros();
+  while (uint32_t(micros() - start) < 10000000u) {
+    device.read();
+    if (device.sample().imuFresh) {
+      const uint32_t now = micros();
+      if (frames && now - last > maxGap) maxGap = now - last;
+      last = now; ++frames;
+    }
+  }
+  Serial.printf("ODR CHECK frames=%u rate=%.2f Hz max_gap_us=%lu FREQ_FINE=%d (~%.2f%% per datasheet 0.13%%/LSB)\n",
+      frames, frames / 10.0, (unsigned long)maxGap, fine, fine * 0.13);
+  imuSeen = baroSeen = false; imuFresh = baroFresh = 0;
+  lastRead = lastReport = millis();
+}
 void diagnostics() {
   streaming = false;
   Serial.println("\n=== SENSOR_TEST: hardware SPI1 diagnostics ===");
@@ -231,9 +312,11 @@ void loop() {
       case 'i': initDriver(); break;
       case 's': driverStatus(); break;
       case 'b': baroChecks(); break;
+      case 'f': speedSweep(); break;
+      case 'o': odrCheck(); break;
       case 'v': streaming = !streaming; imuFresh = baroFresh = 0; lastReport = millis();
         Serial.println(streaming ? "Live samples ON (2 reports/s)" : "Live samples OFF"); break;
-      case 'h': Serial.println("r both scan orders+init | i init | s status | v live on/off | b BARO speed/config/raw checks (stops live); use LF/CRLF. No arming/output commands."); break;
+      case 'h': Serial.println("r both scan orders+init | i init | s status | v live on/off | b BARO speed/config/raw checks (stops live) | f SPI speed sweep 1-37.5 MHz | o IMU output-rate check; use LF/CRLF. No arming/output commands."); break;
       default: break;
     }
   }

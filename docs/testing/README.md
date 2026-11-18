@@ -158,10 +158,10 @@ backup.
 |---|---|---|
 | MAIN | `help`, `status` | Development application; commands determine persistence |
 | SMOKE_TEST | Checks/live report on USB connection; `D` repeat init/checks, `F` physical pyro 1 once per boot, `H` help | Current sensors/flash identification, live measurements and continuity CH1..4; no flash/NVM writes or servo motion; F uses the shared executor's 10 ms enable settling and 1000 ms pulse |
-| SENSOR_TEST | Automatic scan on USB connection; `r` repeat, `i` init, `s` status, `v` live, `h` help | Hardware SPI1 raw ID/status scan then normal sensor initialization; volatile sensor configuration / IMU reset only, flash/NVM untouched |
+| SENSOR_TEST | Automatic scan on USB connection; `r` repeat, `i` init, `s` status, `v` live, `b` barometer checks, `f` SPI speed sweep 1-37.5 MHz, `o` 10 s IMU output-rate check, `h` help | Hardware SPI1 raw ID/status scan then normal sensor initialization; volatile sensor configuration / IMU reset only, flash/NVM untouched |
 | BLUETOOTH_TEST | USB `status`, `at AT`; phone `ping` | UART probe/snapshot/echo; explicit `name set` changes module names; external flash untouched |
 | BLUETOOTH_NAME_TEST | `probe`, `name set "Perpetual"`, `module reboot` | Raw UART/name test; rename uses module memory; explicit reboot drops Bluetooth links; outputs inactive |
-| FLASH_TEST | ID sweep on connection; `r` repeats; `w` starts sector test; exact `ERASE ALL` erases the whole device | `w` backs up/restores `0xFFF000..0xFFFFFF`; `ERASE ALL` destroys and verifies all 16 MiB, including settings and flights; `FULL FLASH ERASE VERIFIED` |
+| FLASH_TEST | ID sweep on connection; `r` repeats; `w` starts sector test; `c` sweeps SPI clocks 4-75 MHz (read-only region CRC with 0x03/0x0B, one page programmed per clock in the backed-up test sector, then restored); exact `ERASE ALL` erases the whole device | `w` backs up/restores `0xFFF000..0xFFFFFF`; `ERASE ALL` destroys and verifies all 16 MiB, including settings and flights; `FULL FLASH ERASE VERIFIED` |
 | FLASH_DIRECTORY_TEST | `d` | Backs up both banks `0x005000..0x014FFF` (64 KiB); `DIRECTORY TEST PASSED` |
 | CONFIG_STORE_TEST | `c` | Backs up settings `0x001000..0x004FFF` (16 KiB); `CONFIGURATION STORE TEST PASSED` |
 

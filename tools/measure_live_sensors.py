@@ -48,6 +48,11 @@ def main():
                    poll_hz=polls/elapsed,
                    read_mean_us=read_us/polls if polls else None,
                    read_max_us_since_boot=last['idle_poll'][2],
+                   late_gaps=last['idle_gap'][0]-first['idle_gap'][0],
+                   gap_max_us_since_boot=last['idle_gap'][1],
+                   dt_min_max_us_since_boot=last['idle_imu'][:2],
+                   sequence_gaps=last['idle_imu'][2]-first['idle_imu'][2],
+                   fifo_overruns_errors=[last['idle_imu'][3]-first['idle_imu'][3], last['idle_imu'][4]-first['idle_imu'][4]],
                    acquisition_wall_percent=read_us/(elapsed*10000),
                    observed_invalid_snapshots=sum(not s['imu_sample_valid'] or not s['baro_sample_valid'] for s in samples))
     args.output.parent.mkdir(parents=True, exist_ok=True)

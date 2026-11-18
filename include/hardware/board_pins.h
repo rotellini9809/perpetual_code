@@ -13,8 +13,10 @@ constexpr uint8_t PIN_MEM_MISO = 0;  // MISO_memo
 constexpr uint8_t PIN_MEM_CS1  = 1;  // CS_memo1
 constexpr uint8_t PIN_MEM_SCK  = 2;  // CLK_memo
 constexpr uint8_t PIN_MEM_MOSI = 3;  // MOSI_memo
-// 1 MHz cannot sustain verified 200 Hz recording; keep board policy explicit.
-constexpr uint32_t FLASH_CLOCK_HZ = 4000000;
+// FLASH_TEST `c` sweep on this board: JEDEC, 0x03/0x0B reads and page programs
+// error-free up to 37.5 MHz (SPI0 cannot produce 50 MHz); 75 MHz fails to identify.
+// 18.75 MHz is 2x below the highest working clock; 25 MHz would gain only ~8%/page.
+constexpr uint32_t FLASH_CLOCK_HZ = 18750000;
 
 // Compatibility with recovery_system_avionics names.
 constexpr uint8_t MISO_FLASH = PIN_MEM_MISO;
