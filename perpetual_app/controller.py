@@ -23,6 +23,8 @@ READS = dict(status='status',preflight='preflight',sensors='sensors',sim='sim st
              control='control status',capabilities='capabilities',bluetooth='bluetooth status')
 
 OLD_FIRMWARE = ('UNKNOWN_COMMAND','INVALID_ARGUMENT','NO_DRAFT') # Error codes meaning "this firmware lacks the command".
+# A manual pyro continuity check is shown for this long; disarming clears it at once.
+PYRO_CHECK_VALID_S = 600
 
 REASONS = { # English; error messages use them as they are, the Dashboard checklist translates them with t().
     'IMU_CALIBRATION_MISSING':'IMU calibration missing',
@@ -342,7 +344,7 @@ class Controller(QObject):
         if command.startswith('preflight'): return (dict(preflight=response) if response.get('requested_mode')!='simulation' else {}),()
         if command=='sensors': return dict(sensors=response),()
         if command=='airbrake status': return dict(airbrake_status=response),()
-        if command=='pyro continuity': return dict(pyro_continuity=response),()
+        if command=='pyro continuity': return dict(pyro_continuity=dict(response,expires_at=time.monotonic()+PYRO_CHECK_VALID_S)),()
         if command.startswith('imu '): return dict(imu_calibration=dict(response,supported=True)),('preflight','status')
         if command.startswith('config airbrakes'): return {},('airbrakes','airbrake_status')
         if command.startswith('sim '): return {},('sim','status')
@@ -590,6 +592,8 @@ class Controller(QObject):
         s=self.state
         if 'status' in result and result['status'].get('power_mode')!=s.status.get('power_mode'):
             s.preflight={}; s.pyro_continuity={} # Power transitions invalidate earlier checks.
+        if 'status' in result and result['status'].get('arming_state')=='disarmed' and s.status.get('arming_state') not in (None,'disarmed'):
+            s.pyro_continuity={} # Back to disarmed (after a run, a flight or a cancel): igniters must be checked again.
         if result.get('downloaded_path'): s.download.update(state='completed',path=result['downloaded_path'])
         for key in ('status','preflight','pyro_continuity','sensors','capabilities','control','events','flights','flight','orientation','machine','imu_calibration','bluetooth'):
             if key in result: setattr(s,key,result[key])

@@ -258,7 +258,10 @@ The **Dashboard** collects everything the board needs before it can be armed.
    </p>
 
 2. **Pyro check**: with the igniters connected, press **Check pyro continuity**. Each pyro channel
-   used by your rules must report continuity.
+   used by your rules must report continuity. The result stays on screen for 10 minutes and is
+   cleared when the board returns to disarmed, so check again after a flight or a cancelled arm.
+   While armed the card shows *verified by the board at arming*: the board measures continuity
+   itself when it accepts the arm and again before flight, whatever the card shows.
 3. **Servo preparation**: tick the servos used by your rules and press **Prepare selected**. They
    move to their initial position and hold it. **Release servos** lets them go again.
 4. **Preflight checks**: lists what still blocks arming, and the board decides this list. Fix each

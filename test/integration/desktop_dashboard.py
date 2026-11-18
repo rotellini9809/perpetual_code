@@ -116,6 +116,18 @@ def check_orientation_and_pyros(app,wait):
         assert all(state.property('preparation')=='prepared' for state in window.dashboard_page.pyro_states[:2]) and window.dashboard_page.pyro_rows[2].isHidden()
         assert 'CONTINUITY_FAULT' in controller.state.preflight['reasons'] # A manual pass does not approve arming.
         window.dashboard_page.preflight_button.click(); wait(lambda:not controller.state.foreground)
+        # While armed the board's own arm-time measurement is shown; disarming clears the manual check.
+        backend.active=True; controller.refresh(); wait(lambda:not controller.state.foreground)
+        assert all('verificata dalla scheda' in state.text() for state in window.dashboard_page.pyro_states[:2])
+        assert all(state.property('preparation')=='prepared' for state in window.dashboard_page.pyro_states[:2])
+        backend.active=False; controller.refresh(); wait(lambda:not controller.state.foreground)
+        assert not controller.state.pyro_continuity and all('da verificare' in state.text() for state in window.dashboard_page.pyro_states[:2])
+        # A manual check expires after ten minutes.
+        window.dashboard_page.check_pyros_button.click(); wait(lambda:not controller.state.foreground)
+        assert 'presente' in window.dashboard_page.pyro_states[0].text()
+        assert controller.state.pyro_continuity['expires_at']-time.monotonic()>590
+        controller.state.pyro_continuity['expires_at']=time.monotonic()-1; window.dashboard_page.render(controller.state)
+        assert 'da verificare' in window.dashboard_page.pyro_states[0].text()
 
 
 def check_servo_preparation(app,wait):

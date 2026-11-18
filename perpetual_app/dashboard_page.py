@@ -1,4 +1,5 @@
 """Dashboard: applied configuration, sensors, preflight checks and actuator preparation before arming."""
+import time
 from PySide6.QtCore import Qt,Signal
 from PySide6.QtWidgets import QWidget,QFrame,QVBoxLayout,QHBoxLayout,QCheckBox,QHeaderView,QSizePolicy,QTableWidgetItem
 from .controller import REASONS
@@ -215,13 +216,16 @@ class DashboardPage(QWidget):
         self.check_pyros_button.setEnabled(usable and arming=='disarmed' and not s.dirty and not s.staged and bool(pyros))
         continuity=s.pyro_continuity
         failed=continuity.get('failed_pyro_mask')
-        checked=connected and arming=='disarmed' and failed is not None and continuity.get('configured_pyro_mask')==sum(1<<(i-1) for i in pyros)
+        fresh=time.monotonic()<continuity.get('expires_at',0) # Manual checks expire after PYRO_CHECK_VALID_S.
+        checked=connected and arming=='disarmed' and failed is not None and fresh and continuity.get('configured_pyro_mask')==sum(1<<(i-1) for i in pyros)
+        # The board measured every rule pyro to accept the arm and again before flight.
+        armed=connected and arming in ('arming','preparing','armed')
         self.pyro_status.setVisible(not pyros)
         self.pyro_status.setText(t('No pyro assigned to the rules.') if plan else t('Configuration not loaded: press Reload from board in Configuration.') if connected else t('Connect the board to read the configuration.'))
         for i,(entry,state) in enumerate(zip(self.pyro_rows,self.pyro_states)):
             entry.setVisible(i+1 in pyros)
-            present=checked and not (failed & (1<<i))
-            state.setText((t('continuity present') if present else t('continuity missing')) if checked else t('continuity to check'))
+            present=armed or (checked and not (failed & (1<<i)))
+            state.setText(t('verified by the board at arming') if armed else (t('continuity present') if present else t('continuity missing')) if checked else t('continuity to check'))
             preparation='prepared' if present else 'unprepared'
             if state.property('preparation')!=preparation:
                 state.setProperty('preparation',preparation)

@@ -394,6 +394,7 @@ ITALIAN = {
     'continuity present': 'continuità presente',
     'continuity missing': 'continuità assente',
     'continuity to check': 'continuità da verificare',
+    'verified by the board at arming': "verificata dalla scheda all'armamento",
     'Available': 'Disponibile',
     'ID: {id} · error: {error}': 'ID: {id} · errore: {error}',
     'Connect the board to start.': 'Collega la scheda per iniziare.',
