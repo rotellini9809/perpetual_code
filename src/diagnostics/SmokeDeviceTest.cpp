@@ -75,7 +75,7 @@ void diagnostics() {
   color(0,0,255);
   Serial.println("\n=== SMOKE_TEST: board identification and live readings ===");
   // Reinitialization changes volatile sensor setup only; no sensor NVM/flash writes.
-  // BRING-UP: the known IMU solder fault remains FAIL; never replace missing measurements.
+  // A missing sensor reports FAIL; never replace missing measurements.
   sensors.begin(); imuSeen=baroSeen=false;
   memoryOk=flash.initialize(FLASH_CLOCK_HZ);
   Serial.printf("FLASH JEDEC=0x%06lX expected EF4018/EF7018 | %s | error=%s (identification only)\n",

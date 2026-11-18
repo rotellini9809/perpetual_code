@@ -1,133 +1,314 @@
-# Perpetual flight computer
+<p align="center">
+  <img src="perpetual_app/assets/Clean%20Perpetual%20Infinity%20Logo%20on%20Navy-1.png" alt="Perpetual logo" width="220">
+</p>
 
-RP2350 / Arduino-Pico firmware inspired by `../recovery_system_avionics`. MAIN currently
-provides USB/Bluetooth configuration, a shared flight runtime for sensor navigation/rules/recording,
-sensor HIL, autonomous simulation with selectable outputs, idle hardware diagnostics and flash download.
-**Real flight and physical simulation share the output executor. Real flight requires explicit
-servo preparation and sensor/continuity/storage readiness; the IMU hardware issue is unresolved.**
+<h1 align="center">Perpetual — Firmware &amp; Desktop App</h1>
 
-The **Qt desktop prototype** provides Dashboard, Configuration, Test/Simulation,
-Recorded Flights, Settings and Console. It starts in English; Italian can be chosen in
-Settings → Language (applied after a restart; error messages stay in English).
-During development, launch it from source using
-[the desktop guide](docs/technical/DESKTOP.md). An early portable Windows package can be built
-for testing (see [Package the desktop app](#package-the-desktop-app)).
+<p align="center">
+  Flight computer firmware for the RP2350-based Perpetual avionics board,<br>
+  and the desktop app used to configure it, test it and download its flights.
+</p>
 
-## Build and start
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue" alt="License: PolyForm Noncommercial 1.0.0"></a>
+  <img src="https://img.shields.io/badge/MCU-RP2350-c51a4a" alt="MCU: RP2350">
+  <img src="https://img.shields.io/badge/firmware-PlatformIO%20%7C%20Arduino--Pico-orange" alt="Firmware: PlatformIO / Arduino-Pico">
+  <img src="https://img.shields.io/badge/app-Python%20%7C%20Qt%20(PySide6)-41cd52" alt="App: Python / Qt">
+</p>
 
-Start Perpetual App from the repository root in PowerShell:
+---
 
-```powershell
-.\.venv\Scripts\python.exe perpetual_app/main.py
+> **Part of the Perpetual project**, developed for the
+> **Sapienza Rocket Team Training Academy**.
+>
+> | Repository | Contents |
+> |---|---|
+> | [Perpetual_training_accademy_avionics](https://github.com/Sapienza-Rocket-Team/Perpetual_training_accademy_avionics) | Main project: overview of the whole system, with the two repositories below as submodules |
+> | [perpetual_pcb](https://github.com/rotellini9809/perpetual_pcb) | Hardware: KiCad schematics, PCB layout and fabrication files |
+> | **perpetual_code** (this repository) | Firmware and desktop app |
+
+> [!TIP]
+> **New to Perpetual?** Flash the board with the [Quick start](#quick-start), then follow the
+> **[app guide](docs/APP_GUIDE.md)**: it walks you through preparing a flight, step by step.
+
+> [!WARNING]
+> Perpetual drives **pyrotechnic channels** and servo actuators. Bench-test every configuration
+> with the outputs disconnected or in simulation first, and follow your team's and range's
+> safety rules. This is experimental hobby/academic avionics and is **not certified for any
+> use**. What has been verified, and how, is recorded in [Validation](docs/testing/VALIDATION.md).
+
+## Contents
+
+- [Features](#features)
+- [Screenshots](#screenshots)
+- [Workflow](#workflow)
+- [How it works](#how-it-works)
+- [Repository layout](#repository-layout)
+- [Quick start](#quick-start)
+- [Development](#development)
+- [Tools](#tools)
+- [Documentation](#documentation)
+- [Author and license](#author-and-license)
+
+## Features
+
+### Firmware
+
+- **Sensing**: LSM6DSV32X IMU (±32 g, ±2000 °/s) at 480 Hz and BMP581 barometer at 100 Hz,
+  read through the IMU FIFO with per-sample timestamps.
+- **Navigation**: attitude estimation, vertical Kalman filter and flight phase detection
+  (PAD → BOOST → COAST → DESCENT → LANDED), with a configurable board mounting orientation and
+  IMU calibration.
+- **Single-stage and two-stage flights**: separate state machines, including second-ignition
+  detection and tilt/abort protection.
+- **Configurable recovery rules**: conditions on phase, altitude, speed and time drive **4 pyro
+  channels** and **4 servo channels**, with delays and dependencies between rules. Plans are
+  validated on the board before they are applied.
+- **Airbrakes**: a continuous servo control interface where you plug in your own control law.
+- **Flight recording**: sensor data, estimates and events are logged to the onboard 16 MB flash
+  from the second core, so recording never blocks the flight loop. Flights survive power loss
+  and are never deleted automatically.
+- **USB and Bluetooth**: the same command protocol runs over USB serial and over the JDY-34
+  Bluetooth module, and both links can be used at the same time.
+- **Simulation and hardware-in-the-loop**: replay a recorded flight on the real board, either
+  with simulated outputs or driving the real ones, to test a configuration end to end on the
+  ground.
+- **Status LED and power saving**: an RGB LED shows the flight phase, and the board powers its
+  sensors and flash down after five minutes of inactivity.
+
+### Desktop app
+
+- **Dashboard**: connection, live sensors, battery, preflight checks and arming.
+- **Configuration**: build recovery rules, set servo endpoints, board orientation and IMU
+  calibration, with the same validation the firmware applies.
+- **Test / Simulation**: run on-board simulations and hardware-in-the-loop sessions.
+- **Recorded Flights**: download flights to CSV, plot them and review their details.
+- **Settings**: Bluetooth name, language, factory reset and memory format. **Console** for raw
+  commands.
+- Connects over **USB or Bluetooth**, available in **English and Italian**, and can be packaged
+  as a portable Windows app that needs no Python installation.
+
+## Screenshots
+
+<table>
+  <tr>
+    <td><img src="docs/images/app/dashboard.png" alt="Dashboard" width="400"></td>
+    <td><img src="docs/images/app/configuration-rules.png" alt="Configuration: recovery rules" width="400"></td>
+  </tr>
+  <tr>
+    <td align="center">Dashboard: preflight checks and arming</td>
+    <td align="center">Configuration: recovery rules</td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/app/simulation-done.png" alt="Test and simulation" width="400"></td>
+    <td><img src="docs/images/app/flights-download.png" alt="Recorded flights" width="400"></td>
+  </tr>
+  <tr>
+    <td align="center">On-board simulation</td>
+    <td align="center">Recorded flights</td>
+  </tr>
+</table>
+
+## Workflow
+
+Preparing a flight with the app takes eight steps. The [app guide](docs/APP_GUIDE.md) explains
+each one with screenshots.
+
+1. **[Set up the board](docs/APP_GUIDE.md#step-1--set-up-the-board)**: orientation, flight mode
+   and Bluetooth name.
+2. **[Calibrate the IMU](docs/APP_GUIDE.md#step-2--calibrate-the-imu)** on its six faces.
+3. **[Create the recovery rules](docs/APP_GUIDE.md#step-3--create-the-recovery-rules)**: when each
+   pyro or servo fires.
+4. **[Set the servo positions](docs/APP_GUIDE.md#step-4--set-the-servo-positions)**, if you use
+   servos.
+5. **[Test with a simulation](docs/APP_GUIDE.md#step-5--test-with-a-simulation)** on the board.
+6. **[Check the result](docs/APP_GUIDE.md#step-6--check-the-result)** in the flight plots.
+7. **[On the pad](docs/APP_GUIDE.md#step-7--on-the-pad-checks-and-arming)**: preflight checks,
+   pyro continuity, servo preparation and ARM.
+8. **[After the flight](docs/APP_GUIDE.md#step-8--after-the-flight)**: download the data and look
+   at the plots.
+
+## How it works
+
+```mermaid
+flowchart LR
+    subgraph Board["Perpetual board (RP2350)"]
+        S["Sensors<br>IMU + barometer"] --> N["Navigation<br>attitude, Kalman, phase"]
+        N --> R["Recovery rules"]
+        N --> A["Airbrake control"]
+        R --> O["Outputs<br>4 pyro + 4 servo"]
+        A --> O
+        N --> L["Recorder (core 1)"]
+        R --> L
+        L --> F[("16 MB flash")]
+        C["Command service"]
+    end
+    C <--> U(["USB serial"])
+    C <--> B(["Bluetooth<br>JDY-34"])
+    U <--> App["Desktop app /<br>PC tools"]
+    B <--> App
 ```
 
-This uses the app environment directly: no `Activate.ps1` or PowerShell execution-policy
-change is needed. On a fresh checkout, create the environment and install dependencies once:
+Real sensors, a hardware-in-the-loop stream from the PC and the on-board simulated flight all
+go through the same navigation, rules, output and recording code. What you test on the ground
+is the code that flies. For details, see [Architecture](docs/technical/ARCHITECTURE.md).
+
+## Repository layout
+
+| Path | Contents |
+|---|---|
+| [`src/`](src), [`include/`](include) | Firmware sources, organized by area: `hardware`, `navigation`, `flight`, `configuration`, `control`, `storage`, `communication`, `simulation`, `diagnostics` |
+| [`perpetual_app/`](perpetual_app) | Qt desktop app and its Windows packaging scripts |
+| [`tools/`](tools) | PC tools: device client, test runner, replay and simulation runners, measurement scripts |
+| [`test/`](test) | Host-side C++ tests, Python integration tests and shared fixtures |
+| [`datasets/`](datasets) | Reference flight data used for replay and simulation |
+| [`docs/`](docs) | Technical documentation, test procedures, validation records and datasheets |
+| [`platformio.ini`](platformio.ini) | Firmware build configuration and pinned dependencies |
+
+## Quick start
+
+### Requirements
+
+- A Perpetual board ([hardware](https://github.com/rotellini9809/perpetual_pcb)) and the
+  RP2350 Tiny USB-C adapter with its flex cable.
+- [VS Code](https://code.visualstudio.com/) with the
+  [PlatformIO](https://platformio.org/install/ide?install=vscode) extension, or PlatformIO Core.
+- Python 3.13 for the desktop app and the tools. The commands below are for Windows PowerShell.
+
+### 1. Flash the firmware
+
+Connect the board over the flex cable and USB-C adapter, then from the repository root run:
+
+```powershell
+pio run -t upload
+```
+
+PlatformIO downloads the pinned RP2350 platform, toolchain and libraries the first time. If the
+board is not detected, hold **BOOT** while plugging in the USB cable and upload again.
+
+### 2. Talk to the board
+
+Open the serial monitor at 115200 baud (`pio device monitor`) and try `help`, `status`,
+`sensors` or `config show`. The board always boots **disarmed** and keeps any configuration
+already saved on it. Close the serial monitor before connecting the app, because only one
+program can open the port at a time.
+
+### 3. Run the desktop app
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r perpetual_app/requirements.txt
+.\.venv\Scripts\python.exe perpetual_app/main.py
 ```
 
-### Package the desktop app
+The app finds the board by itself: it tries USB first, then Bluetooth, so you never have to pick
+a COM port. To connect over Bluetooth, first **pair the board in Windows**
+(**Settings → Bluetooth & devices → Add device**). It appears as `Perpetual`, or
+`Perpetual-<suffix>` if you renamed it. The app does not pair devices itself.
 
-To build a portable Windows package (no Python needed on the target PC):
+The app starts in English; you can switch to Italian in **Settings → Language**.
+
+**Next:** follow the [app guide](docs/APP_GUIDE.md) to prepare your first flight.
+
+## Development
+
+### Firmware entry points
+
+[`platformio.ini`](platformio.ini) builds one entry point at a time. Uncomment exactly one
+`build_flags` line:
+
+| Flag | Purpose |
+|---|---|
+| `MAIN` | The flight computer application (default) |
+| `SMOKE_TEST`, `SENSOR_TEST` | Basic board bring-up and sensor checks |
+| `BLUETOOTH_TEST`, `BLUETOOTH_NAME_TEST` | JDY-34 radio diagnostics |
+| `FLASH_TEST`, `FLASH_DIRECTORY_TEST` | Flash memory and flight directory diagnostics |
+| `CONFIG_STORE_TEST` | Configuration storage diagnostics |
+
+Firmware dependencies are pinned to exact versions or commits: the RP2350 platform (and with it
+the Arduino-Pico framework and toolchain), Adafruit NeoPixel, the Bosch BMP5 driver and the ST
+LSM6DSV32X driver. App dependencies are pinned in
+[`perpetual_app/requirements.txt`](perpetual_app/requirements.txt).
+
+### Tests
+
+The tests run on the PC and need `g++` and Python. They do not run when you upload firmware.
+
+```powershell
+python tools/run_tests.py                     # C++ and client checks
+python tools/run_tests.py --full              # also the full recorded-flight replay
+python tools/run_tests.py --list              # list the test areas
+python tools/run_tests.py --suite bluetooth   # one area only
+```
+
+Compiled objects are cached under `.pio/tests`. Add `--rebuild` to force a clean build. See the
+[test guide](docs/testing/README.md) for on-board diagnostics.
+
+### Package the desktop app
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File perpetual_app/build.ps1 -Zip
 ```
 
-The script creates `.venv` if needed, installs the pinned requirements (skip this step
-with `-SkipInstall`) and runs PyInstaller with [Perpetual.spec](perpetual_app/Perpetual.spec).
-It writes:
+This builds a portable Windows app with PyInstaller:
 
-- `.pio\desktop_dist\Perpetual\Perpetual.exe`: the app folder; keep the exe beside its `_internal` folder.
-  It also contains `README.txt` for the people who receive the package (from `perpetual_app/PORTABLE.txt`).
-- `.pio\desktop_dist\Perpetual-windows-x64.zip`: the same folder zipped for sharing.
+- `.pio\desktop_dist\Perpetual\Perpetual.exe`: keep the exe next to its `_internal` folder.
+- `.pio\desktop_dist\Perpetual-windows-x64.zip`: the same folder, zipped for sharing.
 
-To use the package, extract the ZIP anywhere and run `Perpetual\Perpetual.exe`. The build is
-unsigned, so Windows SmartScreen may warn on first launch (More info → Run anyway).
-These packages are early test builds, not stable releases.
+The build is unsigned, so Windows SmartScreen may warn the first time it runs
+(**More info → Run anyway**). Add `-SkipInstall` to reuse the dependencies already installed.
 
-Firmware dependencies are pinned in [platformio.ini](platformio.ini): exact Git commits
-for the RP2350 platform and Bosch/ST drivers, and NeoPixel 1.15.5. The pinned platform
-also selects a fixed Arduino-Pico framework commit and versioned toolchain archives.
-Desktop dependencies are pinned in [perpetual_app/requirements.txt](perpetual_app/requirements.txt).
-Update these references explicitly when upgrading dependencies.
+## Tools
 
-```powershell
-pio run
-python tools/run_tests.py
-python tools/run_tests.py --full
-```
+| Command | What it does |
+|---|---|
+| `python tools/device_client.py --port COM9 --watch` | Connect and watch the board's replies (Ctrl+C to quit) |
+| `python tools/device_client.py --port COM9 --command "config show"` | Send a single command |
+| `python tools/replay/replay_sensors_usb.py --port COM9` | Stream a recorded flight's sensor data to the board (hardware-in-the-loop) |
+| `python tools/replay/run_simulation_usb.py --port COM9` | Run the built-in simulated flight on the board |
+| `python tools/measure_live_sensors.py --port COM9 --output rates.json` | Measure the live sensor sample rates |
 
-Select exactly one `build_flags` entry in [platformio.ini](platformio.ini), using
-the existing environment: `MAIN` (application), `BLUETOOTH_TEST`, `BLUETOOTH_NAME_TEST`,
-`FLASH_TEST`, `FLASH_DIRECTORY_TEST` or `CONFIG_STORE_TEST`. `MAIN` is currently selected;
-the isolated radio tests remain available in [Bluetooth diagnostics](docs/testing/README.md#bluetooth-bring-up).
-Uploading firmware does not execute the PC tests. The tests need g++ and Python. The default
-run covers C++ and client checks; `--full` adds the repository Hoppino CSV replay and
-record/download checks. Use `--suite bluetooth` (or another area from `--list`) for focused
-work. Shared C++ objects are cached under ignored `.pio/tests`; `--rebuild` forces compilation.
-
-Upload MAIN, open Serial Monitor at 115200 and send `help`, `status`, `sensors` or `config show`. Boot
-loads saved settings, stays disarmed and never autoformats or installs an active default plan.
-Valid configuration alone does not mean flight readiness. Close Serial Monitor before a Python
-client opens the port.
-
-MAIN also accepts the same commands through the JDY-34 (hardware UART1, 9600 baud).
-USB stays active every loop. `bluetooth status` reports radio startup/link state;
-`control status` identifies the requesting transport and the current edit/run owner.
-Windows' paired-device badge is not the application connection check: open the outgoing SPP
-port, then exchange `info`/`ping`. See the [shared protocol](docs/technical/USB.md).
-
-The shared PC client now owns handshake, command ordering and idle heartbeat. To inspect the
-device and watch actual replies (Ctrl+C closes the connection):
-
-```powershell
-python tools/device_client.py --port COM11 --watch
-python tools/device_client.py --port COM9 --command "config show"
-```
-
-Replay/simulation/download runners and the Qt desktop use the same connection worker.
-The command-line monitor remains useful for focused connection checks.
-The official Hoppino input is included in [datasets/hoppino_VOLO_UFFICIALE.csv](datasets/hoppino_VOLO_UFFICIALE.csv);
-replay tools use this copy by default.
-
-```powershell
-python tools/replay/replay_sensors_usb.py --port COM9
-python tools/replay/run_simulation_usb.py --port COM9
-```
-
-These process simulated sensors through onboard navigation/rules with virtual outputs. For
-optional recording, first initialize genuinely blank storage with `flights init`, then add
-`--record`. Retained flights are never deleted automatically.
-See the [recording guide](docs/testing/RECORDING.md) before storage diagnostics.
+Replay and simulation use virtual outputs by default. Add `--record` to also save the run to
+flash. The reference flight used by
+default is [`datasets/hoppino_VOLO_UFFICIALE.csv`](datasets/hoppino_VOLO_UFFICIALE.csv). See
+[Simulation and replay](docs/testing/SIMULATION.md) and
+[Recording and download](docs/testing/RECORDING.md).
 
 ## Documentation
 
-- [Documentation map and reading order](docs/README.md)
-- [Architecture and source ownership](docs/technical/ARCHITECTURE.md)
-- [Configuration and rule semantics](docs/technical/CONFIGURATION.md)
+Start from the [documentation map](docs/README.md). To learn the desktop app, read the
+[app guide](docs/APP_GUIDE.md).
+
+**Technical reference**
+
+- [Architecture](docs/technical/ARCHITECTURE.md): source layout and runtime path
+- [Flight state machines](docs/technical/STATE_MACHINES.md): single-stage and two-stage
 - [Navigation and calibration](docs/technical/NAVIGATION.md)
-- [Flight state machines and bistage design](docs/technical/state_macines.md)
+- [Configuration and recovery rules](docs/technical/CONFIGURATION.md)
+- [Airbrakes](docs/technical/AIRBRAKES.md)
 - [Storage behavior](docs/technical/STORAGE.md) and [binary formats](docs/technical/STORAGE_FORMAT.md)
-- [USB protocol](docs/technical/USB.md)
-- [Build/tests and device diagnostics](docs/testing/README.md)
+- [USB / Bluetooth protocol](docs/technical/USB.md)
+- [Desktop app](docs/technical/DESKTOP.md)
+- [Hardware, pinout and datasheets](docs/HARDWARE.md)
+
+**Testing and validation**
+
+- [Test guide and on-board diagnostics](docs/testing/README.md)
 - [Simulation and replay](docs/testing/SIMULATION.md)
 - [Recording, download and timing](docs/testing/RECORDING.md)
-- [Validation evidence and remaining work](docs/testing/VALIDATION.md)
-- [Hardware and datasheets](docs/HARDWARE.md)
+- [Validation records](docs/testing/VALIDATION.md)
 
-## License and attribution
+## Author and license
 
-Original software in this repository is licensed under the
-[PolyForm Noncommercial License 1.0.0](LICENSE).
+Firmware, desktop app and [hardware](https://github.com/rotellini9809/perpetual_pcb) designed by
+**Simone Cargnin** ([@rotellini9809](https://github.com/rotellini9809)) for the
+**Sapienza Rocket Team Training Academy**.
 
-See [NOTICE](NOTICE) for attribution notices.
-Third-party components retain their respective licenses.
+The original software in this repository is licensed under the
+[PolyForm Noncommercial License 1.0.0](LICENSE). See [NOTICE](NOTICE) for the required
+attribution. Third-party components keep their own licenses.
 
-For commercial licensing inquiries, contact rotellini9809@gmail.com.
+For commercial licensing, contact rotellini9809@gmail.com.
 
-If you use Perpetual in research, please notify me at the address
-above. This is a voluntary request, not a license condition.
+If you use Perpetual in research, please let me know at the address above. This is a voluntary
+request, not a license condition.

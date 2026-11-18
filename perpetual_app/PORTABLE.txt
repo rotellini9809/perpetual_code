@@ -7,6 +7,10 @@ Extract the whole folder and run Perpetual.exe. Keep the _internal folder next t
 Python is not needed on the target PC. The build is not signed, so Windows SmartScreen
 may warn on first launch (More info -> Run anyway).
 
+GUIDE
+Step-by-step guide with screenshots, from setting up the board to reading a flight:
+https://github.com/rotellini9809/perpetual_code/blob/main/docs/APP_GUIDE.md
+
 LANGUAGE
 The app starts in English. Choose Italian in Settings -> Language; it applies after a restart.
 Error messages stay in English.

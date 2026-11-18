@@ -1,163 +1,144 @@
 # Navigation and calibration
 
-The source baseline is `../recovery_system_avionics/src/Navigation.cpp`, `include/Navigation.h`,
-`src/Sensors.cpp` and the old main logging path. The port has four small modules under
-src/navigation, with matching public headers and no Arduino, hardware drivers, dynamic
-allocation or matrix-library dependency.
+Navigation turns calibrated sensor frames into attitude, altitude, vertical velocity and the
+flight phase. It lives in `src/navigation/` (`SensorPipeline`, `AttitudeEstimator`,
+`VerticalKalman`, `FlightDetector`, `Navigation`) and has no Arduino, driver, heap or matrix-library
+dependency. The phase transitions are defined in [State machines](STATE_MACHINES.md).
 
-## Input and output boundary
+## Frames and units
 
-`Navigation::begin(referenceAltitude, nominalImuHz, quaternion)` resets navigation. Reference
-altitude is absolute pressure altitude in metres from arming; the first IMU step uses nominal
-dt, subsequent steps use actual timestamp deltas. Direct callers retain the identity quaternion
-default. Physical arming supplies a gravity-derived initial quaternion through the per-run
-`SensorCalibration` snapshot. Bistage mode additionally aligns from the first valid PAD
-acceleration near 1 g before flight processing; invalid PAD data is not substituted.
+- **BODY**: +X points from tail to nose. Sensor axes are rotated into BODY by the saved
+  [mounting](#mounting).
+- **NAV**: +Z up. The attitude quaternion maps BODY to NAV; Euler angles are in radians.
+- `SensorFrame` carries BODY specific force (m/s²), angular rate (rad/s), pressure (Pa),
+  microsecond timestamps, independent IMU and barometer sequence numbers, and validity flags.
+- Pressure altitude is `44330 × (1 − (P / 101325)^0.1903)`. Altitude above launch subtracts the
+  arming reference and the PAD baseline.
 
-The mounting selector below defines sensor-to-BODY coordinates, not the initial BODY-to-NAV
-attitude. Physical calibration applies this same mounting transform to averaged acceleration
-before constructing the initial attitude. It does not estimate absolute heading.
+The desktop app displays orientation in an X-up reference (the rocket nose-up reads zero); that
+conversion is for display only and is described in [Desktop](DESKTOP.md#behavior-by-page).
 
-`SensorFrame` requires calibrated BODY specific force in m/s^2, gyro in rad/s, pressure in Pa,
-microsecond timestamps, independent sequence IDs and validity. BODY +X points tail-to-nose.
-Quaternion maps BODY -> NAV with +Z up. Euler output is radians. Pressure conversion is
-44330*(1-(P/101325)^0.1903); launch-relative barometer altitude subtracts the reference and
-tracked PAD baseline.
+## Input rules
 
-The desktop orientation plot re-expresses this rotation in an X-up reference using
-`R_display = Ry(+90 degrees) R_body_to_nav` before extracting ZYX Euler angles.
-This display transform does not change navigation, stored Euler degrees, sensor mounting,
-or startup calibration. See [desktop conventions](DESKTOP.md).
+- An IMU frame with a repeated or older timestamp or sequence is rejected. An invalid frame, or
+  `dt` outside `(0, 0.1 s]`, leaves the estimates unchanged for that frame but still moves the
+  timing anchor, so an unknown gap is never integrated.
+- A barometer correction needs a new sequence number, finite positive pressure and a timestamp no
+  more than 100 ms old and not in the future. Re-reading the same register is not a new sample.
+- Estimates predicted from a fresh IMU frame count as fresh between barometer updates.
+- `NavigationOutput::ruleSnapshot()` hands the result, with validity flags, to the
+  [rule engine](CONFIGURATION.md#how-a-rule-is-evaluated).
 
-Repeated/backward IMU timestamps or sequences are rejected; invalid IMU or dt outside (0,0.1]
-seconds freezes numerical navigation for that frame. Fresh invalid frames still advance the
-timing anchor so recovery does not integrate an unknown gap. Barometer updates require a new
-sequence, finite positive pressure and an acquisition timestamp no more than 100 ms old or in
-the future. Re-reading the same barometer register does not create a fresh correction. Numeric
-estimates predicted from a fresh IMU frame are fresh estimates even between baro updates.
+The first step after `Navigation::begin(referenceAltitude, nominalImuHz, quaternion)` uses the
+nominal period; later steps use the measured timestamp differences.
 
-`NavigationOutput::ruleSnapshot()` maps the fresh result to the rule evaluator, including
-invalid flags on rejected input. It does not execute rules or outputs. No live hardware sampling
-rates have been changed or tuned by this port.
+## Estimator
 
-## Preserved estimator behavior
+Each cycle runs, in order: attitude update, vertical projection, PAD baseline, phase detection,
+Kalman prediction, the PAD velocity constraint and, when a fresh barometer sample is available, the
+barometer correction. The detector uses the velocity from the previous cycle. In PAD and LANDED,
+vertical velocity and acceleration are pinned; LANDED accepts no new altitude corrections.
 
-Flight-phase transitions and their thresholds are specified in [state machines](state_macines.md#2-macchina-di-volo-normale--implementata).
-
-| Parameter/operation | Baseline retained |
+| Parameter | Value |
 |---|---|
-| Kalman state | z, vz, vertical accel bias |
-| Initial covariance | diag(10,10,1) |
+| Kalman state | Altitude, vertical velocity, vertical acceleration bias |
+| Initial covariance | diag(10, 10, 1) |
 | Acceleration process variance | 9.0 |
 | Bias random walk | 1e-4 |
-| PAD baro variance | 0.0225 |
-| Airborne baro variance | 0.49..6.25, quadratic with abs(vz)/120 |
+| Barometer variance | 0.0225 on PAD; 0.49 to 6.25 in flight, quadratic in \|vz\|/120 |
 | PAD velocity pseudo-measurement variance | 0.0025 |
-| Gravity compensation | 9.80665 m/s^2 |
-| AHRS correction gate | abs(accel magnitude - 9.81) < 0.2 |
-| AHRS beta | PAD .3, BOOST .1, COAST .5, DESCENT .3, LANDED .05 |
+| Gravity | 9.80665 m/s² |
+| Attitude correction gate | \|a\| within 0.2 of 9.81 m/s² |
+| Attitude gain (beta) | PAD 0.3, BOOST 0.1, COAST 0.5, DESCENT 0.3, LANDED 0.05 |
 | PAD baseline | 3 s stationary gate, 10 s low-pass time constant |
 
-Execution order is AHRS, vertical projection, baseline, phase detection, Kalman predict,
-PAD velocity constraint and fresh barometer correction. Baro variance follows velocity after
-prediction. Detector reads the previous cycle's velocity as in the baseline. PAD/LANDED pin
-vertical acceleration/velocity; LANDED does not accept new altitude corrections. Covariance
-still uses legacy (I-KH)P; no Joseph-form/noise redesign is introduced silently.
-In bistage mode the velocity-median window takes the freshly predicted/corrected velocity
-after the phase step; tilt and phase-ABORT decisions precede rule/output evaluation. See
-[state machines](state_macines.md) for priority and exact transitions.
+The covariance update uses the standard `(I − KH)P` form. In bistage mode the velocity-median
+window takes the velocity after this cycle's prediction and correction; tilt and ABORT are decided
+before rules and outputs run.
 
-## Deliberate adaptations and known inherited limits
+**Known limits**
 
-- Magnetometer correction and its API are removed, per the target specification.
-- APOGEE/CHUTE_DEPLOYED collapse to DESCENT; landing no longer needs deployment
-  confirmation. The detector has no actuator/deployment status inputs.
-- AHRS now integrates actual dt, matching Kalman timing. Legacy AHRS used a fixed
-  nominal period even when replay supplied variable dt to its Kalman filter.
-- Initial quaternions are validated/normalized; Euler asin is clamped to [-1,1].
-- Explicit input freshness prevents repeated pressure corrections. There is no
-  degraded-sensor strategy or indefinite fallback estimate guarantee.
-- PAD baseline scheduling remains legacy: the stationary gate and low-pass update
-  occur only on fresh barometer cycles, using that step's dt. Thus its wall-time
-  behavior depends on barometer cadence; fixing this requires a separate explicit
-  review rather than changing an inherited detector parameter during porting.
-- Legacy landing behavior is retained: after a valid stability window starts,
-  intervening missing barometer samples accumulate time, but landing is confirmed
-  only on a fresh barometer sample. A dedicated barometer-outage/reset policy
-  remains to be specified before live integration.
+- There is no magnetometer and no heading reference.
+- There is no strategy for a degraded or lost sensor beyond rejecting invalid data.
+- The PAD baseline and the landing window only advance on fresh barometer samples, so their
+  timing depends on the barometer rate.
 
 ## Calibration and mounting
 
-Accelerometer correction is `(raw - bias) * scale` per SENSOR axis, before mounting
-rotation. `flight::ImuCalibration` fits bias and scale from six stationary faces;
-the separate +X/+Y verification approves that revision. The same correction is used
-in verification, arming attitude initialization and flight processing. See
-[configuration procedure](CONFIGURATION.md#device-orientation-and-factory-reset) and
-[persistent journal](STORAGE_FORMAT.md#device-imu-calibration-journal-v1).
+Three corrections are applied to raw sensor data, in this order, before navigation sees it:
 
-Gyro bias must be measured before launch during each arming session, following Recovery System's
-stationary-sample approach. Keep its three values in RAM for that session only; recompute them on
-the next arming rather than loading them from flash. `ArmingCalibration` now implements this
-collector, entered only by physical mode in the shared controller. MAIN's physical readiness
-gate still blocks it on the current board; simulation never enters the collector.
+1. **Accelerometer**: `(raw − bias) × scale` per sensor axis, from the saved
+   [IMU calibration](#imu-calibration).
+2. **Gyroscope**: minus the bias measured at [arming](#gyroscope-and-reference-at-arming).
+3. **Mounting**: rotation from sensor axes to BODY.
 
-The collector averages 500 fresh finite IMU samples at least 10 ms apart, following the old
-500-sample/10 ms baseline without repeatedly counting the same register data. This is about
-five seconds at 100 Hz; a 120 Hz source may take longer because samples inside the spacing
-window are skipped. Launch reference is the mean of fresh pressure-altitude acquisitions,
-counted independently rather than weighting repeated barometer values as fresh samples.
+`SensorCalibration` carries all of them into `SensorPipeline::begin()`; it is copied at the start
+of a run and cleared at the end. Each flight header stores the values the flight used.
 
-The same 500 accepted IMU samples also average accelerometer specific force after subtracting
-the saved device acceleration bias and applying per-axis scale in SENSOR coordinates. The shared SENSOR-to-BODY mounting
-transform is then applied once. `AttitudeEstimator::fromGravity` constructs a normalized
-BODY-to-NAV quaternion that maps this upward vector to NAV +Z. For an upright BODY +X,
-the initial rotation is Ry(-90 degrees): vertical projection is correct from the first flight
-sample, and the X-up desktop reference displays zero attitude for the chosen transverse
-orientation. Gravity cannot determine heading about the vertical; the shortest rotation fixes
-that otherwise arbitrary reference, with a deterministic 180-degree fallback for inverted +Z.
-No calibration attitude is learned during flight. The quaternion is RAM-only, reset together
-with the gyro bias at every physical arming and discarded on disarm. Logged replay does not
-invoke this physical collector and retains its existing startup behavior.
+### IMU calibration
 
-Development stationary gates require corrected acceleration magnitude within 1 m/s^2 of
-9.80665 and raw gyro norm at most 0.5 rad/s. Invalid data, stale/future pressure or IMU gaps over
-100 ms restart the collection window; repeated/backward IMU identities/times do not count.
-Pressure must be finite/positive and no older than 100 ms. These collection gates still need
-qualification with the repaired physical IMU; no estimator/detector parameters changed. There
-is no automatic calibration timeout: progress remains visible and `disarm` cancels collection.
-An averaged acceleration magnitude below 8.80665 m/s^2 restarts the window as well, rejecting
-strongly cancelling gravity directions. Raw calibration samples and the initial quaternion are
-not persisted. The resulting biases, reference and mounting are frozen into each physical
-flight header; see [the snapshot format](STORAGE_FORMAT.md#per-flight-calibration-snapshot-header-v7).
-The recorded gyro bias is never reused for the next arming session.
+A six-face fit of per-axis bias and scale (no cross-axis terms), stored in its own 4 KiB flash
+sector with an approval record ([format](STORAGE_FORMAT.md#device-imu-calibration-journal-v1)).
 
-A separate pre-arm tilt-consistency/convergence gate is not implemented yet. Its future policy
-must tolerate normal wind-driven motion of a rocket on rail buttons: compare estimated gravity
-with measurements rather than require a fixed attitude. Yaw is not a convergence prerequisite.
-The earlier proposed strict one-second immobility thresholds are not adopted; thresholds and
-averaging windows need qualification with the repaired IMU. Initializing from mean gravity
-does not replace that future motion-consistency policy.
+| Command | Effect |
+|---|---|
+| `imu status` | Passive: procedure progress, completed faces, errors, bias, scale, revision and approval |
+| `imu begin` | Start a six-face calibration |
+| `imu capture <axis>` | Capture one face, `+X` … `-Z`: that sensor axis must point up |
+| `imu verify` | Start a verification: new `+X` and `+Y` captures with the saved coefficients |
+| `imu cancel` | Abandon the procedure |
 
-Persistent accelerometer calibration contains additive biases and per-axis scales in
-sensor coordinates; it does not fit a cross-axis matrix. The dedicated 4 KiB sector at
-0x000000..0x000FFF stores coefficients and their paired approval. Without a saved calibration, physical arming uses identity correction (zero bias, unit
-scale). An unsuccessful six-face attempt does not save its candidate or replace an existing
-record. The first physical arm persists identity before reserving approval, so the same
-post-Boost/reset verification lifecycle applies. A saved record requiring verification
-still blocks physical arm; simulation remains independent.
-Gravity is part of specific force, not an accelerometer bias to remove while stationary.
+Six accepted faces save a new revision that **requires verification**; a successful verification
+approves it. A failed attempt saves nothing. Each capture needs at least 240 fresh samples over two
+continuous seconds with the board still; motion, invalid data or a gap over 100 ms restarts it.
+Acceptance limits:
 
-`SensorCalibration` is the RAM snapshot passed to `SensorPipeline::begin()`. Its `configured`
-flag means arming gyro bias and initial attitude are ready. The physical controller
-injects saved accelerometer bias, scale and revision after checking approval. The
-snapshot is copied at begin and cleared at end. Gyro subtraction and accelerometer
-bias/scale correction precede mounting transformation.
+| Check | Limit |
+|---|---|
+| Raw magnitude during calibration | Within 2 m/s² of gravity |
+| Corrected magnitude during verification | Within 0.35 m/s² of gravity |
+| Gyroscope norm | Below 0.1 rad/s |
+| Expected axis / transverse axes | Above 0.94 g / below 0.15 g |
+| Per-axis standard deviation | At most 0.12 m/s² |
+| Fit residual, bias, scale | ≤ 0.4 m/s², within ±2 m/s², 0.8 to 1.2 |
 
-Mounting is one `upAxis` field identifying the signed sensor axis pointing toward the nose
-(up on an upright launch pad). The orientation must be explicitly saved before physical arming; the six options fix the following
-right-handed BODY convention for both corrected vectors:
+A procedure takes the configuration lock and link ownership, blocks sleep and runs, and never
+enables outputs. It survives a disconnect and times out 180 s after the last capture request.
 
-| Noseward sensor axis | BODY X | BODY Y | BODY Z |
+**Approval lifecycle.** Physical ARM is blocked while the calibration is missing or needs
+verification (`IMU_CALIBRATION_MISSING`, `IMU_VERIFICATION_REQUIRED`). A physical flight that
+reaches BOOST, or a reboot while armed, uses up the approval and requires a new verification; a
+disarm before launch and simulations keep it. If no calibration was ever saved, the first physical
+ARM stores an identity calibration (zero bias, unit scale) so the same lifecycle applies. A failed
+verification after use revokes that identity permanently.
+
+### Gyroscope and reference at arming
+
+Every physical ARM measures the gyroscope bias and the gravity direction again, with the rocket at
+rest; they are kept in RAM for that run only and never reused. Simulation skips this step.
+
+- 500 fresh IMU samples at least 10 ms apart (about 5 s), plus the mean barometric altitude as the
+  launch reference.
+- A sample counts only if the corrected acceleration is within 1 m/s² of gravity, the gyroscope
+  norm is at most 0.5 rad/s and a barometer sample no older than 100 ms is available. A gap over
+  100 ms, or an averaged acceleration below 8.81 m/s², restarts the window.
+- There is no timeout; progress appears in `status` and DISARM cancels.
+
+The averaged acceleration, after accelerometer correction and mounting, gives the initial attitude
+(`AttitudeEstimator::fromGravity`): the shortest rotation that maps it to NAV +Z. Gravity cannot
+determine heading, so the rotation around the vertical is a fixed convention. In bistage mode the
+attitude is aligned again from the first valid PAD sample close to 1 g.
+
+There is no pre-launch check that the attitude has converged; such a check would have to tolerate
+a rocket moving in the wind on its rail.
+
+### Mounting
+
+The mounting is one saved setting, the signed sensor axis that points to the nose
+(`config orientation <axis>`, see [Configuration](CONFIGURATION.md#device-settings)). It must be
+saved explicitly before physical ARM. Each choice fixes a right-handed BODY frame:
+
+| Sensor axis to nose | BODY X | BODY Y | BODY Z |
 |---|---|---|---|
 | +X | x | y | z |
 | -X | -x | y | -z |
@@ -166,41 +147,18 @@ right-handed BODY convention for both corrected vectors:
 | +Z | z | y | -x |
 | -Z | -z | y | x |
 
-No arbitrary rotation matrix is exposed. This supports axis-aligned installations; a tilted
-installation needs a later extension. Rotation around the rocket's length is a chosen coordinate
-convention, sufficient for current vertical navigation and phase detection, not a measured
-physical roll reference for future directional control. Mounting is a device setting separate
-from bias calibration; it is persisted separately from deployment rules via `config orientation [+X|-X|+Y|-Y|+Z|-Z]` and selected in the desktop Settings page. Normal physical arming passes this saved axis into the calibration/pipeline snapshot; simulation and logged BODY replays retain their source convention.
+Only axis-aligned installations are supported. The roll reference around the rocket's length is a
+convention, enough for vertical navigation and phase detection but not a measured roll reference.
+Simulation and replayed BODY data keep their own frame and ignore the saved mounting.
 
-### Recovery System reference and current integration
+## Replay and verification
 
-The old `applySensorToBodyFrame` implements x=-z, y=y, z=x despite a contradictory nearby
-comment. Do not blindly reuse it on the new board. The input boundary is already calibrated BODY
-data; a new physical board adapter must explicitly apply its verified mounting transform and
-arming gyro bias/launch reference.
+The embedded Hoppino flight contains BODY data that was already calibrated when it was logged, so
+replays apply no second rotation or bias. Its pressure is converted from hPa to Pa, and its launch
+reference is the mean altitude of the first second.
 
-The old main logs data **after** `applyArmBiases` and `applySensorToBodyFrame`. Hoppino's
-accel/gyro columns are therefore treated as logged calibrated BODY data; no second rotation or
-gyro-bias subtraction is applied in this replay. The pressure column is hPa and explicitly
-converted to Pa. Pre-arming calibration samples and the exact historical launch-altitude
-reference aren't in this recording. Replay uses the initial one-second pressure-altitude mean as
-an offline approximation, not a newly implemented arming-calibration procedure.
-
-MAIN runs this code through the shared SensorPipeline with USB HIL or the onboard
-Hoppino replay source. See [architecture](ARCHITECTURE.md) and [simulation](../testing/SIMULATION.md).
-`HardwareSensorSource` now adapts fresh driver readings to the same runtime. MAIN uses it for
-idle diagnostics and real physical arming/flight. The current board's IMU solder fault still
-blocks physical readiness. Physical output integration exists and opt-in physical simulation
-uses it. Persistent accelerometer storage is implemented; repaired-sensor acquisition
-and numerical-threshold qualification remain hardware work.
-
-## Verification
-
-`python tools/replay/replay_navigation.py` is the independent PC sensor replay. Recorded
-estimates/phases are comparison-only; changing them or converting hPa to Pa cannot change
-computed navigation. Unit/integration checks cover estimator kinematics/bias/covariance,
-attitude normalization, phases, freshness and invalid
-input freeze. [Validation](../testing/VALIDATION.md#navigation-reference) records
-Hoppino timestamps and differences, which are regression evidence rather than
-physical accuracy measurements. [The test guide](../testing/README.md) is the
-single entry point for complete regression checks.
+`python tools/replay/replay_navigation.py` replays recorded sensor data through an independent PC
+implementation; the recorded estimates are used only for comparison. Host tests cover kinematics,
+bias, covariance, attitude normalization, phases, freshness and invalid-input handling. See the
+[test guide](../testing/README.md) and the dated comparisons in
+[Validation](../testing/VALIDATION.md#navigation-reference).

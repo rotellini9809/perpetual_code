@@ -211,5 +211,4 @@ class ConfigurationPage(QWidget):
         self.controller.reload_config()
 
     def apply_configuration(self):
-        if QMessageBox.question(self,t('Apply configuration'),t('Save the validated draft to the board memory?'))==QMessageBox.StandardButton.Yes:
-            self.controller.validate(apply=True)
+        self.controller.validate(apply=True)

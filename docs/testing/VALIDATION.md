@@ -465,23 +465,69 @@ Key export/verification artifacts:
 - Sequence 9/6 identical CSV SHA256:
   `5f2146e0f89ed2de3149309166174b4f3ff59cd4f6cc1aed073df996203a586f`.
 
+## Sensor rate, flash speed and flight log v4 - 18 November 2026
+
+Observed on the Waveshare RP2350 board on COM11, disarmed, no outputs commanded. Artifacts were
+kept in a session scratch folder only; the numbers below are the record.
+
+**Sensor SPI.** The SENSOR_TEST `f` sweep (2000 rounds per clock of ID reads, configuration
+bursts compared with a 1 MHz reference and live-data plausibility, production pull-up chip
+selects) was error-free for both sensors from 1 to 25 MHz; at 37.5 MHz every IMU check failed while
+the barometer still passed. Both sensors now run at a 10 MHz request (9.375 MHz actual), about
+2.7x below the highest clock seen working; a 16-byte IMU burst takes 33 us instead of 159 us.
+
+**IMU rate.** Accelerometer and gyroscope run at the 480 Hz setting; the factory oscillator trim
+(INTERNAL_FREQ_FINE = -6, about -0.8 %) makes the true rate 476.3 Hz. A single-transaction
+STATUS_REG + data read lost samples (74 Hz in a tight loop, 464 Hz in MAIN) because reading the
+outputs clears data-ready. Through the stream FIFO the idle loop measured **476.2 Hz over 30 s
+with 0 sequence gaps, 0 FIFO overruns and 0 tag errors**, although 107 loop pauses exceeded one
+IMU period (worst 3.5 ms). After the half-period minimum spacing, frame dt stayed within
+1870-2162 us; acquisition used about 6 % of core 0.
+
+**Navigation cost.** The onboard Hoppino replay (6600 steps at 200 Hz) measured filter plus rules
+at a mean of 302 us and a maximum of 763 us per step without recording, 394 us / 1007 us with
+recording enqueue (about 20 % of core 0 at 476 Hz against a 2100 us budget).
+
+**Flash.** The FLASH_TEST `c` sweep (JEDEC, 64 KiB CRC with 0x03 and 0x0B, one programmed page per
+clock in the backed-up test sector, restored and verified) passed up to 37.5 MHz; 75 MHz failed
+identification and SPI0 cannot produce 50 MHz. The board now uses 18.75 MHz. With the v3 log,
+the recording worker went from 21.8 ms per 1 KiB block (4 MHz, 1 ms busy sleeps) to 8.3 ms
+(18.75 MHz, 10 us polling, no pre-write read for sample pages) and 6.3 ms (nibble-table CRC, no
+fixed transaction delays); 1 MiB preparation went from 11.9 s to 7.9 s and then 3.3 s with
+64 KiB block erases.
+
+**Flight log v4.** Recording the Hoppino replay into 1 MiB (sequence 7) saved **5137 of 6600
+samples**: the 8.2 s of PAD were reduced to 175 pre-launch history samples and everything from
+BOOST on was kept, with **0 dropped**, no recording error and preparation in 3.28 s. The 93 blocks
+held about 55 samples each and cost about 7.8 ms of worker time per block including the
+read-back (about 7 % of core 1 at 476 Hz, against about 33 % for v3). Writing the history at
+boost was the longest worker job, 64 ms, with a queue peak of 15 of 128. The production
+downloader fetched the 93 raw blocks in **3.0 s**; the CSV showed BOOST at 8.202 s, LANDED at the
+end, maximum altitude 52.17 m, both virtual pyro starts at 13.056 s, 1337 rows with a fresh
+barometer reading and 77 deliberate history gaps. Every test flight was deleted afterwards.
+
+**Host.** All 36 runs of `python tools/run_tests.py --full --desktop` passed with the pinned
+WinLibs GCC 14.2 (ISO C++17, the firmware's compiler generation), including synchronous and
+queued USB recording/download of the Hoppino HIL flight compared sample by sample within half a
+stored LSB, and 2049 power cuts across one v4 block write.
+
 ## Remaining work and limits
 
 Dated observations above retain the firmware/format used at the time. In particular, older
-v2 log and default-mounting observations do not describe current header v4 or the explicit
-orientation requirement. Current implementation is documented in [technical references](../README.md).
+v2/v3 log and default-mounting observations do not describe the current recording header v8,
+flight log v4 or the explicit orientation requirement. Current implementation is documented in [technical references](../README.md).
 
 | Area | Current qualification limit |
 |---|---|
-| Real sensors | Barometer-only acquisition verified; IMU solder fault and repaired-device cadence/pairing/arming collection still need board validation |
-| Calibration and attitude | Per-arming gyro/reference collector and explicit persistent mounting exist; accelerometer calibration persistence/UI and initial-attitude/tilt qualification remain open |
-| Physical outputs | Shared execution, preparation/release and physical simulation are implemented and host-tested; actual electrical/mechanical behavior, interruption and load margins still need bench acceptance |
+| Real sensors | Idle IMU cadence/pairing measured (476.2 Hz over 30 s, no gaps; see [Hardware](../HARDWARE.md#sensors)); gyroscope collection during a physical arming still needs board validation |
+| Calibration and attitude | Per-arming gyro/reference collector, persistent mounting and six-face accelerometer calibration (persistence and UI) exist. The board still uses identity calibration values; initial-attitude/tilt qualification remains open |
+| Physical outputs | Shared execution, preparation/release and physical simulation are implemented and host-tested; pyro firing with real igniters works on the board. Servo mechanical behavior, interruption and load margins still need bench acceptance |
 | Driver timeout | Timeout disables driver readiness; recorder recovery cannot reinitialize it. Restart/reinitialization remains the current route |
-| Interrupted/old headers | Unsupported versions fail without migration; current recording header is v4 and rule codec is v2. Explicit flight-memory format starts fresh |
-| Scheduler and storage | Worker close is asynchronous, but a stalled worker retains ownership; idle preparation/settings/scans stay synchronous. Worst-case timing, stack high-water, watchdog and physical brownout coverage are not established |
-| Desktop and transports | Six-view USB/SPP app, orientation, reset/format and power management exist. Separate-Windows qualification, BLE and negotiated binary export remain open |
+| Interrupted/old headers | Unsupported versions fail without migration; current recording header is v8 with sample blocks v4, and the configuration codec is v3. Explicit flight-memory format starts fresh |
+| Scheduler and storage | Worker close is asynchronous, but a stalled worker retains ownership; idle preparation/settings/scans stay synchronous. The pre-launch history write at boost measured 64 ms on the Hoppino replay; worst-case timing at 476 Hz in a real flight, stack high-water, watchdog and physical brownout coverage are not established |
+| Desktop and transports | Six-view USB/SPP app, IMU calibration, orientation, reset/format and power management exist. Separate-Windows qualification, BLE and negotiated binary export remain open |
 
-The [documentation map](../README.md#remaining-work-and-documentation-gaps) owns the consolidated
+The [documentation map](../README.md#remaining-work) owns the consolidated
 implementation/design backlog. These rows describe evidence limits, not another requirements list.
 Host NOR byte cuts model persistence protocols; a restart after a completed recording is not a
 physical interruption during program/erase. Normal-profile maxima are not worst-case guarantees.

@@ -6,7 +6,7 @@ Host sensor HIL and onboard Hoppino simulation share
 recording. They also use the same ArmingController as physical operation: simulation starts
 immediately without real sensor checks or gyro calibration. Physical preflight/calibration are
 implemented; normal flight uses the same output executor after explicit servo preparation and
-real sensor checks. The current board's IMU fault remains a blocker.
+real sensor checks.
 Estimate replay intentionally bypasses navigation and remains an independent rule reference.
 
 ## Choose the input
@@ -21,8 +21,9 @@ Estimate replay intentionally bypasses navigation and remains an independent rul
 
 Default Hoppino source: [`datasets/hoppino_VOLO_UFFICIALE.csv`](../../datasets/hoppino_VOLO_UFFICIALE.csv),
 is the 2..35-second excerpt of Recovery System's official flight log. All replay runners and
-recorded integration tests use these 6600 samples. The first retained row, originally 2003 ms,
-is timestamp zero; the last, originally 34998 ms, is now 32995 ms. Sample intervals, missing
+recorded integration tests use these 6600 samples. Time is the `t_us` column in microseconds
+(whole milliseconds, like the original log). The first retained row, originally 2.003 s, is
+timestamp zero; the last, originally 34.998 s, is now 32 995 000 us. Sample intervals, missing
 values, measurement/estimate values and columns are preserved: BODY acceleration is m/s²,
 gyro rad/s and pressure hPa. This excerpt retains about 8.2 seconds of PAD and 2.8 seconds after detected LANDED,
 including the complete ascent and descent. The untouched original is stored alongside it as
@@ -39,7 +40,7 @@ must not overwrite a file. Fixtures are test settings, not flight recommendation
 The same commands/runners also work over the outgoing Bluetooth SPP port (`--port COM11` on
 this PC). The JDY-34 UART is currently 9600 baud: full recorded HIL/download is much slower
 there, so USB is preferred for bulk traffic. Onboard simulation sends only control/status,
-making it a useful Bluetooth test. See [shared transport ownership](../technical/USB.md#control-ownership-and-connection-checks).
+making it a useful Bluetooth test. See [shared transport ownership](../technical/USB.md#ownership).
 
 ## PC references
 
@@ -125,7 +126,7 @@ simulation reuses valid preparation. Idle preparation does not block HIL/estimat
 The board reads the official Hoppino sensor log from a const table in program flash, one
 sample at a time without a RAM dataset copy or external recording-flash allocation. The
 previous synthetic profile is replaced, with no profile selector. There are 6600 readings over
-32995 ms; timestamps are normalized to the first row. Real recorded gyro/acceleration,
+32.995 s; timestamps are microseconds normalized to the first row. Real recorded gyro/acceleration,
 temperature, pressure and missing values are retained. Pressure is converted once to Pa;
 stored estimates, Euler angles, magnetometer and phase never enter the table. Reference altitude
 and nominal 200 Hz match PC sensor HIL's initial one-second pressure mean and median period.

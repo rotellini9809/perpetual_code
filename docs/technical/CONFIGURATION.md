@@ -1,290 +1,159 @@
 # Configuration and recovery rules
 
-`RecoveryConfiguration` is a fixed-array RAM model with a pure validator, not a wire/storage
-struct. `ConfigurationService` owns applied/draft plans; rule triggers, rule delay timers,
-readiness and action starts are separate. Each rule has one common delay, and each output
-adds its own channel delay (zero by default).
+The configuration says when each output fires. It is a set of **rules**: each rule has
+conditions, a delay and the outputs it drives. It also holds the servo end points and the
+[airbrake](AIRBRAKES.md) gate. Device settings stored next to it (board orientation, state
+machine, airbrake enable) are covered [below](#device-settings).
 
-## Model and validation
+`RecoveryConfiguration` is the in-memory model with a pure validator, `RecoveryRuleEngine`
+evaluates it during a run, and `ConfigurationService` owns the applied configuration and the
+per-connection draft. None of them depends on hardware, transport or storage.
 
-There are four pyro and four servo channels. Each physical channel belongs to at most one rule,
-including within the same rule. All configured rules are active and once per run; there are no
-enabled/repeat fields. Stable nonzero rule IDs define references; duplicate names are allowed.
-Renaming/list order cannot change dependencies. Self/missing references, cycles, empty
-conditions/outputs, invalid numbers and duplicate ownership are rejected. Rules may be saved
-with assigned servos still unset. Physical arming requires configured endpoints, which may
-run in either direction; missing setup is reported as `SERVOS_NOT_CONFIGURED` with a channel
-mask. Virtual simulation does not require setup for ordinary once-only servo outputs;
-continuous airbrakes require distinct calibrated endpoints in every mode. Entirely unset settings may remain
-zero; explicitly populated settings are validated. The empty model is invalid.
+## Rules
 
-Altitude is launch-relative metres; speed means abs(vertical velocity), not total speed.
-Altitude comparisons are strict, speed comparisons inclusive, and ranges include both endpoints
-(equal bounds allowed). Phase masks contain BOOST/COAST for both stages and DESCENT; PAD, LANDED and ABORT cannot trigger rules. Runtime limits are
-application policy, exposed through capabilities; they are development bounds, not recommended
-flight settings. Validation identifies the first error, field, rule ID and zero-based index.
-Names reject blank/control/ unterminated values; current USB/Bluetooth accepts ASCII rather than full
-UTF-8.
+- There are **4 pyro** and **4 servo** channels. A channel belongs to at most one rule.
+- Up to **8 rules**, each with up to **8 conditions** and **8 outputs**. Names are up to 47 ASCII
+  bytes; duplicates are allowed.
+- Each rule has a stable non-zero ID used for references, so renaming or reordering never changes
+  dependencies. The app hides IDs and shows names.
+- Every rule is active and runs at most once per flight.
+- A configuration with no rules and no airbrakes is invalid.
 
-## Rule evaluation
+**Conditions** of a rule are combined with AND:
 
-- Call `begin` once with a valid plan, explicit validation limits and a positive
-  maximum input age. An active engine rejects replacement. Call `end` before a
-  new flight; begin clears all runtime flags and timers.
-- Pass monotonic 64-bit milliseconds to `evaluate`. The caller must extend a
-  hardware timer across rollover. Backward time is rejected without mutation.
-  Snapshot sequence numbers must increase within a flight.
-- Phase comes from the navigation detector adapter, using the new explicit enum.
-  It must be valid, current and accompanied by an acquisition timestamp. The
-  first observed airborne phase latches launch; first DESCENT latches apogee,
-  using their supplied phase timestamps. This is not an apogee detector. The
-  adapter must deliver transitions promptly for accurate event-relative timing.
-- PAD and LANDED never trigger rules. LANDED is latched until a new flight.
-  All condition rows combine with AND. Rules evaluate prior trigger state,
-  then commit together; zero-delay rule dependencies wait for the next evaluation.
-- Each numeric estimate has validity, sequence and measurement time. Conditions
-  requiring an estimate reject non-finite, repeated, future or stale values.
-  Untriggered rules require fresh inputs; independent conditions do not require unused
-  numeric inputs to be valid.
-- The first evaluation where all conditions are true latches the rule trigger and
-  schedules its outputs. Its delay then runs without rechecking those conditions,
-  even if inputs become invalid, a gap occurs or conditions become false. A zero
-  rule and channel delay starts an output in that evaluation. `since_rule_ms` counts from the latched
-  trigger time, not from the later output start. This is not a persistence/debounce timer.
-- Each assigned output starts at the first evaluation on or after the sum of the rule's
-  delay and its own channel delay expires. Both delays default to zero and each is bounded by
-  `max_timing_ms`; their sum is evaluated in 64 bits. `Evaluation.starts` returns all starts
-  for that call (up to eight), labelled by rule/channel and actual logical start
-  time. Zero is valid. Consume results immediately; persistent runtime action
-  state also retains first start time. There is no physical command or pulse here.
-- Previously scheduled starts can occur after LANDED within the lifecycle window. The owner
-  must call `closeStarts` at the post-landing deadline or accepted manual disarm.
-  It cancels pending starts and prevents further triggers/starts. `end` also
-  closes starts. This component does not select the post-landing interval,
-  implement physical movement completion, finalize storage or authorize disarm.
+| Type | Parameters | Meaning |
+|---|---|---|
+| `apogee` | — | Apogee detected (first DESCENT) |
+| `phase` | `ascent`, `descent`, `airborne` or a numeric mask | The rocket is in one of the phases |
+| `altitude` | `<` or `>`, value | Altitude above the launch point, metres (strict comparison) |
+| `altitude_range` | lower, upper | Altitude within the range, ends included |
+| `speed` | `<=` or `>=`, value | Absolute vertical speed, m/s |
+| `speed_range` | lower, upper | Absolute vertical speed within the range, ends included |
+| `since_launch_ms` | ms | Time since launch |
+| `since_apogee_ms` | ms | Time since apogee |
+| `since_rule_ms` | rule ID, ms | Time since another rule triggered |
 
-Re-reading an unchanged hardware register is not a new measurement and cannot newly trigger a
-rule requiring that estimate. Already latched rule delays continue independently of acquisitions.
+Phase masks: BOOST (or BOOST 1) = 2, COAST (or COAST 1) = 4, DESCENT = 8, BOOST 2 = 32,
+COAST 2 = 64. `ascent` = 102, `descent` = 8, `airborne` = 110. PAD, LANDED and ABORT can never
+trigger a rule.
 
-`RunController` closes pending starts after the development 15-second post-landing window;
-EOF/manual stop can cancel them earlier. The engine has no actuator API.
+**Timing.** A rule **triggers** at the first evaluation where all its conditions are true. From
+then on its conditions are no longer checked: the rule delay runs even if they become false or the
+data becomes invalid. Each output starts when the rule delay plus its own **channel delay** has
+elapsed. Both delays default to zero and are at most `max_timing_ms` (3600000 ms). A
+`since_rule_ms` condition counts from the referenced rule's trigger, not from its outputs.
 
-## Save/load policy
+**Outputs.** A pyro output fires one fixed pulse: 10 ms to settle the shared enable, then 1000 ms
+on. A servo output moves from its initial to its final PWM position (1000–2000 µs) and holds it.
+Servo end points can be saved later than the rule, but physical ARM is refused
+(`SERVOS_NOT_CONFIGURED`) until every servo used by a rule has them. Virtual simulation does not
+need them, except for airbrakes.
 
-`ConfigurationStore` holds one saved copy. Load checks version, integrity and current semantic
-policy before assigning output; it never formats or installs defaults. An explicit disarmed
-Apply validates/encodes in RAM, invalidates prior applied-plan readiness, erases only
-`0x001000..0x001FFF`, writes/verifies pages and commit, then reloads through the boot path.
-Supported payload plus metadata fits one sector; compile-time/runtime bounds enforce that. The
-remaining sectors are not touched by rule Apply. Board orientation uses a separate sector
-within that reservation; see [the memory map](STORAGE_FORMAT.md#board-mounting-record).
+**Validation** rejects missing or self references, cycles between rules, empty conditions or
+outputs, invalid numbers and channels used twice, and reports the first error with its field,
+rule ID and index. An intermediate draft may be invalid while you edit it.
 
-An interrupted replacement may lose the old copy. On failure the draft remains, but the old RAM
-plan cannot silently reactivate. A storage fault disables further saves until reinitialization
-(currently reboot). ConfigError values are None, Armed, InvalidConfiguration, Io, Missing,
-UnsupportedVersion and Corrupt. These operations are synchronous and require exclusive idle
-flash ownership.
-See [the binary specification](STORAGE_FORMAT.md#configuration-package) for offsets.
+## How a rule is evaluated
 
-## First device example
+During a run the engine receives the flight phase and the estimates from navigation, each with
+its validity, sequence number and timestamp. A condition that needs an estimate ignores values
+that are not finite, repeated, from the future or stale; re-reading an unchanged sensor is never
+a new measurement. All rules are evaluated against the previous trigger state and then committed
+together, so a dependency with zero delay starts on the next evaluation.
 
-Upload with `-D MAIN` (already selected), open the monitor at 115200 and issue one line at a
-time, waiting for each reply:
+Launch is latched at the first airborne phase and apogee at the first DESCENT, using the phase
+timestamps. Fifteen seconds after landing, or at an accepted DISARM, the run closes: pending
+starts are cancelled and nothing new triggers. Output timing on the hardware belongs to
+`OutputExecutor`; see [Architecture](ARCHITECTURE.md#runs-and-arming).
+
+## Drafts
+
+Edits never touch the applied configuration directly. They go into a **draft** owned by the
+connection that opened it; a disconnect discards the draft, never the applied settings.
+
+| Command | Effect |
+|---|---|
+| `config show` | Applied configuration availability, store error and rule IDs |
+| `config begin` | Start a draft: a copy of the applied configuration, or empty if there is none |
+| `config draft` | Draft availability and rule IDs |
+| `config validate` | Validate the draft; returns the first error with field, rule and index |
+| `config apply` | Validate, save, read back and verify, then make it the applied configuration |
+| `config discard` | Drop the draft |
+| `capabilities` | Firmware limits used by the validator and the app |
+
+Edits require a disarmed board and an active draft; `config begin` refuses if a draft already
+exists. Apply replies `"applied":true,"persisted":true,"verified":true` on success.
+
+The board keeps **one** saved copy. Boot loads and checks it; missing or invalid settings leave
+the board without a configuration, and the board never formats anything or installs a default.
+If a save fails after it started, the old copy may be lost: the draft stays available, the old
+plan is not silently reactivated, and further saves are disabled until reboot. Load and save
+errors are `Missing`, `Corrupt`, `UnsupportedVersion`, `InvalidConfiguration` and `Io`. Binary
+layout: [Storage format](STORAGE_FORMAT.md#configuration-package).
+
+## Editing commands
+
+Quote names with spaces; inside quotes, backslash escapes only `"` and `\`. Indices are
+zero-based and shift after a removal. Channels are 1–4. Durations are integer milliseconds,
+servo positions microseconds, altitudes metres above launch, speeds absolute vertical m/s.
 
 ```text
-status
-capabilities
-config show
+rule list | add <id> "<name>" | show <id> | rename <id> "<name>" | delay <id> <ms> | remove <id>
+condition add <rule_id> <type> [parameters]
+condition replace <rule_id> <index> <type> [parameters]
+condition remove|show <rule_id> <index>
+output assign <rule_id> pyro|servo <channel> [delay_ms]
+output unassign <rule_id> pyro|servo <channel>
+output show <rule_id> <index>
+servo set <channel> <initial_us> <final_us>
+servo show <channel>
+pyro show <channel>
+pyro continuity
+```
+
+`show` commands read the draft if one is active, otherwise the applied configuration, and say
+which. Replies are paged per rule, condition and output so each fits in one reply.
+
+`servo set` only stores end points; it never moves a servo. To find end points, the app uses
+`servo preview` (see [USB/Bluetooth](USB.md#arming-and-outputs)).
+
+`pyro continuity` reads the pyros used by the applied rules and returns `configured_pyro_mask`,
+`connected_pyro_mask`, `failed_pyro_mask` and `all_connected`. An open circuit is a valid result,
+not an error. It is refused during runs, storage work or a draft, and never approves arming:
+`preflight` and `arm` always measure again.
+
+**Example**, typed in a serial monitor one line at a time:
+
+```text
 config begin
-rule add 10 "USB example"
-pyro set 1 100
+rule add 10 "DROGUE"
 condition add 10 apogee
 output assign 10 pyro 1
 config validate
 config apply
-status
 ```
 
-On a board with missing/invalid settings, begin creates an empty draft. If valid settings
-already exist, begin copies them; use `rule list`/`rule show` to inspect them first rather than
-re-adding the same ID. No active default plan is created.
+## Device settings
 
-Expected Apply fields: `"applied":true,"persisted":true,"verified":true`. Status then reports
-valid configuration, but ready remains false. Reboot and run `config show`, `rule show 10`,
-`pyro show 1`: saved settings should load again. Draft edits alone never change applied settings
-or flash.
+These settings are separate from the rule draft. Changing them requires a disarmed, idle board
+and no active draft.
 
-## Draft lifecycle
-
-| Command | Behavior |
+| Command | Effect |
 |---|---|
-| config show | Applied-plan availability, store error and rule IDs |
-| config begin | Start a draft from applied settings, or empty if no valid settings |
-| config draft | Draft availability and rule IDs |
-| config validate | Validate active draft, returning error/field/rule/index |
-| config apply | Validate, save single copy, reload/verify, then activate |
-| config discard | Discard the draft, leaving applied settings unchanged |
-| capabilities | Firmware structural and numeric limits |
+| `config orientation` | Read `up_axis` and `orientation_ready` |
+| `config orientation <axis>` | Save the sensor axis pointing to the rocket nose: `+X`, `-X`, `+Y`, `-Y`, `+Z` or `-Z` |
+| `config machine …` | Normal or bistage flight machine; see [State machines](STATE_MACHINES.md#machine-selection) |
+| `config airbrakes [on\|off]` | Airbrake enable; see [Airbrakes](AIRBRAKES.md) |
+| `config reset` | Factory reset: clears rules, draft, servo end points, orientation, the machine selection (back to normal) and the airbrake enable (back to off). Keeps recorded flights and the IMU calibration |
 
-Mutations require disarmed state and an active draft. Begin rejects an existing draft; discard
-explicitly before starting over. Validation failures leave flash and applied settings unchanged.
-Once a flash save is attempted, failure invalidates the applied-plan flag because the single old
-copy may have been destroyed; draft remains available. A storage fault disables further saves
-until reinitialization (currently reboot). Missing/corrupt saved settings block validity but do
-not prevent creating a replacement draft when the driver is healthy.
+The orientation has no default: physical preflight reports `ORIENTATION_NOT_READY` until an axis
+is saved explicitly, even `+X`. Its meaning is defined in
+[Navigation](NAVIGATION.md#calibration-and-mounting). Reset replies `reset`, `persisted` and
+`verified` only after the erase has been read back.
 
-Disconnect discards the draft, not applied settings. Store errors are visible in status/config
-show. The lifecycle owner supplies authoritative disarmed state; the router also rejects mutations
-while a run or recording worker owns the device.
+## Airbrakes
 
-## Editing and inspection
-
-Names with spaces must be quoted. Inside quotes, backslash escapes only quote and backslash. IDs
-are stable nonzero unsigned 32-bit integers. Indices below are **zero-based** and shift after a
-condition/output removal. Channel numbers are 1..4. All durations are integer
-**milliseconds**, servo pulses **microseconds**, altitudes **metres relative to launch**, speeds
-**abs(vz) in m/s**.
-
-```text
-rule list
-rule add <id> "<name>"
-rule show <id>
-rule rename <id> "<name>"
-rule delay <id> <ms>
-rule remove <id>
-
-pyro show <channel>
-pyro continuity
-pyro set <channel> <pulse_ms>
-servo show <channel>
-servo set <channel> <initial_us> <final_us>
-
-condition add <rule_id> <type> [parameters]
-condition replace <rule_id> <index> <type> [parameters]
-condition remove <rule_id> <index>
-condition show <rule_id> <index>
-
-output assign <rule_id> pyro|servo <channel> [delay_ms]
-output unassign <rule_id> pyro|servo <channel>
-output show <rule_id> <index>
-```
-
-`pyro continuity` reads only assigned pyro channels and returns `configured_pyro_mask`,
-`connected_pyro_mask`, `failed_pyro_mask` and `all_connected`. An open circuit is a successful
-measurement with `all_connected:false`, not a command error. Reads are refused during active
-runs, storage work or a configuration draft. The command does not move servos, fire outputs,
-read sensors or approve arming; preflight and Arm always repeat the hardware measurement.
-
-Each output has an additional delay (zero when omitted in `output assign`). `output show`
-returns `delay_ms`; capabilities advertises `output_delays:true`. Configuration codec v3 stores
-the rule delay and each channel's additional delay as integer milliseconds. Exported rule and
-output snapshots both use `delay_ms`. Only this configuration format is supported.
-
-Physical flight and physical simulation share `OutputExecutor`; virtual simulation reports
-actions without hardware actuation. The pyro policy has a fixed 10 ms enable-settle interval followed by one
-1000 ms pulse, then switches off and marks the channel fired. There is no retry sequence yet.
-Assigning any pyro initializes its stored `pulse_ms` to the firmware policy automatically.
-The GUI displays this fixed profile from capabilities and has no editable pyro-duration field;
-its `Plan` no longer includes pyro settings. The raw development `pyro set` command remains for
-metadata tooling and cannot change `PyroController` timing. Servo settings contain only the
-configured flag and initial/final PWM. The executor commands the endpoints directly and holds
-PWM until lifecycle shutdown.
-
-`servo set` records explicitly supplied calibration endpoints only; it does not move or prepare
-a servo and does not prove mechanical calibration. The [desktop editor](DESKTOP.md#configuration-and-servo-editor) uses `servo preview <channel> <pwm>`
-for explicit positioning. `servo release <channel>` releases only
-that positioning PWM; the editor sends it on closing. Positioning is disarmed/idle only, validates
-PWM against firmware limits, works before endpoints are saved and never writes flash. It invalidates
-preparation for that channel and blocks arming/simulation until released; owner disconnect also
-releases previews. **Conferma** changes only the local draft.
-`servo arm` prepares applied initial PWM; `arm` runs physical preflight. Direct single-channel
-tests remain future work. Detailed show commands inspect the
-draft if one is active, otherwise applied settings; every response labels its view. `config
-show` always describes applied availability; it does not export every field at once. Use
-detailed show commands for complete paged readback. Removing a referenced rule reports the
-referencing ID. Assigning a channel already owned by a rule is rejected immediately.
-
-Condition types:
-
-| Type | Parameters |
-|---|---|
-| apogee | None |
-| phase | ascent (102), descent (8), airborne (110), or numeric mask: BOOST 1/normal=2, COAST 1/normal=4, BOOST 2=32, COAST 2=64 |
-| altitude | `<` or `>` then value |
-| altitude_range | Inclusive lower, upper |
-| speed | `<=` or `>=` then nonnegative value |
-| speed_range | Inclusive nonnegative lower, upper |
-| since_launch_ms | Minimum elapsed ms |
-| since_apogee_ms | Minimum elapsed ms |
-| since_rule_ms | Referenced rule ID, minimum elapsed ms |
-
-Some edits can intentionally leave an invalid intermediate draft (for example a new rule without
-outputs or conditions). Validate/Apply enforce all semantic requirements and cycle checks.
-Numeric parsing rejects negatives for unsigned fields, overflow, non-finite floats and
-out-of-range actuator values. Ranges and references are checked by full draft validation. There
-is no arbitrary formula language. condition show reports the format's numeric type/comparison
-codes.
-
-Initial development policy: servo 1000..2000 us; fixed pyro pulse 1000 ms;
-rule-delay/event timing up to 3600000 ms. These are exposed by capabilities, not
-flight recommendations. Names allow 47 ASCII bytes; up to 8 rules, 8 conditions/rule and 8
-assignments/rule, with at most 8 globally unique assigned physical channels. Future app limits
-must come from capabilities, not independently chosen values.
-
-For numbered requests, use increasing IDs and read `USB.md` for retry/session rules. Commands
-outside the phone subset always reply in JSON, including when manually typed without an ID.
-
-## Device orientation and factory reset
-
-The IMU procedure is independent of rule drafts and mounting. Use `imu begin`, then
-`imu capture +X`, `-X`, `+Y`, `-Y`, `+Z`, `-Z` (one command per position). The named
-sensor axis points upward. `imu status` exposes progress, completed-face mask, errors,
-bias/scale, revision and saved approval. `imu cancel` discards the unfinished RAM
-procedure. All six accepted faces commit a new calibration marked as requiring verification.
-
-`imu verify` starts independent corrected measurements in +X and +Y, each explicitly
-captured again. Both accepted windows save approval for the current revision. Each window
-requires at least 240 fresh samples and two continuous seconds. Preliminary limits are:
-raw magnitude within 2 m/s² of gravity for calibration, corrected magnitude within
-0.35 m/s² for verification, raw gyro norm below 0.1 rad/s, expected-axis component
-above 0.94 g, transverse components below 0.15 g and per-axis standard deviation no
-greater than 0.12 m/s². Fit residuals must not exceed 0.4 m/s²; bias is limited to
-±2 m/s² and scale to 0.8..1.2. Motion/invalid data or gaps over 100 ms restart the
-window; repeated/backward samples do not count. These are development thresholds
-requiring qualification on the physical board. A procedure times out after 180 seconds
-without a new capture request.
-
-The firmware owns acceptance, persistence and physical-arm blockers
-`IMU_CALIBRATION_MISSING` / `IMU_VERIFICATION_REQUIRED`. Physical Boost consumes
-approval; a no-launch disarm preserves it. Simulations preserve it. Reboot during
-an arm attempt conservatively requires another verification. The five-second gyro,
-gravity and barometer acquisition still runs at every physical arming.
-
-These commands operate on device settings separately from a rule draft:
-
-| Command | Behavior |
-|---|---|
-| `config orientation` | Returns `up_axis` and `orientation_ready`; no saved orientation returns null/false |
-| `config orientation +X` | Saves and verifies an explicit axis; accepts +X, -X, +Y, -Y, +Z, -Z |
-| `config reset` | Clears applied rules, draft, servo endpoints and saved orientation; preserves flight recordings and the reserved accelerometer-calibration region |
-
-Orientation writes require idle/disarmed state, no active draft and exclusive storage ownership.
-Reset also requires idle/disarmed ownership. A rule save never supplies an implicit orientation.
-Physical preflight reports `ORIENTATION_NOT_READY` until an axis is explicitly saved, including +X.
-Reset acknowledges `reset`, `persisted` and `verified` only after erase/readback succeeds.
-The separate state-machine setting is read with `config machine`, saved with
-`config machine normal` or `config machine bistage <minimum_velocity_mps>`, and defaults to
-normal after factory reset. See [state machines](state_macines.md#3-macchina-di-volo-bistadio--implementata).
-
-`servo release` without a channel explicitly releases all held servo PWM while idle/disarmed;
-with a channel it retains the editor-preview meaning described above. Idle `disarm` does not
-release preparation. See [command lifecycle](USB.md#arming-and-readiness).
-
-
-## Continuous airbrake rule
-
-The plan also owns one continuous AND gate and a reserved servo-channel mask. These
-channels cannot belong to normal once-only rules. An airbrake-only plan is valid;
-a completely empty plan remains invalid. Airbrakes require distinct calibrated closed/open
-endpoints even in virtual runs. Contract, reset/closure behavior, CLI and logging are
-defined in [Airbrakes](AIRBRAKES.md).
+The configuration also holds one continuous AND gate and the set of servo channels reserved for
+airbrakes. Reserved channels cannot be used by ordinary rules. A configuration with only
+airbrakes is valid. Airbrake channels need distinct calibrated closed and open positions in every
+mode, including virtual simulation. Everything else is in [Airbrakes](AIRBRAKES.md).

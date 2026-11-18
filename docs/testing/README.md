@@ -115,7 +115,7 @@ python tools/device_client.py --port COM11 --watch 10
 
 Close other programs using that port first. These explicit hardware checks show handshake,
 transport identity, recent-reply age and background heartbeat state; Ctrl+C closes the session.
-The [client lifecycle/API](../technical/USB.md#pc-client-and-connection-lifecycle) is shared by
+The [client lifecycle/API](../technical/USB.md#connecting-from-a-pc) is shared by
 the normal replay/download runners and will back the desktop UI.
 
 ## PlatformIO test evaluation
@@ -182,7 +182,7 @@ backup.
 `SMOKE_TEST` preserves the board-level check from remote commit `e65ce64`, adapted to current
 drivers and selected in the existing PlatformIO environment. Flash identification accepts the
 fixed W25Q128JV only; it is not a memory-integrity test. Idle sensor sampling reports once per
-second, with freshness checks and no fabricated measurements for the faulty IMU. The LED is blue
+second, with freshness checks and no fabricated measurements for a missing sensor. The LED is blue
 during initialization, then green only when flash identification and both fresh sensor readings
 pass; otherwise red. Continuity results are separate from that LED result.
 
@@ -216,7 +216,7 @@ after the fix, ten consecutive `i` reinitializations each produced valid pressur
 Two subsequent MAIN uploads/reboots without removing power also passed, with 20 valid pressure
 readings after each boot; recording storage mounted and its nine directory entries were retained.
 To repeat the check, use `i` followed by `v`; barometer readiness must survive reinitialization
-without removing power. This does not bypass NVM validation or repair the faulty IMU.
+without removing power. This does not bypass NVM validation.
 See [Bosch BMP581 datasheet](https://www.bosch-sensortec.com/media/boschsensortec/downloads/datasheets/bst-bmp581-ds004.pdf),
 sections 4.3.7, 4.3.9 and 7.22.
 
@@ -307,7 +307,7 @@ Manual commands at USB 115200: `status`, `probe`, `at AT`, `at AT+VERSION`, `at 
 `at AT+NAMB`, `name set "Perpetual"`. To diagnose a different UART state, use `baud 9600`
 (MCU only), `gate low|high`, `eol crlf|cr|lf|none`. `--scan` automates six local rates, both
 control levels and four endings using read-only AT commands, stopping at an exact ACK.
-MAIN now expects **230400, 8N1, CRLF, MCU TX GP4 / RX GP5**; diagnostics start at 9600 and require `baud 230400` for a migrated module. PWRC low selects AT mode. See the UART migration/recovery procedure in [USB](../technical/USB.md#jdy-34-uart-configuration-and-recovery).
+MAIN now expects **230400, 8N1, CRLF, MCU TX GP4 / RX GP5**; diagnostics start at 9600 and require `baud 230400` for a migrated module. PWRC low selects AT mode. See the UART migration/recovery procedure in [USB](../technical/USB.md#bluetooth-module).
 
 `at AT+LADDR`, `at AT+STAT` and `at AT+BTMODE` identify the module, current channels and mode.
 Match the reported MAC to the paired device before testing a radio COM port. PWRC low enables

@@ -26,7 +26,7 @@ bool ArmingCalibration::add(const sensors::Reading &r) {
     valid = valid && std::isfinite(a) && std::isfinite(r.gyroRadps[i]);
     a2 += a*a; g2 += r.gyroRadps[i]*r.gyroRadps[i];
   }
-  // Development stationary gate; qualify thresholds with the repaired physical IMU.
+  // Development stationary gate; qualify thresholds with the physical IMU.
   valid = valid && std::isfinite(a2) && std::isfinite(g2) && std::fabs(std::sqrt(a2)-9.80665f) <= 1.0f && g2 <= 0.25f;
   const float altitude = navigation::Navigation::pressureAltitude(r.pressurePa);
   valid = valid && std::isfinite(altitude);

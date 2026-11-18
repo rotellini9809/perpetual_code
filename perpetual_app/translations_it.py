@@ -246,8 +246,6 @@ ITALIAN = {
     'Fixed {pulse} ms pulse, not repeated. No per-channel settings are needed.': 'Impulso fisso di {pulse} ms, senza ripetizione. Non richiede impostazioni per canale.',
     'Reload configuration': 'Ricarica configurazione',
     'Discard the local changes and read the board again?': 'Scartare le modifiche locali e rileggere la scheda?',
-    'Apply configuration': 'Applica configurazione',
-    'Save the validated draft to the board memory?': 'Salvare la bozza validata nella memoria della scheda?',
     'Recorded flights': 'Voli registrati',
     'Read the flights stored on the board or open a CSV you already downloaded.': 'Leggi i voli conservati sulla scheda oppure apri un CSV già scaricato.',
     'Read flights from board': 'Leggi voli dalla scheda',
