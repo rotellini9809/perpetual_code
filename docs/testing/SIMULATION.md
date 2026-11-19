@@ -97,10 +97,11 @@ SensorAxes from a future provider.
 ```powershell
 python tools/replay/run_simulation_usb.py --port COM9
 python tools/replay/run_simulation_usb.py --port COM9 --record
+python tools/replay/run_simulation_usb.py --port COM9 --record --rate480
 ```
 
 ```text
-sim begin [physical] [record]
+sim begin [physical] [record] [480]
 sim status
 sim timing
 sim events
@@ -175,6 +176,34 @@ rules using the board's applied plan, not the PC runner's fixture. Legacy states
 phase. Each accepted row publishes fresh estimates, nan/inf marks invalid inputs, and gaps over
 100 ms reset relevant untriggered confirmations. The one-rule USB example starts Pyro 1 near
 12551 ms; sensor HIL computes DESCENT near 12553 ms. Different plans naturally differ.
+
+## 480 Hz stress profile
+
+`sim begin [physical] [record] 480` (`--rate480` in the script) plays source `hoppino480`, derived
+on the fly from the same log with no extra flash table: IMU readings linearly interpolated at
+480 Hz (the flight IMU rate; the board's true rate is 476.3 Hz), one fresh barometer reading per
+10 ms interpolated between logged pressures, PAD extended by 12 s (the first 6 s of the log played
+twice, so the pre-launch history is full: 100 samples at 10 Hz plus 0.5 s at full rate), and the
+log from 14 s to 30 s (descent) played at half speed. It lasts 60.99 s, 29278 frames; on the
+host, BOOST is detected at 20.19 s and LANDED at 56.36 s, and a recording saves 17749 samples in
+16 blocks after one growth step. It needs `config machine normal`
+(`PROFILE_REQUIRES_NORMAL_MACHINE` otherwise). The half-speed descent is a slower descent,
+not a measured flight: use it for load, storage growth and timing, not for navigation accuracy.
+After the run `sim timing` adds `frame_dt_us` and `sequence_gaps`, `flights timing` reports
+`growths` and `overwritten_flights`, and `diag` gives stack and loop maxima.
+
+Ring wrap-around and overwrite on the board:
+
+```powershell
+python tools/replay/ring_overwrite_usb.py --port COM11 --allow-overwrite --delete-after
+```
+
+It repeats the recorded 480 Hz profile (about 17 runs, 20 minutes) until the ring wraps, then two
+more runs, checking after each one placement after the previous flight, growth, disjoint extents
+and that exactly the overlapped older flights were invalidated, oldest first. It then downloads the
+first, last and oldest retained test flights. **Every flight on the board is lost**; without
+`--allow-overwrite` it refuses to start when flights exist. The report goes to
+`.pio/ring_overwrite_<id>/report.json`.
 
 ## Shared lifecycle and timing limits
 

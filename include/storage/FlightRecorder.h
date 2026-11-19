@@ -53,6 +53,9 @@ public:
   uint32_t committedSamples() const { return samples_.committedSamples(); }
   RecorderError error() const { return error_; }
   RecordingFailure failure() const override { return failure_; }
+  // Since the last begin(): 8-block growth steps and older flights invalidated to make room.
+  uint32_t growths() const { return growths_; }
+  uint32_t overwrittenFlights() const { return overwritten_; }
 private:
   bool fail(RecorderError error, const char *component = nullptr, const char *cause = nullptr);
   bool fault(RecorderError error);
@@ -85,5 +88,6 @@ private:
   RecorderError error_ = RecorderError::None;
   RecordingFailure failure_;
   bool faultLatched_ = false;
+  uint32_t growths_ = 0, overwritten_ = 0;
 };
 }

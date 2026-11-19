@@ -33,6 +33,11 @@ public:
 private:
   BluetoothNaming *bluetooth_=nullptr;
   bool dispatchCommand(const char *command, const char *arguments, const protocol::CommandPolicy &policy, bool hasId, uint32_t id, char *output, std::size_t capacity);
+  // Rarely used replies, kept out of the dispatch frames (see CommandRouter.cpp).
+  __attribute__((noinline)) bool controlReply(Source source, const char *command, bool valid, bool hasId, uint32_t id, char *output, std::size_t capacity);
+  __attribute__((noinline)) bool powerReply(const char *command, bool valid, bool hasId, uint32_t id, char *output, std::size_t capacity);
+  __attribute__((noinline)) bool bluetoothNameReply(const char *command, const char *arguments, bool hasId, uint32_t id, char *output, std::size_t capacity);
+  __attribute__((noinline)) bool airbrakeStatusReply(const char *command, const char *arguments, bool hasId, uint32_t id, char *output, std::size_t capacity);
   bool occupied() const;
   bool powerBusy() const;
   Source owner_ = Source::None;

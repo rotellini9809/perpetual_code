@@ -138,7 +138,10 @@ bool ConfigurationStore::encode(const recovery::Configuration &c, uint8_t *out, 
 }
 bool ConfigurationStore::decode(const uint8_t *bytes, std::size_t length, recovery::Configuration &out) {
   if (!bytes || length > MaxPayload) return false;
-  Reader r(bytes, length); recovery::Configuration c;
+  // Decode in place: a local plan copy would cost about 2.8 KiB of core 0 stack. On failure
+  // `out` holds a partial plan; callers treat it as invalid.
+  static const recovery::Configuration empty{};
+  Reader r(bytes, length); auto &c = out; c = empty;
   c.ruleCount = r.integer(1);
   if (c.ruleCount > recovery::MaxRules) return false;
   for (auto &p : c.pyros) p.pulseMs = r.integer(4);
@@ -168,8 +171,7 @@ bool ConfigurationStore::decode(const uint8_t *bytes, std::size_t length, recove
     v.comparison=static_cast<recovery::Comparison>(r.integer(1)); v.phases=uint8_t(r.integer(1));
     v.value=r.floating(); v.upper=r.floating(); v.elapsedMs=r.integer(4); v.reference=r.integer(4);
   }
-  if (!r.ok || r.pos != length) return false;
-  out = c; return true;
+  return r.ok && r.pos == length;
 }
 bool ConfigurationStore::load(recovery::Configuration &output, const recovery::ValidationLimits &limits) {
   validation_ = {};

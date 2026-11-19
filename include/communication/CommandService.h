@@ -2,6 +2,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include "diagnostics/BoardDiagnostics.h"
 
 class CommandExtension {
 public:
@@ -52,6 +53,7 @@ public:
     const char *bluetoothRename = "None"; // None, PENDING, ACTIVE, OK or the failure code.
     bool bluetoothConfigured = false; // A factory module was set up during this power-up.
     const char *bluetoothStage = ""; // Startup step, or the step that failed.
+    BoardDiagnostics *diagnostics = nullptr; // `diag`; refreshed on request.
   };
   // Consume one byte; true means one LF-terminated reply is ready.
   // Caller must deliver that reply before feeding more bytes.
@@ -69,4 +71,6 @@ private:
   bool overflow_ = false;
   bool invalid_ = false;
   bool dispatch(const Status &status, char *reply, std::size_t capacity);
+  bool localReply(const char *command, const char *arguments, bool identified, uint32_t id, const char *code,
+                  const char *message, const Status &status, char *reply, std::size_t capacity);
 };

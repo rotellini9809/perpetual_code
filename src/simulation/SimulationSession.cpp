@@ -3,11 +3,14 @@
 #include <cstring>
 
 namespace simulation {
-const char *SimulationSession::begin(bool record, bool physical) {
+const char *SimulationSession::begin(bool record, bool physical, bool stress) {
   if (!clock_) return "TIMING_UNAVAILABLE";
-  if (!source_.selectBistage(config_.stateMachine().bistage)) return "BUSY";
+  const bool bistage=config_.stateMachine().bistage;
+  if (stress && bistage) return "PROFILE_REQUIRES_NORMAL_MACHINE";
+  using Profile=sensors::SimulatedSensorSource::Profile;
+  if (!source_.selectProfile(stress ? Profile::Hoppino480 : bistage ? Profile::Bistage : Profile::Hoppino)) return "BUSY";
   if (!physical) if (const auto error=controller_.releaseForVirtualSimulation(record)) return error;
-  if (const char *error = controller_.arm(source_, flight::FlightMode::Simulation, source_.activeReferenceAltitude(), source_.nominalHz(), navigation::SensorCalibration{},
+  if (const char *error = controller_.arm(source_, flight::FlightMode::Simulation, source_.activeReferenceAltitude(), source_.activeNominalHz(), navigation::SensorCalibration{},
                                        record ? storage::FlightRecorder::Unlimited : 0, nullptr, physical ? storage::OutputMode::Physical : storage::OutputMode::Virtual)) return error;
   navigation_ = {}; cycles_ = {}; overBudget_ = invalid_ = 0;
   cancelled_ = phaseCount_ = startCount_ = 0; phases_ = {}; starts_ = {};
@@ -44,7 +47,7 @@ bool SimulationSession::poll() {
   for (std::size_t i = 0; i < result.events.startCount; ++i)
     if (startCount_ < starts_.size()) starts_[startCount_++] = result.events.starts[i];
   const auto elapsed = uint32_t(clock_()-start); cycles_.add(elapsed);
-  if (elapsed > source_.periodUs()) ++overBudget_;
+  if (elapsed > source_.activePeriodUs()) ++overBudget_;
   if (source_.finished()) close("completed");
   return true;
 }

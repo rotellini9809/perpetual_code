@@ -1,5 +1,6 @@
 #include "communication/CommandService.h"
 #include "communication/CommandProtocol.h"
+#include "communication/TimingReply.h"
 #include <cstdio>
 #include <cstring>
 #include <limits>
@@ -74,12 +75,62 @@ bool CommandService::dispatch(const Status &s, char *out, std::size_t cap) {
   if (*p) *p++ = '\0';
   while (space(*p)) ++p;
   if (!code && extension_ && extension_->dispatch(command, p, identified, id, out, cap)) return true;
+  return localReply(command, p, identified, id, code, message, s, out, cap);
+}
+// Built-in commands and errors. Kept out of dispatch(): its reply buffers would otherwise stay
+// reserved on the core 0 stack while extensions handle every other command below it.
+__attribute__((noinline)) bool CommandService::localReply(const char *command, const char *p, bool identified, uint32_t id,
+                                                          const char *code, const char *message, const Status &s, char *out, std::size_t cap) {
   if (!code && !std::strcmp(command,"bluetooth")) {
     protocol::Tokens t(p); protocol::Json data;
     data.add(",\"ready\":%s,\"connected\":%s,\"error\":\"%s\",\"baud\":%lu,\"uart_rx_overflows\":%lu",
              s.bluetoothReady ? "true" : "false", s.bluetoothConnected ? "true" : "false", s.bluetoothError, static_cast<unsigned long>(s.bluetoothBaud),static_cast<unsigned long>(s.bluetoothRxOverflows));
     data.add(",\"name\":\"%s\",\"rename\":\"%s\",\"configured\":%s,\"stage\":\"%s\"",s.bluetoothName,s.bluetoothRename,s.bluetoothConfigured ? "true" : "false",s.bluetoothStage);
     return protocol::finish(command,data,t.valid && t.count == 1 && t.is(0,"status") ? nullptr : "INVALID_ARGUMENT",identified,id,out,cap);
+  }
+  if (!code && !std::strcmp(command,"diag")) {
+    protocol::Tokens t(p); protocol::Json data;
+    const bool valid = t.valid && t.count == 0;
+    if (valid && s.diagnostics) {
+      auto &d = *s.diagnostics;
+      if (d.refresh) d.refresh(d);
+      data.add(",\"stack_bytes\":[[%lu,%lu],[%lu,%lu]],\"stack_exhausted\":[%s,%s]",
+               static_cast<unsigned long>(d.stack[0].usedBytes), static_cast<unsigned long>(d.stack[0].capacityBytes),
+               static_cast<unsigned long>(d.stack[1].usedBytes), static_cast<unsigned long>(d.stack[1].capacityBytes),
+               d.stack[0].exhausted ? "true" : "false", d.stack[1].exhausted ? "true" : "false");
+      data.add(",\"stack_intact\":[[%lu,%lu,%lu],[%lu,%lu,%lu]]",
+               static_cast<unsigned long>(d.stack[0].intactBytes), static_cast<unsigned long>(d.stack[0].intactLowOffset), static_cast<unsigned long>(d.stack[0].intactHighOffset),
+               static_cast<unsigned long>(d.stack[1].intactBytes), static_cast<unsigned long>(d.stack[1].intactLowOffset), static_cast<unsigned long>(d.stack[1].intactHighOffset));
+      protocol::appendTiming(data,"loop",d.loop);
+      data.add(",\"loop_period_us\":%lu,\"loop_over_period\":%lu,\"run\":\"%s\",\"run_active\":%s",
+               static_cast<unsigned long>(d.loopPeriodUs), static_cast<unsigned long>(d.loopOverPeriod), d.run, d.runActive ? "true" : "false");
+      protocol::appendTiming(data,"step",d.step); protocol::appendTiming(data,"compute",d.compute); protocol::appendTiming(data,"storage",d.storage);
+      data.add(",\"over_budget\":%lu,\"frame_dt_us\":[%lu,%lu],\"sequence_gaps\":%lu,\"fifo_overruns\":%lu",
+               static_cast<unsigned long>(d.overBudget), static_cast<unsigned long>(d.frameDtMinUs), static_cast<unsigned long>(d.frameDtMaxUs),
+               static_cast<unsigned long>(d.sequenceGaps), static_cast<unsigned long>(d.fifoOverruns));
+      data.add(",\"reset_reason\":\"%s\",\"reset_bits\":[%lu,%lu]",d.resetReason,
+               static_cast<unsigned long>(d.resetChipBits),static_cast<unsigned long>(d.resetWatchdogBits));
+      if (!d.lastFault) data.add(",\"last_fault\":null");
+      else data.add(",\"last_fault\":{\"core\":%lu,\"stack_overflow\":%s,\"cfsr\":%lu,\"hfsr\":%lu,\"sp\":%lu}",
+                    static_cast<unsigned long>(d.lastFaultCore), d.lastFaultStackOverflow ? "true" : "false",
+                    static_cast<unsigned long>(d.lastFaultCfsr), static_cast<unsigned long>(d.lastFaultHfsr), static_cast<unsigned long>(d.lastFaultSp));
+    }
+    if (!identified && valid && s.diagnostics) { // Readable summary for a serial monitor.
+      const auto &d = *s.diagnostics;
+      std::snprintf(out, cap,
+          "Stack core 0: %lu/%lu bytes%s | core 1: %lu/%lu bytes%s\n"
+          "Loop: %lu periods, max %lu us, %lu over %lu us | Run: %s%s\n"
+          "Step max %lu us, compute max %lu us, storage max %lu us, over budget %lu | Frame dt %lu..%lu us, gaps %lu, FIFO overruns %lu\n",
+          static_cast<unsigned long>(d.stack[0].usedBytes), static_cast<unsigned long>(d.stack[0].capacityBytes), d.stack[0].exhausted ? " EXHAUSTED" : "",
+          static_cast<unsigned long>(d.stack[1].usedBytes), static_cast<unsigned long>(d.stack[1].capacityBytes), d.stack[1].exhausted ? " EXHAUSTED" : "",
+          static_cast<unsigned long>(d.loop.count), static_cast<unsigned long>(d.loop.maxUs), static_cast<unsigned long>(d.loopOverPeriod),
+          static_cast<unsigned long>(d.loopPeriodUs), d.run, d.runActive ? " (active)" : "",
+          static_cast<unsigned long>(d.step.maxUs), static_cast<unsigned long>(d.compute.maxUs), static_cast<unsigned long>(d.storage.maxUs),
+          static_cast<unsigned long>(d.overBudget), static_cast<unsigned long>(d.frameDtMinUs), static_cast<unsigned long>(d.frameDtMaxUs),
+          static_cast<unsigned long>(d.sequenceGaps), static_cast<unsigned long>(d.fifoOverruns));
+      return true;
+    }
+    return protocol::finish(command,data,!valid ? "INVALID_ARGUMENT" : !s.diagnostics ? "UNAVAILABLE" : nullptr,identified,id,out,cap);
   }
   const bool known = std::strcmp(command, "ping") == 0 || std::strcmp(command, "info") == 0 ||
                      std::strcmp(command, "status") == 0 || std::strcmp(command, "help") == 0 ||
@@ -119,7 +170,7 @@ bool CommandService::dispatch(const Status &s, char *out, std::size_t cap) {
   if (!identified) {
     if (std::strcmp(command, "ping") == 0) std::snprintf(out, cap, "PONG\n");
     else if (std::strcmp(command, "help") == 0) std::snprintf(out, cap,
-        "Commands: ping, info, status, sensors, help; sleep, wake; bluetooth status, bluetooth name <suffix|default>; control status; preflight [physical|simulation], arm, disarm (ds); imu status/begin/verify/capture <axis>/cancel; capabilities; config machine [normal|bistage <m/s>]; config show/begin/draft/validate/apply/discard/reset/orientation [+X|-X|+Y|-Y|+Z|-Z]; rule, condition, output, pyro, servo (servo arm [channel] prepares outputs; servo release releases held PWM); replay begin/sample/status/stop (estimates); hil begin/sample/status/stop/timing (sensors); sim begin [physical] [record]/status/stop/timing/events; flights status/init/recover/format/list/info/summary/calibration/config/block/delete/timing/failure; flights timing reset. LF/CRLF; @<uint32> for JSON.\n");
+        "Commands: ping, info, status, sensors, diag, help; sleep, wake; bluetooth status, bluetooth name <suffix|default>; control status; preflight [physical|simulation], arm, disarm (ds); imu status/begin/verify/capture <axis>/cancel; capabilities; config machine [normal|bistage <m/s>]; config show/begin/draft/validate/apply/discard/reset/orientation [+X|-X|+Y|-Y|+Z|-Z]; rule, condition, output, pyro, servo (servo arm [channel] prepares outputs; servo release releases held PWM); replay begin/sample/status/stop (estimates); hil begin/sample/status/stop/timing (sensors); sim begin [physical] [record]/status/stop/timing/events; flights status/init/recover/format/list/info/summary/calibration/config/block/delete/timing/failure; flights timing reset. LF/CRLF; @<uint32> for JSON.\n");
     else if (std::strcmp(command, "info") == 0) std::snprintf(out, cap,
         "Perpetual | RP2350 | USB/Bluetooth command service v1 | Readiness: use preflight\n");
     else if (std::strcmp(command, "sensors") == 0) std::snprintf(out, cap,
@@ -145,7 +196,7 @@ bool CommandService::dispatch(const Status &s, char *out, std::size_t cap) {
     char payload[832] = {};
     if (std::strcmp(command, "ping") == 0) std::snprintf(payload, sizeof(payload), "\"message\":\"PONG\"");
     else if (std::strcmp(command, "help") == 0) std::snprintf(payload, sizeof(payload),
-        "\"commands\":[\"ping\",\"info\",\"status\",\"sensors\",\"help\",\"sleep\",\"wake\",\"bluetooth status\",\"control status\"],\"max_line_bytes\":128,\"id_bits\":32");
+        "\"commands\":[\"ping\",\"info\",\"status\",\"sensors\",\"diag\",\"help\",\"sleep\",\"wake\",\"bluetooth status\",\"control status\"],\"max_line_bytes\":128,\"id_bits\":32");
     else if (std::strcmp(command, "info") == 0) std::snprintf(payload, sizeof(payload),
         "\"device\":\"Perpetual\",\"mcu\":\"RP2350\",\"protocol_version\":1");
     else if (std::strcmp(command, "sensors") == 0) std::snprintf(payload, sizeof(payload),

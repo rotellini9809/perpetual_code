@@ -8,7 +8,8 @@ public:
   SimulationSession(ConfigurationService &config, flight::RunController &run, timing::Clock clock,
                     storage::RecordingSink *recorder = nullptr, flight::OutputExecutor *outputs = nullptr)
       : controller_(config, run, clock, recorder, outputs), source_(clock), clock_(clock), config_(config) {}
-  const char *begin(bool record = false, bool physical = false);
+  // stress selects the 480 Hz Hoppino profile; it is single-stage and needs the normal machine.
+  const char *begin(bool record = false, bool physical = false, bool stress = false);
   bool poll(); // One due sensor frame per call, independent of USB connection.
   void stop();
   void refreshRecording() { if (!running_) controller_.refreshRecordingStatus(finalStatus_); }
@@ -33,6 +34,8 @@ public:
   struct PhaseEvent { recovery::FlightPhase phase = recovery::FlightPhase::Pad; uint32_t timeMs = 0; };
   const std::array<PhaseEvent, 8> &phases() const { return phases_; }
   bool bistage() const { return source_.bistage(); }
+  const char *sourceName() const { return source_.profileName(); }
+  uint32_t periodUs() const { return source_.activePeriodUs(); }
   uint32_t durationMs() const { return source_.activeDurationMs(); }
   uint32_t totalSamples() const { return source_.activeSampleCount(); }
   unsigned phaseCount() const { return phaseCount_; }

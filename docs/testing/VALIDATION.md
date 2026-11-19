@@ -527,6 +527,61 @@ WinLibs GCC 14.2 (ISO C++17, the firmware's compiler generation), including sync
 queued USB recording/download of the Hoppino HIL flight compared sample by sample within half a
 stored LSB, and 2049 power cuts across one v4 block write.
 
+## 480 Hz stress profile, stack and ring wrap-around - 19 November 2026
+
+Observed on the Waveshare RP2350 board over USB (COM11), disarmed, VIRTUAL outputs only, with the
+`sim begin record 480` profile ([Simulation](SIMULATION.md#480-hz-stress-profile)) and `diag`.
+
+**Stack.** Core 0 starts on the 4 KiB SCRATCH_Y stack, and that is not enough: right after boot
+and a connection it had used 5.6-5.8 KiB, `flights info` took it to 7784 bytes and a recorded
+480 Hz run to 7988-8184 bytes of the 8 KiB available down to the heap limit (SCRATCH_X holds no
+data with `core1_separate_stack`, so the overflow lands there). `-fstack-usage` shows the cause:
+each command layer keeps its own reply buffer on the stack (`CommandService::dispatch` 1528 B,
+`CommandRouter::dispatchFrom` 1040 B, `dispatchCommand` 1120 B, handlers 1100-1430 B), and
+`ConfigurationStore::decode`/`beginDraft` use about 2.8 KiB each. Core 1 peaked at 2572 of 8192
+bytes.
+
+*Fix, same day.* The rarely used replies were moved out of the dispatch frames into separate
+functions (`CommandService::dispatch` 1528 -> 80 B, `CommandRouter::dispatchFrom` 1040 -> 264 B,
+`dispatchCommand` 1120 -> 264 B), `ConfigurationStore::decode` now decodes in place (2880 -> 56 B)
+and `beginDraft` no longer builds a temporary plan (2824 -> 16 B). Measured again: 3112 bytes after
+boot and connection (was 5752), 3188 after `preflight` (was 6268), 3736 after `flights recover`,
+and a maximum of **5056 bytes** during `sim begin record 480` (was 7988-8184); reading a stored
+flight stays below that. Each core's MSPLIM now sits 256 bytes above the bottom of its stack: a
+forced overflow on the bench stopped at the limit and the board restarted instead of writing
+below it. The cause of that restart was not recorded (`last_fault` stayed empty and the watchdog
+reason read FORCE, consistent with a lockup reset), so a stack overflow currently shows as an
+unexplained restart; other HardFaults reboot through a handler that records CFSR/HFSR.
+
+*Repeat after the fix.* A third ring run (18 recordings, about 25 minutes, wrap at run 16) passed
+with no restart (`reset_reason` stayed `soft`, `last_fault` empty), core 0 stack maximum 5112 of
+8192 bytes, core 1 2572, worker job maximum 161 ms, erase 173 ms, queue peak 76 of 128, 0 dropped;
+11-30 frames per run were still skipped while the PC polled `sim status`. The first-attempt
+restart has not recurred in 36 later recordings; its cause remains unproven.
+
+**Unexplained reboot.** In the first ring attempt the board restarted during the fourth 61 s
+recording (uptime 69.7 s afterwards); that flight was retained Completed. The reset cause was
+not captured (`diag` now reports `reset_reason` and the raw POWMAN/WATCHDOG bits). The second
+attempt, 18 runs, had no restart. Candidates: the core 0 stack depth above, a power glitch or USB.
+
+**Timing at 480 Hz.** With USB silent during the run: 29278 frames, **0 missed**, maximum lateness
+1.3 ms, core 0 loop maximum 2.56 ms (3 periods above 2083 us), 17749 samples saved (the host
+count), 0 dropped. With the PC asking `sim status` every 0.5-1 s, 18-31 frames per run were
+skipped (lateness up to 4.4 ms, loop up to 5.8 ms): USB command handling during flight blocks
+core 0 for several IMU periods. Step maximum 1.6 ms (compute 1.5 ms) against the 2.08 ms period,
+no step over budget.
+
+**Storage.** Pre-launch history full (341 samples). History write at boost, the longest worker
+job: 170-178 ms (64-75 ms with the 200 Hz Hoppino); sample queue peak 81-84 of 128 (about 270 ms
+at 480 Hz). One growth step per run, 64 KiB erases up to 179 ms, no dropped sample.
+
+**Ring wrap-around.** `ring_overwrite_usb.py` after `flights format`: 18 recordings of 16 blocks.
+Flights 1-15 filled blocks 0-239; flight 16 took 240-252 and 0-2, crossing the end of the ring,
+and invalidated only flight 1; flights 17 and 18 invalidated 2 and 3. Every placement followed the
+previous flight, extents never overlapped, nothing else changed, and the board's
+`overwritten_flights` matched. Flights 4 (oldest retained) and 18 were downloaded and decoded
+(17728 and 17727 samples). All test flights were deleted afterwards.
+
 ## Remaining work and limits
 
 Dated observations above retain the firmware/format used at the time. In particular, older
@@ -540,7 +595,7 @@ flight log v4 or the explicit orientation requirement. Current implementation is
 | Physical outputs | Shared execution, preparation/release and physical simulation are implemented and host-tested; pyro firing with real igniters works on the board. Servo mechanical behavior, interruption and load margins still need bench acceptance |
 | Driver timeout | Timeout disables driver readiness; recorder recovery cannot reinitialize it. Restart/reinitialization remains the current route |
 | Interrupted/old headers | Unsupported versions fail without migration; current layout v2 (device journal v1, directory v2, flight ring), recording header v8, sample blocks v4, configuration codec v3. A board with the previous layout needs `flights format` and its rules, settings and calibration saved again |
-| Scheduler and storage | Worker close is asynchronous, but a stalled worker retains ownership; idle preparation/settings/scans stay synchronous. The pre-launch history write at boost measured 64-75 ms on the Hoppino replay; growth erases during a real flight are not yet measured on the board; worst-case timing at 476 Hz in a real flight, stack high-water, watchdog and physical brownout coverage are not established |
+| Scheduler and storage | Worker close is asynchronous, but a stalled worker retains ownership; idle preparation/settings/scans stay synchronous. The pre-launch history write at boost measured 64-75 ms on the Hoppino replay; growth erases during a real flight are not yet measured on the board; worst-case timing at 476 Hz in a real flight, stack high-water, watchdog and physical brownout coverage are not established. Ring growth/wrap-around/overwrite, 480 Hz load and stack depth measured on the bench on 19 November 2026 (see above): core 0 stack reduced to 5056 of 8192 bytes with a MSPLIM guard; USB traffic during flight skips IMU frames; one unexplained reboot |
 | Desktop and transports | Six-view USB/SPP app, IMU calibration, orientation, reset/format and power management exist. Separate-Windows qualification, BLE and negotiated binary export remain open |
 
 The [documentation map](../README.md#remaining-work) owns the consolidated

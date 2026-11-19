@@ -62,7 +62,8 @@ const char *ConfigurationService::beginDraft() {
   if (runLocked_) return "BUSY";
   if (!disarmed_) return "ARMED";
   if (drafting_) return "DRAFT_ACTIVE";
-  draft_ = appliedValid_ ? applied_ : recovery::Configuration{};
+  static const recovery::Configuration empty{}; // No temporary plan copy on the core 0 stack.
+  if (appliedValid_) draft_ = applied_; else draft_ = empty;
   drafting_ = true; return nullptr;
 }
 const char *ConfigurationService::discardDraft() {

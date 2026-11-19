@@ -85,6 +85,7 @@ bool FlightRecorder::makeRoom(uint32_t first, uint32_t blocks, bool newFlight) {
     if (!victim) return true;
     auto entry = *victim; entry.status = FlightStatus::Invalidated;
     if (!directory_.update(entry)) return fault(RecorderError::Directory);
+    ++overwritten_;
   }
 }
 bool FlightRecorder::grow() {
@@ -103,7 +104,7 @@ bool FlightRecorder::grow() {
   if (!directory_.update(entry)) return fault(RecorderError::Directory);
   current_ = entry;
   if (!samples_.extend(blocks) || !samples_.service()) return fault(RecorderError::Sample);
-  return true;
+  ++growths_; return true;
 }
 bool FlightRecorder::openMetadata(const FlightEntry &entry) {
   if (!entry.committedBytes) return fail(RecorderError::EmptyRecording);
@@ -185,7 +186,7 @@ bool FlightRecorder::begin(const recovery::Configuration &config, const recovery
                            SensorMode sensorMode, OutputMode outputMode, sensors::FrameConvention frame, const FlightCalibration &calibration) {
   if (active_) return fail(RecorderError::Busy);
   if (!initialized_) return fail(RecorderError::NotInitialized);
-  faultLatched_=false; failure_={};
+  faultLatched_=false; failure_={}; growths_=overwritten_=0;
   if (!sampleBytes || sampleBytes % FlashLayout::SectorBytes) return fail(RecorderError::InvalidArgument);
   FlightHeaderLayout planned;
   if (!header_.plan(config, limits, planned)) return fail(RecorderError::Header);

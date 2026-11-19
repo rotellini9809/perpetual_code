@@ -4,6 +4,7 @@
 #include <Adafruit_NeoPixel.h>
 #include <SPI.h>
 #include <hardware/sync.h>
+#include <hardware/watchdog.h>
 #include "hardware/board_pins.h"
 #include "hardware/PyroController.h"
 #include "hardware/BoardOutputs.h"
@@ -19,6 +20,59 @@
 #include "simulation/EstimateReplayCommands.h"
 #include "communication/CommandRouter.h"
 #include "hardware/StatusLed.h"
+#include "diagnostics/BoardDiagnostics.h"
+
+// Stack high-water marks: both stacks are painted at startup and scanned on `diag`.
+// Core 0 starts at the top of SCRATCH_Y (4 KiB). It is measured down to the end of SCRATCH_X
+// data: with core1_separate_stack, SCRATCH_X holds no data and is the only room below SCRATCH_Y
+// before the heap limit, so a core 0 stack deeper than 4 KiB lands there. Core 1 runs on the
+// 8 KiB block Arduino-Pico allocates for core1_separate_stack.
+extern "C" {
+extern uint32_t __scratch_x_end__, __StackTop;
+extern uint32_t *core1_separate_stack_address;
+}
+// Stack guard: each core's MSPLIM sits StackGuardBytes above the bottom of its stack, so an
+// overflow faults instead of silently writing below it. The default HardFault handler is a
+// breakpoint (a hang without a debugger): this one lifts the limit, keeps the cause in RAM that
+// survives reset, and reboots; `diag` reports it as last_fault.
+// The record lives in watchdog scratch 0-3 (left to the application by the SDK), which survive a
+// watchdog reboot.
+constexpr uint32_t FaultMagic = 0xFA017E00u, StackGuardBytes = 256;
+extern "C" __attribute__((used, noreturn)) void reportFault(uint32_t sp) {
+  watchdog_hw->scratch[1] = *reinterpret_cast<volatile uint32_t *>(0xE000ED28u); // SCB CFSR
+  watchdog_hw->scratch[2] = *reinterpret_cast<volatile uint32_t *>(0xE000ED2Cu); // SCB HFSR
+  watchdog_hw->scratch[3] = sp;
+  watchdog_hw->scratch[0] = FaultMagic | get_core_num();
+  watchdog_reboot(0, 0, 0);
+  for (;;) {}
+}
+extern "C" __attribute__((naked)) void isr_hardfault() {
+  asm volatile("movs r0, #0\n msr msplim, r0\n mrs r0, msp\n b reportFault\n");
+}
+void setStackLimit(const uint32_t *bottom) {
+  asm volatile("msr msplim, %0" :: "r"(reinterpret_cast<uintptr_t>(bottom) + StackGuardBytes));
+}
+namespace {
+constexpr uint32_t StackPaint = 0x5AC3A55Cu, Core1StackBytes = 0x2000;
+uint32_t *core1StackBottom = nullptr;
+__attribute__((noinline)) void paintStack(uint32_t *bottom) {
+  uint32_t *sp; asm volatile("mov %0, sp" : "=r"(sp));
+  for (volatile uint32_t *p = bottom; p + 32 < sp; ++p) *p = StackPaint; // 128 bytes below the live frame stay untouched.
+}
+StackUse stackUse(const uint32_t *bottom, const uint32_t *top) {
+  StackUse use; if (!bottom || top <= bottom) return use;
+  use.capacityBytes = uint32_t(top - bottom) * 4;
+  const volatile uint32_t *p = bottom; while (p < top && *p == StackPaint) ++p;
+  use.usedBytes = uint32_t(top - p) * 4; use.exhausted = p == bottom;
+  bool first = true;
+  for (const volatile uint32_t *q = bottom; q < top; ++q) if (*q == StackPaint) {
+    use.intactBytes += 4; const uint32_t offset = uint32_t(q - bottom) * 4;
+    if (first) { use.intactLowOffset = offset; first = false; }
+    use.intactHighOffset = offset;
+  }
+  return use;
+}
+}
 
 Adafruit_NeoPixel statusPixel(1, RGB_LED, NEO_RGB + NEO_KHZ800);
 void writeStatusLed(uint8_t r, uint8_t g, uint8_t b) {
@@ -54,7 +108,10 @@ void wakeStorage() { __sev(); }
 storage::QueuedRecorder recordingWorker(recorder, navigationClock, wakeStorage);
 // Arduino-Pico allocates an independent 8 KiB stack for core 1.
 bool core1_separate_stack = true;
-void setup1() { recordingWorker.workerStarted(); }
+void setup1() {
+  core1StackBottom = core1_separate_stack_address; paintStack(core1StackBottom); setStackLimit(core1StackBottom);
+  recordingWorker.workerStarted();
+}
 void loop1() { if (!recordingWorker.poll()) __wfe(); }
 // Development policy, exposed by capabilities; physical execution is opt-in in simulation.
 const recovery::ValidationLimits configLimits{1000, 2000, recovery::PyroPulseMs, 3600000};
@@ -103,6 +160,10 @@ uint32_t bluetoothEpoch = 0;
 const char *bluetoothQuery = nullptr;
 std::size_t bluetoothQueryOffset = 0;
 uint32_t lastHardwarePollUs = 0, lastBaroMs = 0, lastImuMs = 0;
+BoardDiagnostics diagnostics;
+uint32_t lastLoopUs = 0, runFifoBase = 0;
+bool runWasActive = false;
+const flight::ArmingController *lastRun = nullptr; // Physical, simulation or HIL owner of the last run.
 uint64_t lastBaroSequence = 0, lastImuSequence = 0;
 
 void updateHardwareStatus() {
@@ -211,7 +272,37 @@ void pollBluetooth() {
   if (bluetoothLink.connected()) sendPending(Serial2, bluetoothEndpoint);
 }
 
+void refreshDiagnostics(BoardDiagnostics &d) {
+  d.stack[0] = stackUse(&__scratch_x_end__, &__StackTop);
+  d.stack[1] = stackUse(core1StackBottom, core1StackBottom ? core1StackBottom + Core1StackBytes/4 : nullptr);
+  d.runActive = runWasActive;
+  if (!lastRun) return;
+  const auto &t = lastRun->runtime().timing();
+  d.step = t.step; d.compute = t.compute; d.storage = t.storage; d.overBudget = t.overBudget;
+  d.frameDtMinUs = t.frameDtMinUs; d.frameDtMaxUs = t.frameDtMaxUs; d.sequenceGaps = t.sequenceGaps;
+  // Simulation and HIL do not read the IMU, so its FIFO overruns only mean something for a physical run.
+  d.fifoOverruns = lastRun == &physicalFlight ? sensorDevice.imuFifoOverruns() - runFifoBase : 0;
+}
+
 void setup() {
+  paintStack(&__scratch_x_end__); // First: before any deep call chain.
+  setStackLimit(&__scratch_x_end__);
+  if ((watchdog_hw->scratch[0] & ~0xFFu) == FaultMagic) {
+    diagnostics.lastFault = true; diagnostics.lastFaultCore = watchdog_hw->scratch[0] & 0xFFu;
+    diagnostics.lastFaultCfsr = watchdog_hw->scratch[1]; diagnostics.lastFaultHfsr = watchdog_hw->scratch[2];
+    diagnostics.lastFaultSp = watchdog_hw->scratch[3];
+    diagnostics.lastFaultStackOverflow = diagnostics.lastFaultCfsr & (1u << 20); // UFSR STKOF
+  }
+  watchdog_hw->scratch[0] = 0;
+  diagnostics.loopPeriodUs = 1000000u / sensors::ImuRateHz; diagnostics.refresh = refreshDiagnostics;
+  {
+    static const char *const reasons[] = {"unknown","power_on","run_pin","soft","watchdog","debug","glitch","brownout"};
+    const unsigned reason = unsigned(rp2040.getResetReason());
+    diagnostics.resetReason = reason < 8 ? reasons[reason] : "unknown";
+    diagnostics.resetChipBits = *reinterpret_cast<volatile uint32_t *>(POWMAN_BASE + POWMAN_CHIP_RESET_OFFSET);
+    diagnostics.resetWatchdogBits = *reinterpret_cast<volatile uint32_t *>(WATCHDOG_BASE + WATCHDOG_REASON_OFFSET);
+  }
+  commandStatus.diagnostics = &diagnostics;
   // Inactive outputs before USB initialization; no temporary enable override.
   outputHardware.begin(); // Servo PWM stays detached until an explicit physical run.
   analogReadResolution(12);
@@ -246,6 +337,12 @@ void setup() {
 }
 
 void loop() {
+  const uint32_t loopUs = micros();
+  if (lastLoopUs) {
+    const uint32_t period = loopUs - lastLoopUs; diagnostics.loop.add(period);
+    if (period > diagnostics.loopPeriodUs) ++diagnostics.loopOverPeriod;
+  }
+  lastLoopUs = loopUs;
   if (!power.sleeping()) battery.poll(millis(),readBatteryAdc); // Real board voltage, also during simulation/HIL.
   standaloneSimulation.poll(); // Due sensor work runs before USB, even disconnected.
   if (!power.sleeping()) physicalFlight.maintainImuApproval();
@@ -305,6 +402,11 @@ void loop() {
   if (physicalFlight.active() || physicalFlight.state() == flight::ArmingState::Closing) owner = &physicalFlight;
   else if (standaloneSimulation.active() || standaloneSimulation.controller().state() == flight::ArmingState::Closing) owner = &standaloneSimulation.controller();
   else if (hil.active() || hilSession.controller().state() == flight::ArmingState::Closing) owner = &hilSession.controller();
+  if (owner && !runWasActive) { // A run begins: loop and run evidence restart for it.
+    diagnostics.loop = {}; diagnostics.loopOverPeriod = 0; runFifoBase = sensorDevice.imuFifoOverruns(); lastRun = owner;
+    diagnostics.run = owner == &physicalFlight ? "physical" : owner == &standaloneSimulation.controller() ? "simulation" : "hil";
+  }
+  runWasActive = owner != nullptr;
   commandStatus.armingState = owner ? flight::armingStateName(owner->state()) : "disarmed";
   commandStatus.flightMode = owner ? flight::flightModeName(owner->mode()) : "none";
   commandStatus.outputMode = (owner && (owner->mode()==flight::FlightMode::Physical || owner->runtime().status().outputMode == storage::OutputMode::Physical)) || outputExecutor.hasPreparation() ? "PHYSICAL" : "VIRTUAL";

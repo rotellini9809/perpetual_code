@@ -1,4 +1,7 @@
-"""Start the onboard Hoppino sensor replay; USB/SPP only controls and observes it."""
+"""Start the onboard Hoppino sensor replay; USB/SPP only controls and observes it.
+
+--rate480 runs the stress profile: Hoppino interpolated at 480 Hz, 12 s longer PAD and a
+half-speed descent (about 61 s, grows the recording), and also reports `diag`."""
 import argparse
 import json
 from pathlib import Path
@@ -11,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import device_client as transport
 
 
-def run(client, output, record=False, clock=time.monotonic, sleep=time.sleep):
+def run(client, output, record=False, clock=time.monotonic, sleep=time.sleep, rate480=False):
     output = Path(output)
     if output.exists():
         raise FileExistsError(output)
@@ -21,12 +24,14 @@ def run(client, output, record=False, clock=time.monotonic, sleep=time.sleep):
         if recovered.get('corrupt_flights', 0):
             print(f'Warning: {recovered["corrupt_flights"]} corrupt flight(s) retained; their space remains reserved.', flush=True)
         client.request('flights timing reset')
-    print('Starting onboard Hoppino sensor replay; VIRTUAL outputs only.', flush=True)
+    source = 'hoppino480' if rate480 else 'hoppino'
+    print(f'Starting onboard {source} sensor replay; VIRTUAL outputs only.', flush=True)
     started = False
     try:
-        status = client.request('sim begin record' if record else 'sim begin', timeout=600 if record else 5)
+        command = 'sim begin' + (' record' if record else '') + (' 480' if rate480 else '')
+        status = client.request(command, timeout=600 if record else 5)
         started = True
-        if status.get('source')!='hoppino': raise RuntimeError('Firmware does not provide onboard Hoppino; upload current MAIN')
+        if status.get('source')!=source: raise RuntimeError(f'Firmware does not provide onboard {source}; upload current MAIN')
         duration=status['duration_ms']; samples=status['total_samples']
         deadline = clock() + duration/1000 + 20
         previous = None
@@ -42,6 +47,8 @@ def run(client, output, record=False, clock=time.monotonic, sleep=time.sleep):
         report = dict(status=status, timing=client.request('sim timing'), events=client.request('sim events'))
         if record:
             report['flash'] = client.request('flights timing')
+        if rate480:
+            report['diag'] = client.request('diag')
         output.parent.mkdir(parents=True, exist_ok=True)
         with output.open('x', encoding='utf-8') as target:
             json.dump(report, target, indent=2, allow_nan=False)
@@ -59,6 +66,12 @@ def run(client, output, record=False, clock=time.monotonic, sleep=time.sleep):
         if record:
             print(f'Flash sequence {status["recording_sequence"]}: {status["saved_samples"]} saved, '
                   f'{status["dropped_samples"]} dropped; storage {status["recording_error"]}.')
+            flash = report['flash']
+            if 'worker' in flash and 'erase' in flash: print(f'Storage: {flash.get("growths", "?")} growth(s), {flash.get("overwritten_flights", "?")} older flight(s) overwritten; '
+                  f'longest worker job {flash["worker"][2]/1000:.1f} ms, longest erase {flash["erase"][2]/1000:.1f} ms, '
+                  f'queue peak {flash["queue_peak"]}/{flash["queue_capacity"]}.')
+        if rate480:
+            print_diag(report['diag'])
         if (status['output_mode'] != 'VIRTUAL' or status['reason'] != 'completed' or status['error'] != 'None'
                 or status.get('source') != 'hoppino' or status['invalid_frames'] or status['t_ms'] != duration
                 or status['samples'] + timing['missed_ticks'] != samples or count != status['samples']
@@ -79,17 +92,30 @@ def run(client, output, record=False, clock=time.monotonic, sleep=time.sleep):
                 print(f'Stop not acknowledged: {error}. Standalone simulation may still be running.', file=sys.stderr)
 
 
+def print_diag(diag):
+    (used0, size0), (used1, size1) = diag['stack_bytes']
+    print(f'Stack high-water: core 0 {used0}/{size0} bytes, core 1 {used1}/{size1} bytes'
+          + (' (EXHAUSTED)' if any(diag['stack_exhausted']) else '') + '.')
+    count, total, peak = diag['loop']
+    print(f'Core 0 loop: {count} periods, mean {total/count if count else 0:.0f} us, max {peak} us, '
+          f'{diag["loop_over_period"]} longer than {diag["loop_period_us"]} us.')
+    print(f'Run {diag["run"]}: step max {diag["step"][2]} us, compute max {diag["compute"][2]} us, '
+          f'storage max {diag["storage"][2]} us, over budget {diag["over_budget"]}; frame dt '
+          f'{diag["frame_dt_us"][0]}..{diag["frame_dt_us"][1]} us, sequence gaps {diag["sequence_gaps"]}.')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--port', required=True)
     parser.add_argument('--record', action='store_true', help='Record to board flash (512 KiB erased at start, growing as needed)')
+    parser.add_argument('--rate480', action='store_true', help='480 Hz stress profile (about 61 s) and diag report')
     parser.add_argument('--output', type=Path)
     args = parser.parse_args()
     output = args.output or ROOT / '.pio' / f'simulation_{uuid.uuid4().hex}.json'
     if output.exists():
         raise FileExistsError(output)
     with transport.DeviceConnection(args.port) as client:
-        run(client, output, args.record)
+        run(client, output, args.record, rate480=args.rate480)
 
 
 if __name__ == '__main__':

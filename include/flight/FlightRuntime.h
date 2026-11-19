@@ -33,6 +33,9 @@ struct RuntimeStatus {
 struct RuntimeTiming {
   uint32_t prepareUs = 0, finishUs = 0, nominalPeriodUs = 0, overBudget = 0;
   timing::Statistics compute, storage, step;
+  // Frame quality as navigation saw it: dt between consecutive IMU frames and breaks in the
+  // IMU sequence (skipped simulation ticks, FIFO overruns or lost hardware frames).
+  uint32_t frameDtMinUs = 0, frameDtMaxUs = 0, sequenceGaps = 0;
 };
 struct PollResult {
   bool processed = false;
@@ -95,6 +98,8 @@ private:
   uint32_t landingClockUs_ = 0;
   uint32_t maxComputeUs_ = 0;
   RuntimeTiming timing_;
+  bool haveFrame_ = false;
+  uint64_t lastFrameUs_ = 0, lastSequence_ = 0;
   recovery::StateMachineSettings machine_;
   recovery::AbortReason abortReason_ = recovery::AbortReason::None;
   float velocityMedian_ = 0, tilt_ = 0;

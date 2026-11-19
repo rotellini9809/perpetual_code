@@ -355,6 +355,73 @@ void bistage() {
   }
   assert(savedAbort);
 }
+// The 480 Hz stress profile: Hoppino interpolated at the flight IMU rate, a 12 s longer PAD
+// (full pre-launch history) and a half-speed descent long enough to grow the flight.
+void stress() {
+  using Source=sensors::SimulatedSensorSource;
+  assert(Source::stressSourceTimeUs(0)==0 && Source::stressSourceTimeUs(5999999)==5999999 && Source::stressSourceTimeUs(6000000)==0);
+  assert(Source::stressSourceTimeUs(12000000)==0 && Source::stressSourceTimeUs(26000000)==14000000);
+  assert(Source::stressSourceTimeUs(28000000)==15000000 && Source::stressSourceTimeUs(58000000)==30000000);
+  assert(Source::stressSourceTimeUs(60000000)==32000000 && Source::stressSourceTimeUs(99000000)==Source::durationMs()*1000);
+  Source source(clockUs); assert(source.selectProfile(Source::Profile::Hoppino480));
+  assert(source.activePeriodUs()==2083 && source.activeNominalHz()==480 && std::string(source.profileName())=="hoppino480");
+  const uint32_t count=source.activeSampleCount(); assert(count==29278 && source.activeDurationMs()==60993); // Last frame at 29277/480 s.
+  nowUs=0xFFFFF000u; source.start(); sensors::Reading reading; uint64_t previous=0; uint32_t baro=0, frames=0;
+  for (;;) {
+    nowUs+=500;
+    if (!source.poll(reading)) { if (source.finished()) break; continue; }
+    assert(reading.imuValid && reading.imuSequence==frames+1 && (!frames || reading.timeUs-previous==2083 || reading.timeUs-previous==2084));
+    if (reading.baroValid) { ++baro; assert(reading.baroSequence==baro && std::isfinite(reading.pressurePa) && reading.pressurePa>97000 && reading.pressurePa<99000); }
+    else assert(std::isnan(reading.pressurePa));
+    previous=reading.timeUs; ++frames;
+  }
+  assert(frames==count && source.missed()==0 && baro>=6090 && baro<=6100); // 100 Hz barometer over 61 s.
+  // Polled exactly at each due time (the board case that once returned the previous frame).
+  const uint32_t origin=nowUs; source.start();
+  for (uint32_t i=0;i<count;++i) {
+    nowUs=origin+uint32_t(Source::stressTimeUs(i));
+    assert(source.poll(reading) && reading.imuSequence==i+1 && reading.timeUs==Source::stressTimeUs(i) && !source.poll(reading));
+  }
+  assert(source.finished() && source.missed()==0);
+  source.start(); nowUs+=10000; assert(source.poll(reading) && reading.imuSequence==5 && source.missed()==4); // Skips, no burst.
+  assert(!source.selectProfile(Source::Profile::Hoppino)); source.stop();
+
+  Device flash; storage::ConfigurationStore store(flash); assert(store.save(fixture(),limits,true));
+  ConfigurationService config(store,limits); config.boot(true); ConfigurationCommands settings(config);
+  flight::RunController run; storage::FlightRecorder recorder(flash); assert(recorder.initializeBlank());
+  simulation::SimulationSession sim(config,run,clockUs,&recorder); SimulationCommands commands(sim);
+  CommandService usb; usb.setExtension(&commands);
+  has(send(usb,"sim begin 480 record"),"INVALID_ARGUMENT"); has(send(usb,"sim begin record 480 extra"),"INVALID_ARGUMENT");
+  recovery::StateMachineSettings machine; machine.bistage=true; machine.minimumCoastVelocity=5; assert(!config.setStateMachine(machine));
+  has(send(usb,"sim begin 480"),"PROFILE_REQUIRES_NORMAL_MACHINE"); assert(!config.setStateMachine(recovery::StateMachineSettings{}));
+  nowUs=0; has(send(usb,"sim begin record 480"),"\"source\":\"hoppino480\"");
+  has(send(usb,"sim status"),"\"total_samples\":29278");
+  for (uint32_t t=0; sim.active() || sim.status().recordingBusy; t+=500) { nowUs=t; sim.poll(); assert(t<70000000); }
+  assert(std::string(sim.reason())=="completed" && !strcmp(sim.error(),"None"));
+  assert(sim.status().samples==count && sim.missed()==0 && sim.invalidFrames()==0 && sim.phaseCount()==5);
+  for (unsigned i=0;i<5;++i) {
+    assert(unsigned(sim.phases()[i].phase)==i);
+    std::cout << "480 Hz phase " << i << ": " << sim.phases()[i].timeMs << " ms\n";
+  }
+  assert(sim.phases()[1].timeMs>20100 && sim.phases()[1].timeMs<20300); // BOOST 12 s later than the log.
+  assert(sim.phases()[4].timeMs>50000);                                   // LANDED after the slowed descent.
+  const auto status=sim.status(); std::cout << "480 Hz recording: " << status.savedSamples << " saved, "
+      << recorder.growths() << " growth(s), " << recorder.current()->allocatedBytes/storage::FlashLayout::BlockBytes << " blocks\n";
+  assert(status.droppedSamples==0 && status.recordingError==storage::RecorderError::None);
+  assert(recorder.current()->status==storage::FlightStatus::Completed && recorder.growths()>=1 && recorder.overwrittenFlights()==0);
+  const auto &timing=sim.runtime().timing();
+  assert(timing.frameDtMinUs==2083 && timing.frameDtMaxUs==2084 && timing.sequenceGaps==0 && timing.step.count==count);
+  has(send(usb,"sim timing"),"\"period_us\":2083"); has(send(usb,"sim timing"),"\"frame_dt_us\":[2083,2084],\"sequence_gaps\":0");
+  storage::RecordingInfo info; assert(recorder.inspect(recorder.current()->sequence,info) && info.samples==status.savedSamples);
+  storage::RawBlock raw; unsigned history=0;
+  for (uint32_t index=0;index<(info.entry.committedBytes-info.headerBytes)/storage::FlightSampleStore::BlockBytes;++index) {
+    assert(recorder.readBlock(info.entry.sequence,index,raw)); const auto block=decodeRaw(raw);
+    for (unsigned i=0;i<block.frames;++i) if (block.frame[i].history) ++history;
+  }
+  std::cout << "480 Hz pre-launch history: " << history << " samples\n";
+  assert(history>=storage::PadHistory::SlowCapacity+240); // Full slow history plus 0.5 s at 480 Hz.
+  puts("480 Hz stress profile passed: interpolation, 100 Hz barometer, phases, full history and ring growth.");
+}
 } // namespace test_simulation
 
 int main() {
@@ -363,4 +430,6 @@ int main() {
   std::puts("  simulation"); std::fflush(stdout);
   test_simulation::run();
   test_simulation::bistage();
+  std::puts("  stress"); std::fflush(stdout);
+  test_simulation::stress();
 }

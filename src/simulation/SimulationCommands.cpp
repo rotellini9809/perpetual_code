@@ -9,7 +9,7 @@ bool SimulationCommands::dispatch(const char *command, const char *arguments, bo
   protocol::Tokens tokens(arguments); protocol::Json data; const char *error = nullptr;
   auto status = [&]() {
     const auto s = session_.status();
-    data.add(",\"source\":\"%s\",\"duration_ms\":%lu,\"total_samples\":%lu", session_.bistage() ? "bistage_synthetic" : "hoppino",
+    data.add(",\"source\":\"%s\",\"duration_ms\":%lu,\"total_samples\":%lu", session_.sourceName(),
              static_cast<unsigned long>(session_.durationMs()), static_cast<unsigned long>(session_.totalSamples()));
     data.add(",\"arming_state\":\"%s\",\"flight_mode\":\"simulation\"", flight::armingStateName(session_.controller().state()));
     data.add(",\"active\":%s,\"reason\":\"%s\",\"error\":\"%s\",\"output_mode\":\"%s\",\"outputs_active\":%s,\"samples\":%lu,\"t_ms\":%lu,\"phase\":%u",
@@ -27,12 +27,13 @@ bool SimulationCommands::dispatch(const char *command, const char *arguments, bo
              static_cast<unsigned long>(session_.invalidFrames()), session_.startCount(), session_.cancelled());
   };
   if (!tokens.valid) error = "INVALID_ARGUMENT";
-  else if (tokens.is(0,"begin") && tokens.count<=3) {
+  else if (tokens.is(0,"begin") && tokens.count<=4) {
     const bool physical=tokens.is(1,"physical");
     const bool record=tokens.is(physical ? 2 : 1,"record");
-    if (tokens.count != 1u+unsigned(physical)+unsigned(record)) error="INVALID_ARGUMENT";
+    const bool stress=tokens.is(1u+unsigned(physical)+unsigned(record),"480");
+    if (tokens.count != 1u+unsigned(physical)+unsigned(record)+unsigned(stress)) error="INVALID_ARGUMENT";
     else {
-      error=session_.begin(record,physical);
+      error=session_.begin(record,physical,stress);
       if (!error) status();
       else if (!session_.controller().lastPreflight().ready()) protocol::appendPreflight(data,session_.controller().lastPreflight());
     }
@@ -41,11 +42,13 @@ bool SimulationCommands::dispatch(const char *command, const char *arguments, bo
   else if (tokens.count == 1 && tokens.is(0, "timing")) {
     const auto &h = session_.runtime().timing();
     data.add(",\"period_us\":%lu,\"duration_ms\":%lu,\"missed_ticks\":%lu,\"max_lateness_us\":%lu,\"over_budget\":%lu,\"prepare_us\":%lu,\"finish_us\":%lu",
-             static_cast<unsigned long>(sensors::SimulatedSensorSource::periodUs()), static_cast<unsigned long>(session_.durationMs()),
+             static_cast<unsigned long>(session_.periodUs()), static_cast<unsigned long>(session_.durationMs()),
              static_cast<unsigned long>(session_.missed()), static_cast<unsigned long>(session_.maxLatenessUs()),
              static_cast<unsigned long>(session_.overBudget()), static_cast<unsigned long>(h.prepareUs), static_cast<unsigned long>(h.finishUs));
     protocol::appendTiming(data, "cycle", session_.cycles()); protocol::appendTiming(data, "compute", h.compute);
     protocol::appendTiming(data, "storage", h.storage);
+    data.add(",\"frame_dt_us\":[%lu,%lu],\"sequence_gaps\":%lu",static_cast<unsigned long>(h.frameDtMinUs),
+             static_cast<unsigned long>(h.frameDtMaxUs),static_cast<unsigned long>(h.sequenceGaps));
   } else if (tokens.count == 1 && tokens.is(0, "events")) {
     data.add(",\"output_mode\":\"%s\",\"phases\":[",session_.status().outputMode == storage::OutputMode::Physical ? "PHYSICAL" : "VIRTUAL");
     for (unsigned i = 0; i < session_.phaseCount(); ++i)

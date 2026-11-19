@@ -30,7 +30,7 @@ const char *FlightRuntime::begin(sensors::SensorSource &source, float referenceA
   recordingRequested_ = recordBytes != 0; saved_ = dropped_ = 0; full_ = false; lastBaroSequence_ = 0;
   boostReached_ = processingFailed_ = landed_ = closingStarts_ = false; sensorMode_ = sensorMode; outputMode_ = outputMode;
   recordingSequence_ = 0; recordingError_ = storage::RecorderError::None;
-  timing_ = {}; timing_.nominalPeriodUs = uint32_t(1000000.0f / nominalHz);
+  timing_ = {}; timing_.nominalPeriodUs = uint32_t(1000000.0f / nominalHz); haveFrame_ = false;
   if (recordingRequested_) {
     const auto start = clock_ ? clock_() : 0;
     preparationStartUs_=start;
@@ -230,6 +230,15 @@ const char *FlightRuntime::process(const sensors::Reading &input, FrameResult &r
   if (input.timeUs / 1000 > std::numeric_limits<uint32_t>::max()) return "INVALID_TIMESTAMP";
   const auto time = uint32_t(input.timeUs / 1000);
   if (!run_.validTime(RunMode::Sensors, time)) return "INVALID_TIMESTAMP";
+  if (haveFrame_) {
+    if (input.imuSequence != lastSequence_+1) ++timing_.sequenceGaps;
+    else if (input.timeUs > lastFrameUs_) {
+      const uint64_t dt = input.timeUs-lastFrameUs_; const uint32_t clamped = dt > 0xFFFFFFFFu ? 0xFFFFFFFFu : uint32_t(dt);
+      if (!timing_.frameDtMinUs || clamped < timing_.frameDtMinUs) timing_.frameDtMinUs = clamped;
+      if (clamped > timing_.frameDtMaxUs) timing_.frameDtMaxUs = clamped;
+    }
+  }
+  haveFrame_ = true; lastFrameUs_ = input.timeUs; lastSequence_ = input.imuSequence;
   const auto start = clock_ ? clock_() : 0;
   if (!pipeline_.process(input, result.navigation)) { processingFailed_ = true; stop(); return "SOURCE_ERROR"; }
   abortReason_=result.navigation.abortReason; velocityMedian_=result.navigation.coastVelocityMedian; tilt_=result.navigation.tiltRadians;

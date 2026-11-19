@@ -61,6 +61,8 @@ bool FlightCommands::dispatch(const char *command, const char *arguments, bool h
     data.add(",\"failures\":[%lu,%lu,%lu],\"bytes\":[%llu,%llu,%llu]",
              static_cast<unsigned long>(s.read.failures), static_cast<unsigned long>(s.program.failures), static_cast<unsigned long>(s.erase.failures),
              static_cast<unsigned long long>(s.read.bytes), static_cast<unsigned long long>(s.program.bytes), static_cast<unsigned long long>(s.erase.bytes));
+    data.add(",\"growths\":%lu,\"overwritten_flights\":%lu",static_cast<unsigned long>(recorder_.growths()),
+             static_cast<unsigned long>(recorder_.overwrittenFlights()));
     if (worker_) {
       protocol::appendTiming(data, "worker", worker_->workerTiming());
       data.add(",\"queue_peak\":%lu,\"queue_capacity\":%lu", static_cast<unsigned long>(worker_->peakSamples()), static_cast<unsigned long>(worker_->sampleQueueCapacity()));

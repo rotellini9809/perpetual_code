@@ -94,7 +94,7 @@ python tools/device_client.py --port COM9 --command "config show"
 
 | Commands | Defined in |
 |---|---|
-| `ping`, `info`, `status`, `sensors`, `capabilities`, `control status` | [This page](#board-state) |
+| `ping`, `info`, `status`, `sensors`, `diag`, `capabilities`, `control status` | [This page](#board-state) |
 | `sleep`, `wake` | [This page](#power-saving) |
 | `preflight`, `arm`, `disarm`/`ds`, `servo arm`, `servo preview`, `servo release` | [This page](#arming-and-outputs) |
 | `bluetooth status`, `bluetooth name` | [This page](#bluetooth-module) |
@@ -116,11 +116,18 @@ There are no commands to fire a single channel directly.
 | `status` | Observations: configuration validity, `arming_state`, `flight_mode`, `output_mode`, `outputs_active`, phase, sensor and storage availability, gyro collection progress, `battery_v`, `power_mode`, `power_error` |
 | `sensors` | IMU and barometer state, chip IDs, last errors, pressure, temperature, sensor-axis `accel_mps2` and `gyro_radps`, sample validity and age, `uptime_ms` |
 | `capabilities` | Fixed limits and features: maximum rules, conditions and outputs, servo PWM range, pyro pulse and enable settling times, supported physical actions |
+| `diag` | Timing and stack evidence: `stack_bytes` `[[used,size] core 0, [used,size] core 1]` and `stack_exhausted`; core 0 `loop` period `[count,total_us,max_us]` with `loop_over_period` (periods above `loop_period_us`, one IMU period); for the last `run` (`physical`, `simulation`, `hil`): `step`, `compute`, `storage`, `over_budget`, `frame_dt_us` `[min,max]`, `sequence_gaps` and, for a physical run, IMU `fifo_overruns`; `stack_intact` `[bytes, lowest offset, highest offset]` of painted words left per stack; `reset_reason` (`power_on`, `run_pin`, `soft`, `watchdog`, `debug`, `glitch`, `brownout`, `unknown`) and raw `reset_bits` `[POWMAN CHIP_RESET, WATCHDOG REASON]` read at boot. `last_fault` is `null` or `{core, stack_overflow, cfsr, hfsr, sp}` for a HardFault before the last reset (a stack overflow at the MSPLIM guard may instead reset without a record). Read-only, available while armed |
 
 `status` only reports what the board observes; whether it may arm comes only from `preflight`.
 `battery_v` is telemetry and never blocks arming. Sensor values are `null` when unavailable,
 older than 100 ms or not finite. While a run is active, idle sensor polling pauses and the
 `sensors` sample ages.
+
+`diag` stack figures are high-water marks since boot: both stacks are painted at startup and
+scanned on request (core 0: from the top of SCRATCH_Y down to the end of SCRATCH_X, 8 KiB, because
+its use exceeds the 4 KiB of SCRATCH_Y; core 1: the 8 KiB worker stack).
+`stack_exhausted` means the lowest painted word was overwritten. Loop and run figures restart
+when a run begins, so after a run they describe that run until the next one starts.
 
 ## Power saving
 
