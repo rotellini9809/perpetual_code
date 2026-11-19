@@ -131,22 +131,32 @@ each one with screenshots.
 ## How it works
 
 ```mermaid
-flowchart LR
-    subgraph Board["Perpetual board (RP2350)"]
-        S["Sensors<br>IMU + barometer"] --> N["Navigation<br>attitude, Kalman, phase"]
-        N --> R["Recovery rules"]
-        N --> A["Airbrake control"]
-        R --> O["Outputs<br>4 pyro + 4 servo"]
+%%{init: {"flowchart": {"curve": "monotoneY"}}}%%
+flowchart TB
+    subgraph Board["Perpetual board · RP2350"]
+        S["Sensors<br>IMU + barometer"]
+        N["Navigation · core 0<br>attitude, Kalman, flight phase"]
+        subgraph Control["Flight control"]
+            R["Recovery rules"]
+            A["Airbrake control"]
+            O["Outputs<br>4 pyro + 4 servo"]
+        end
+        subgraph Data["Data & ground link"]
+            L["Recorder · core 1<br>samples + output starts"]
+            F[("16 MB flash")]
+            C["Command service"]
+        end
+        S --> N
+        N --> R
+        N --> A
+        N --> L
+        R --> O
         A --> O
-        N --> L["Recorder (core 1)"]
-        R --> L
-        L --> F[("16 MB flash")]
-        C["Command service"]
+        L --> F
+        F -. "flight download" .-> C
     end
-    C <--> U(["USB serial"])
-    C <--> B(["Bluetooth<br>JDY-34"])
-    U <--> App["Desktop app /<br>PC tools"]
-    B <--> App
+    C <--> T(["Bluetooth / USB serial"])
+    T <--> App["Desktop app / PC tools"]
 ```
 
 Real sensors, a hardware-in-the-loop stream from the PC and the on-board simulated flight all
