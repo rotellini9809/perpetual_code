@@ -158,7 +158,7 @@ class Controller(QObject):
         self._epoch, self._serial = 0, 0
         self._jobs = {}
         self._foreground_job = None
-        self._last_status = self._last_sim = self._last_sensors = self._last_airbrakes = self._last_imu = 0
+        self._last_status = self._last_sim = self._last_sensors = self._last_imu = 0
         self._want_events = False
         self.page = 0
         self._sensor_stream = False
@@ -324,6 +324,26 @@ class Controller(QObject):
                 raise RuntimeError('The board did not fully confirm the save')
             return dict(applied=True,**self._read(client,'configuration','status','preflight'))
         self._job(t('Saving configuration') if apply else t('Validating draft'),write)
+
+    def save_servo(self, channel, value):
+        """Save one servo's settings straight to the board: the applied plan with only this servo changed.
+        Other unsaved edits stay in the local draft, which is returned with the servo updated."""
+        s=self.state
+        draft=s.local.clone(); draft.servos[channel-1]=dict(value)
+        if not s.connected or not s.editable or s.base is None or s.config_view!='applied':
+            self.edit_plan(draft); return False
+        if s.staged:
+            self.edit_plan(draft); s.error='Apply or discard the draft validated on the board before saving the servo'; self.changed.emit(); return False
+        client,base=self.connection,s.base.clone()
+        target=base.clone(); target.servos[channel-1]=dict(value)
+        def write():
+            stage_plan(client,base,target)
+            saved=self.request(client,'config apply',60)
+            if not all(saved.get(k) is True for k in ('applied','persisted','verified')):
+                raise RuntimeError('The board did not fully confirm the save')
+            return dict(applied=True,servo_draft=draft,**self._read(client,'configuration','status','preflight'))
+        self._job(t('Saving servo {channel}',channel=channel),write)
+        return True
 
     def discard(self):
         if self.state.foreground: return
@@ -619,6 +639,8 @@ class Controller(QObject):
                 s.base=config['plan'] if config['view']=='applied' else None
                 s.local=config['plan'].clone() if config['plan'] else Plan()
             if result.get('applied'): s.validated=False; s.staged=False
+            # Saving one servo keeps the other unsaved edits: the draft returns with the servo updated.
+            if result.get('servo_draft') is not None and s.base is not None: s.local=result['servo_draft']
         if result.get('validated'): s.validated=True; s.staged=True
         if result.get('discarded'):
             s.local=s.base.clone() if s.base else Plan(); s.validated=False; s.staged=False
@@ -670,9 +692,6 @@ class Controller(QObject):
                     result['status']=client.request('status'); result['events']=client.request('sim events')
                 return result
             self._last_sim=now; self._poll(poll_sim)
-        elif self.page==0 and self.state.airbrakes.get('enabled') and self.state.base and self.state.base.airbrakes['channel_mask'] and now-self._last_airbrakes>=(1.5 if self.state.connection.get('transport')=='bluetooth' else .8):
-            self._last_airbrakes=now
-            self._poll(lambda:self._read(client,'airbrake_status'))
         elif now-self._last_status>=4:
             previous=self.state.status.get('power_mode')
             previous_arming=self.state.status.get('arming_state')

@@ -56,6 +56,10 @@ bool HardwareSensorSource::poll(Reading &reading) {
   imuTimed_ = sample.imuPeriodUs > 0;
   imuInterrupted_=false;
   latest_.timeUs = uint64_t(imuTimeUs_); ++latest_.imuSequence;
+  // The barometer is stamped when read, the FIFO frame when sampled (never later than its
+  // observation), so a fresh pressure is usually a few ms "newer" than the frame it travels with.
+  // Consumers require barometer time <= frame time and would drop it: clamp it to the frame.
+  if (latest_.baroTimeUs > latest_.timeUs) latest_.baroTimeUs = latest_.timeUs;
   reading = latest_; return true;
 }
 }

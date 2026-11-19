@@ -1,4 +1,4 @@
-"""Airbrake presentation shared by live status and recorded-flight inspection."""
+"""Airbrake presentation for recorded-flight inspection."""
 from .configuration import condition_text,decode_condition
 from .flight_data import phase_name
 from .i18n import t
@@ -25,12 +25,6 @@ def control_description(flags,failed=0,conditions=(),rules=(),phase=None,bistage
         causes.extend(requested or [t('Rule conditions not satisfied')])
     state='ABORT' if flags & 16 else t('Safety closure') if flags & (8|32|64|128) else t('Bistage check') if velocity_check else t('Inhibited') if flags & 256 else t('Waiting') if flags & 4 else t('Not active')
     return state,'; '.join(causes)
-
-
-def control_text(flags,failed=0,conditions=(),rules=()):
-    if flags & 2: return t('Control enabled')
-    state,detail=control_description(flags,failed,conditions,rules)
-    return state+(' · '+detail if detail else '')
 
 
 def recorded_conditions(configuration,bistage=False):

@@ -267,6 +267,22 @@ void run() {
   nowUs = 31000; device.next.imuAgeUs = 0; device.next.imuGap = true; device.pending = true; // Gap, observed 31000.
   assert(source.poll(frame) && frame.timeUs == 32000 && frame.imuSequence == first + 8);
   puts("Hardware source FIFO timing passed: period spacing, observation bound, gap re-anchor, minimum spacing.");
+  // Board case: a barometer read together with a FIFO frame sampled earlier would be "newer"
+  // than the frame; it is clamped to the frame, so the arming collector (and navigation, which
+  // applies the same barometer <= frame rule) accept it and reach their sample target.
+  nowUs = 0; assert(source.begin());
+  flight::ArmingCalibration collector; collector.begin(navigation::SensorCalibration{});
+  device.next = {}; device.next.imuFresh = device.next.imuValid = device.next.baroValid = true;
+  device.next.imuPeriodUs = 2083; device.next.imuAgeUs = 400; device.next.accelMps2[2] = 9.80665f;
+  device.next.pressurePa = 101325; device.next.baroTempC = 20;
+  unsigned polls = 0;
+  for (; polls < 4000 && !collector.ready(); ++polls) {
+    nowUs += 2083; device.next.baroFresh = polls % 5 == 0; device.pending = true;
+    assert(source.poll(frame) && frame.baroTimeUs <= frame.timeUs);
+    collector.add(frame);
+  }
+  assert(collector.ready() && collector.samples() == flight::ArmingCalibration::TargetSamples);
+  std::printf("Barometer clamped to the FIFO frame: arming collector ready after %u frames.\n", polls);
 }
 } // namespace test_hardware_sensor_source
 

@@ -582,6 +582,50 @@ previous flight, extents never overlapped, nothing else changed, and the board's
 `overwritten_flights` matched. Flights 4 (oldest retained) and 18 were downloaded and decoded
 (17728 and 17727 samples). All test flights were deleted afterwards.
 
+## Physical arming on the bench - 19 November 2026
+
+**Barometer timestamp bug.** The first physical arming never completed: the gyro collector kept
+restarting after 3-7 samples. The barometer was stamped when read, the FIFO IMU frame when
+sampled (never later than its observation), so a fresh pressure was a few ms "newer" than its
+frame; `ArmingCalibration` and `Navigation` require barometer time <= frame time and dropped it.
+Besides blocking arming, navigation would have ignored almost every real barometer reading in
+flight (altitude/velocity from the accelerometer alone, LANDED never confirmed). Simulation, HIL
+and replays share one timestamp, so they never showed it. `HardwareSensorSource` now clamps the
+barometer time to the frame it travels with (error a few ms); a host test reproduces the board
+case (fails without the clamp, collector ready after 2496 frames with it).
+
+**USB load with the real sensors.** Board still in PAD, servo 1 prepared, no pyro assigned,
+`bench_arming_usb.py`, three 60 s phases: quiet; app load (status + control status every 4 s,
+ping every 2 s); heavy (plus `sensors` every 0.25 s). 86012 frames in total (about 478 Hz),
+**0 sequence gaps and 0 FIFO overruns in every phase**. Core 0 loop maximum 3.56 ms quiet and with
+the app load, 4.28 ms with the heavy load; loops longer than one IMU period: 9, +60, +392. Step
+maximum 1.03-1.05 ms. Frame dt 1049-2168 us: after a stall the queued FIFO frames are processed
+at the half-period minimum spacing. USB traffic therefore delays processing by a few ms but loses
+no samples; the frames skipped in the 480 Hz simulation with USB polling come from the simulated
+source, which drops late frames by design. Core 0 stack peaked at 3832 bytes.
+
+**Real recording with motion.** Repeated Part A (same result: 0 gaps, 0 overruns, loop maximum
+4.44 ms), then `--motion`: shaken by hand for BOOST (COAST 6 ms later), left still on the bench
+for about 3 minutes under the app load, lowered about 1 m and set down. DESCENT at 185 s fired the
+Drogue rule on servo 1 (recorded output start at the same millisecond), LANDED at 190 s, and the
+run closed by itself. Flight 39: 85930 samples, 0 dropped, status Completed, 339 pre-launch history
+rows; 85442 full-rate samples from BOOST to LANDED at **476.16 Hz with no gaps**, then the slow
+post-LANDED rate. The flight grew 6 times (allocated 3.5 MiB) with 65 block erases, longest 179 ms;
+queue peak 84 of 128. Altitude estimate drifted -0.3 to -0.9 m over 3 minutes still, then fell to
+-1.9 m when the board was lowered: navigation uses the real barometer.
+
+Three maxima looked alarming and are not flight data:
+- Worker maximum 1.63 s: the asynchronous preparation at arming, which erases the first 8 blocks
+  (8 x ~180 ms) before the source starts, so no samples exist yet. Recording-time jobs stayed at
+  the erase time.
+- 1 FIFO overrun in the run (2 by the final `diag`): Part A deltas were 0 and the runtime saw no
+  sequence gap, so it happened while the IMU FIFO was not read: during that preparation, before
+  `source.start()` re-anchors. The second came after the run ended.
+- Core 0 loop maximum 12.3 ms: `diag` loop statistics and the overrun count restart at run start
+  but keep counting after it ends, so this includes the post-landing `flights` commands; it cannot
+  be placed inside the flight. A stall that short is absorbed by the IMU FIFO either way (step
+  maximum 1.52 ms).
+
 ## Remaining work and limits
 
 Dated observations above retain the firmware/format used at the time. In particular, older
@@ -590,12 +634,12 @@ flight log v4 or the explicit orientation requirement. Current implementation is
 
 | Area | Current qualification limit |
 |---|---|
-| Real sensors | Idle IMU cadence/pairing measured (476.2 Hz over 30 s, no gaps; see [Hardware](../HARDWARE.md#sensors)); gyroscope collection during a physical arming still needs board validation |
+| Real sensors | Idle IMU cadence/pairing measured (476.2 Hz over 30 s, no gaps; see [Hardware](../HARDWARE.md#sensors)); gyroscope collection during a physical arming works on the board after the barometer timestamp fix, and a hand-driven bench flight reached DESCENT and LANDED with the real barometer (19 November 2026); a real flight profile is not yet measured |
 | Calibration and attitude | Per-arming gyro/reference collector, persistent mounting and six-face accelerometer calibration (persistence and UI) exist. The board still uses identity calibration values; initial-attitude/tilt qualification remains open |
 | Physical outputs | Shared execution, preparation/release and physical simulation are implemented and host-tested; pyro firing with real igniters works on the board. Servo mechanical behavior, interruption and load margins still need bench acceptance |
 | Driver timeout | Timeout disables driver readiness; recorder recovery cannot reinitialize it. Restart/reinitialization remains the current route |
 | Interrupted/old headers | Unsupported versions fail without migration; current layout v2 (device journal v1, directory v2, flight ring), recording header v8, sample blocks v4, configuration codec v3. A board with the previous layout needs `flights format` and its rules, settings and calibration saved again |
-| Scheduler and storage | Worker close is asynchronous, but a stalled worker retains ownership; idle preparation/settings/scans stay synchronous. The pre-launch history write at boost measured 64-75 ms on the Hoppino replay; growth erases during a real flight are not yet measured on the board; worst-case timing at 476 Hz in a real flight, stack high-water, watchdog and physical brownout coverage are not established. Ring growth/wrap-around/overwrite, 480 Hz load and stack depth measured on the bench on 19 November 2026 (see above): core 0 stack reduced to 5056 of 8192 bytes with a MSPLIM guard; USB traffic during flight skips IMU frames; one unexplained reboot |
+| Scheduler and storage | Worker close is asynchronous, but a stalled worker retains ownership; idle preparation/settings/scans stay synchronous. The pre-launch history write at boost measured 64-75 ms on the Hoppino replay; growth erases with real sensors measured on the bench (6 growths, 476 Hz, no gaps or drops); worst-case timing in a real flight, watchdog and physical brownout coverage are not established. Ring growth/wrap-around/overwrite, 480 Hz load and stack depth measured on the bench on 19 November 2026 (see above): core 0 stack reduced to 5056 of 8192 bytes with a MSPLIM guard; USB traffic delays processing but loses no real IMU frames; one unexplained reboot |
 | Desktop and transports | Six-view USB/SPP app, IMU calibration, orientation, reset/format and power management exist. Separate-Windows qualification, BLE and negotiated binary export remain open |
 
 The [documentation map](../README.md#remaining-work) owns the consolidated

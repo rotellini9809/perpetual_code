@@ -20,7 +20,7 @@ GPIO numbers are RP GPIO numbers, not package or header pin numbers. The authori
 | Battery sense | GP29 (ADC3); 100 kΩ battery-to-ADC, 24 kΩ ADC-to-GND |
 | Telemetry / external I2C | GP18 / GP19 (TX/SDA, RX/SCL) |
 | RGB LED | GP16 |
-| Servo PWM 1..4 | GP21, GP20, GP23, GP22 |
+| Servo PWM 1..4 | GP22, GP23, GP20, GP21 |
 
 The flash is **128 Mbit / 16 MiB**; the driver accepts JEDEC IDs EF4018 and EF7018. Its
 [fixed region map](technical/STORAGE_FORMAT.md#memory-map-layout-v2) is the only supported layout.

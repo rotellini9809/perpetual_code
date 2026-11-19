@@ -213,7 +213,7 @@ class ChannelDialog(QDialog):
             self.step_buttons[key]=steps
             body.addLayout(row(steps[0],steps[1],slider,steps[2],steps[3]))
         layout.addWidget(self.feedback)
-        hint=label(t('Live follows the slider of the selected position. Confirm only updates the local draft. Closing releases the PWM.'),'hint')
+        hint=label(t('Live follows the slider of the selected position. Confirm saves this servo to the board; other changes stay in the draft. Closing releases the PWM.'),'hint')
         hint.setWordWrap(True); layout.addWidget(hint); buttons(self,layout)
         if controller:
             controller.servo_previewed.connect(self._position_result); controller.changed.connect(self._availability)

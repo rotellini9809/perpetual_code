@@ -73,10 +73,11 @@ constexpr uint8_t SCL_TELEMETRY = RX_TELEMETRY;
 constexpr uint8_t RGB_LED = 16;
 
 // ===================== Servo PWM outputs =====================
-constexpr uint8_t SERVO_PWM_1 = 21;
-constexpr uint8_t SERVO_PWM_2 = 20;
-constexpr uint8_t SERVO_PWM_3 = 23;
-constexpr uint8_t SERVO_PWM_4 = 22;
+// Matches the schematic nets servo_pwm_1..4 (checked on the bench by sweeping each channel).
+constexpr uint8_t SERVO_PWM_1 = 22;
+constexpr uint8_t SERVO_PWM_2 = 23;
+constexpr uint8_t SERVO_PWM_3 = 20;
+constexpr uint8_t SERVO_PWM_4 = 21;
 
 // Primary parachute servo alias used by the legacy ServoController.
 constexpr uint8_t SERVO_PIN = SERVO_PWM_1;

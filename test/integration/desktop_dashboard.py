@@ -150,15 +150,29 @@ def check_servo_preparation(app,wait):
             assert editor.call_args.args[2]==1
         assert len(backend.commands)==before and window.pages.currentIndex()==1
         assert window.configuration_page.tabs.currentIndex()==1 and window.configuration_page.channels_table.currentRow()==4
+        # Confirm saves that servo straight to the board (state back in step with the board first:
+        # the save refuses a configuration that changed on the board since it was read).
+        controller.state.base=applied; controller.state.local=applied.clone(); window.render()
+        # Confirm saves that servo straight to the board.
         with patch('perpetual_app.configuration_page.ChannelDialog') as editor:
             editor.return_value.exec.return_value=1
             editor.return_value.result_value.return_value=dict(calibrated=True,initial_us=1200,final_us=1800)
             window.configuration_page.channel_buttons[0].click()
-        assert controller.state.dirty and controller.state.local.servos[0]['initial_us']==1200
-        assert not controller.state.base.servos[0]['calibrated'] and len(backend.commands)==before
+        wait(lambda:not controller.state.foreground)
+        assert not controller.state.error and not controller.state.dirty and len(backend.commands)>before
+        assert controller.state.base.servos[0]==dict(calibrated=True,initial_us=1200,final_us=1800)
         assert window.configuration_page.channel_buttons[0].text()=='Modifica'
+        assert window.dashboard_page.prepare_servos_button.text()!='Vai alla configurazione'
+        # Other unsaved edits stay in the draft; only the servo reaches the board.
+        edited=controller.state.local.clone(); edited.rules[0]['name']='Draft only'; controller.edit_plan(edited)
         with patch('perpetual_app.configuration_page.ChannelDialog') as editor:
-            window.dashboard_page.prepare_servos_button.click(); editor.assert_not_called() # Already edited: guide to Apply instead.
+            editor.return_value.exec.return_value=1
+            editor.return_value.result_value.return_value=dict(calibrated=True,initial_us=1200,final_us=1700)
+            window.configuration_page.channel_buttons[0].click()
+        wait(lambda:not controller.state.foreground)
+        assert not controller.state.error and controller.state.base.servos[0]['final_us']==1700
+        assert controller.state.base.rules[0]['name']!='Draft only'
+        assert controller.state.dirty and controller.state.local.rules[0]['name']=='Draft only' and controller.state.local.servos[0]['final_us']==1700
         controller.state.base=applied; controller.state.local=applied.clone(); window.dashboard_page.servo_selection[0].setChecked(False); window.render(); window.navigate(0)
         # Preparation uses applied channels; an unsaved rule edit cannot expose a new servo.
         draft=applied.clone(); draft.rules[0]['outputs'].append(dict(kind='servo',channel=4,delay_ms=0))

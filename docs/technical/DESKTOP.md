@@ -86,9 +86,13 @@ Background polling runs only while no job is active, one request at a time:
 |---|---|---|
 | `status`, `control status` | Always | 4 s |
 | `sim status` | Simulation running or its page open | 1.2 s |
-| `airbrake status` | Dashboard open with airbrakes enabled and assigned | 0.8 s USB, 1.5 s Bluetooth |
 | `imu status` | Configuration open or a calibration running | 0.75 s |
 | `sensors` | Live sensor window open | 0.25 s USB, 1 s Bluetooth |
+
+`airbrake status` is not polled: the airbrakes do not move on the pad, so the Dashboard shows only
+configuration hints, and the recorded flight shows what they did. It is still read after airbrake
+setting changes. Every board reply is prepared on the flight loop's core, so polling stays sparse
+while armed (see [Validation](../testing/VALIDATION.md)).
 
 `preflight` is read again after wake, after a run ends and after a calibration ends, so cached
 readiness never outlives a state change.
@@ -119,7 +123,9 @@ draft and checks it; Apply restages, validates and saves it, then reads it back.
 another connection is read-only and never discarded silently. Rule IDs are internal and stable;
 users see and reference rules by name. The servo editor previews positions with
 `servo preview` at most 10 Hz, one request in flight, keeping only the latest value; closing it
-releases the servo, and Confirm only changes the draft.
+releases the servo. Confirm saves only that servo: the applied plan with this servo changed goes
+through the usual staging and `config apply`, and the local draft keeps the other unsaved edits. It
+refuses when a draft validated on the board is pending, or when the board changed since it was read.
 
 **Test and simulation.** One run at a time. Physical outputs is unticked by default and fixed
 while running; the actual mode always comes from the firmware reply. A virtual run first releases

@@ -4,7 +4,6 @@ from PySide6.QtCore import Qt,Signal
 from PySide6.QtWidgets import QWidget,QFrame,QVBoxLayout,QHBoxLayout,QCheckBox,QHeaderView,QSizePolicy,QTableWidgetItem
 from .controller import REASONS
 from .arm_button import ArmButton
-from .airbrakes import control_text
 from .imu_calibration_page import STATES as IMU_STATES,CAUSES as IMU_CAUSES
 from .widgets import label,button,card,row,table,fill_table,create_page
 from .i18n import t
@@ -182,9 +181,10 @@ class DashboardPage(QWidget):
         can_prepare=usable and s.owns_control and arming=='disarmed' and not s.dirty and not s.staged and bool(s.capabilities.get('physical_actions'))
         plan=s.base if connected else None
         assigned_servos=plan.servo_channels() if plan else set()
-        air=s.airbrake_status if connected else {}; enabled=s.airbrakes.get('enabled',False)
+        # Configuration hints only: the airbrakes do not move on the pad, so the Dashboard neither
+        # polls nor shows live control state; the recorded flight shows what they did.
+        enabled=s.airbrakes.get('enabled',False)
         text=t('Disabled in Settings') if not enabled else t('No dedicated servo: configure the airbrakes in Rules.') if not plan or not plan.airbrakes['channel_mask'] else ''
-        if enabled and air.get('active'): text=control_text(air.get('flags',0),air.get('failed_conditions',0),plan.airbrakes['conditions'] if plan else [],plan.rules if plan else [])
         self.airbrake_summary.setText(t('Airbrakes')+' · '+text if text else '')
         self.airbrake_summary.setVisible(bool(text) and (bool(plan and plan.airbrakes['channel_mask']) or enabled))
         for i,check in enumerate(self.servo_selection):

@@ -185,7 +185,8 @@ by a rule shows **Configure**: open it to set the two positions the servo moves 
 - Move the slider, or use **−10 / −1 / +1 / +10**, to set the **Initial** and **Final** positions.
 - **Apply** moves the servo to that position once. **Live** makes the servo follow the slider while
   you drag it, which helps you find the exact end points on the real mechanism.
-- **Confirm** stores the positions in the draft; then **Validate** and **Apply** as usual.
+- **Confirm** saves that servo's positions to the board straight away. Any other unsaved change (for
+  example a rule you are editing) stays in the draft until you **Apply** it.
 
 The board refuses to arm while a servo used by a rule has no positions set.
 

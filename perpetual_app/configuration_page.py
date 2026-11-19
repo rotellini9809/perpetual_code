@@ -170,9 +170,7 @@ class ConfigurationPage(QWidget):
             return
         value=s.local.servos[index]
         dialog=ChannelDialog(self,kind,index+1,value,s.capabilities,self.controller,airbrake=s.local.airbrake_channel(index+1))
-        if dialog.exec():
-            plan=s.local.clone()
-            plan.servos[index]=dialog.result_value(); self.controller.edit_plan(plan)
+        if dialog.exec(): self.controller.save_servo(index+1,dialog.result_value()) # Saved to the board at once.
 
     def selected_rule(self):
         if not self.rules_tree.selectedItems(): return None
