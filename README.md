@@ -134,17 +134,17 @@ each one with screenshots.
 %%{init: {"flowchart": {"curve": "monotoneY"}}}%%
 flowchart TB
     subgraph Board["Perpetual board · RP2350"]
-        S["Sensors<br>IMU + barometer"]
-        N["Navigation · core 0<br>attitude, Kalman, flight phase"]
+        S("Sensors<br>IMU + barometer")
+        N("Navigation · core 0<br>attitude, Kalman, flight phase")
         subgraph Control["Flight control"]
-            R["Recovery rules"]
-            A["Airbrake control"]
-            O["Outputs<br>4 pyro + 4 servo"]
+            R("Recovery rules")
+            A("Airbrake control")
+            O("Outputs<br>4 pyro + 4 servo")
         end
         subgraph Data["Data & ground link"]
-            L["Recorder · core 1<br>samples + output starts"]
+            L("Recorder · core 1<br>samples + output starts")
             F[("16 MB flash")]
-            C["Command service"]
+            C("Command service")
         end
         S --> N
         N --> R
@@ -155,8 +155,8 @@ flowchart TB
         L --> F
         F -. "flight download" .-> C
     end
-    C <--> T(["Bluetooth / USB serial"])
-    T <--> App["Desktop app / PC tools"]
+    C <--> T("Bluetooth / USB serial")
+    T <--> App("Desktop app / PC tools")
 ```
 
 Real sensors, a hardware-in-the-loop stream from the PC and the on-board simulated flight all
