@@ -21,7 +21,7 @@ struct Device : storage::FlashDevice {
     return true;
   }
   bool eraseSector(uint32_t a) override {
-    assert(a >= 0x1000 && a%4096 == 0 && a+4096 <= bytes.size()); ++erases;
+    assert(a%4096 == 0 && a+4096 <= bytes.size()); ++erases;
     memset(bytes.data()+a, 255, 4096); return true;
   }
 };

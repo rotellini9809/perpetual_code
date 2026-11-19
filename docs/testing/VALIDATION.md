@@ -506,6 +506,22 @@ downloader fetched the 93 raw blocks in **3.0 s**; the CSV showed BOOST at 8.202
 end, maximum altitude 52.17 m, both virtual pyro starts at 13.056 s, 1337 rows with a fresh
 barometer reading and 77 deliberate history gaps. Every test flight was deleted afterwards.
 
+**Layout v2 (device journal, directory v2, flight ring).** After the upgrade the board reported
+`Directory`/`Corrupt` on the old layout as expected; `flights format`, `config reset`, one rule,
+`config apply` and `config orientation +X` then ran on the new journal, each persisted and
+verified, and the configuration was still valid after reflashing. FLASH_DIRECTORY_TEST
+(directory banks 0x010000..0x02FFFF, 150 updates with automatic and explicit compaction) and
+CONFIG_STORE_TEST (device journal 0x000000..0x00FFFF) passed and restored their regions. Two
+onboard Hoppino recordings (sequences 1 and 2, consecutive ring placements) saved **4602 and 4603
+of 6600 samples** (4603 is the host model: 175 history samples, full rate from BOOST to LANDED,
+LANDED at 10 Hz), **0 dropped**, no storage error, 82 blocks each. Preparation took 1.49 s and
+1.50 s (eight 64 KiB erases, about 1.16 s in total, longest 159 ms); growth was not needed. The
+worker peaked at 75 ms (history write at boost) with a queue peak of 17 of 128. The 200 Hz
+simulation loop had a maximum cycle of 1.37 ms; maximum lateness was 2.7 ms with one missed tick
+on the first run and 2.4 ms with none on the second. The download took 3.0 s; the CSV showed PAD
+history, 5 ms steps from BOOST to DESCENT and 100 ms steps in LANDED. Both flights were deleted.
+Growth during a long flight and ring overwrite are covered by host tests only.
+
 **Host.** All 36 runs of `python tools/run_tests.py --full --desktop` passed with the pinned
 WinLibs GCC 14.2 (ISO C++17, the firmware's compiler generation), including synchronous and
 queued USB recording/download of the Hoppino HIL flight compared sample by sample within half a
@@ -523,8 +539,8 @@ flight log v4 or the explicit orientation requirement. Current implementation is
 | Calibration and attitude | Per-arming gyro/reference collector, persistent mounting and six-face accelerometer calibration (persistence and UI) exist. The board still uses identity calibration values; initial-attitude/tilt qualification remains open |
 | Physical outputs | Shared execution, preparation/release and physical simulation are implemented and host-tested; pyro firing with real igniters works on the board. Servo mechanical behavior, interruption and load margins still need bench acceptance |
 | Driver timeout | Timeout disables driver readiness; recorder recovery cannot reinitialize it. Restart/reinitialization remains the current route |
-| Interrupted/old headers | Unsupported versions fail without migration; current recording header is v8 with sample blocks v4, and the configuration codec is v3. Explicit flight-memory format starts fresh |
-| Scheduler and storage | Worker close is asynchronous, but a stalled worker retains ownership; idle preparation/settings/scans stay synchronous. The pre-launch history write at boost measured 64 ms on the Hoppino replay; worst-case timing at 476 Hz in a real flight, stack high-water, watchdog and physical brownout coverage are not established |
+| Interrupted/old headers | Unsupported versions fail without migration; current layout v2 (device journal v1, directory v2, flight ring), recording header v8, sample blocks v4, configuration codec v3. A board with the previous layout needs `flights format` and its rules, settings and calibration saved again |
+| Scheduler and storage | Worker close is asynchronous, but a stalled worker retains ownership; idle preparation/settings/scans stay synchronous. The pre-launch history write at boost measured 64-75 ms on the Hoppino replay; growth erases during a real flight are not yet measured on the board; worst-case timing at 476 Hz in a real flight, stack high-water, watchdog and physical brownout coverage are not established |
 | Desktop and transports | Six-view USB/SPP app, IMU calibration, orientation, reset/format and power management exist. Separate-Windows qualification, BLE and negotiated binary export remain open |
 
 The [documentation map](../README.md#remaining-work) owns the consolidated

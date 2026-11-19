@@ -20,35 +20,58 @@ struct RawBlock {
   uint16_t frames = 0;
   uint8_t body[flightlog::BodyBytes] = {};
 };
-// Low-level synchronous storage-worker component. Caller owns a contiguous,
-// preallocated, erased extent. No erase or directory writes.
+// Low-level synchronous storage-worker component for one flight on the ring.
+// Sample block i lives at flight offset headerBytes + i * BlockBytes, mapped onto the ring.
+// The flight owns 64 KiB ring blocks given by its caller (directory ownership first); blocks
+// added by extend() are erased asynchronously by service(), while sealed blocks wait in a RAM
+// ring of PendingBlocks. No directory writes.
 class FlightSampleStore {
 public:
   static constexpr uint32_t BlockBytes = flightlog::BlockBytes, BodyBytes = flightlog::BodyBytes;
+  static constexpr unsigned PendingBlocks = 16; // About 2 s at 476 Hz: a worst-case 64 KiB erase.
   explicit FlightSampleStore(FlashDevice &flash) : flash_(flash) {}
-  bool begin(uint64_t sequence, uint32_t start, uint32_t allocatedBytes);
-  // Encodes one sample group; when the RAM block is full it is first sealed and
-  // written (7 body pages, then the commit page). Full means the extent is used up.
-  bool append(const FlightSample &sample, bool history = false);
-  bool flush(); // Writes the partially filled RAM block, if any.
-  bool finish(); // Flush pending samples, then close; no footer/directory operation.
+  // ownedBytes (flight bytes from the start, including the header) are already erased.
+  bool begin(uint64_t sequence, uint32_t flightStart, uint32_t headerBytes, uint32_t limitBytes, uint32_t ownedBytes);
+  // Adds owned 64 KiB blocks after the current ones; service() erases them in order.
+  bool extend(uint32_t blocks);
+  // Advances an erase in progress, starts the next one and writes pending blocks.
+  bool service();
+  // Encodes one sample group; a full RAM block is sealed and written or queued.
+  // Full means the sample limit or the owned extent is used up.
+  bool append(const FlightSample &sample, bool history = false, bool deliberate = false);
+  bool flush(); // Seals the partially filled RAM block and writes everything pending.
+  bool finish(); // Flush, finish any erase, then close; no footer/directory operation.
   bool readBlock(uint32_t address, uint64_t sequence, uint32_t index, RawBlock &output);
+  uint32_t address(uint32_t index) const { return FlashLayout::ringAddress(flightStart_, headerBytes_ + index * BlockBytes); }
   bool active() const { return active_; }
   uint32_t committedSamples() const { return committedSamples_; }
   uint32_t committedBytes() const { return blocks_ * BlockBytes; }
   uint16_t bufferedSamples() const { return encoder_.frames(); }
+  uint32_t ownedBytes() const { return ownedBytes_; }
+  bool erasing() const { return eraseBusy_ || erasedBytes_ < ownedBytes_; }
+  // Erased sample space not yet holding a written or pending block.
+  uint32_t erasedAheadBytes() const;
+  bool limitCovered() const { return ownedBytes_ - headerBytes_ >= limitBytes_; }
   SampleError error() const { return error_; }
   static const char *errorName(SampleError error);
 private:
   friend class FlightRecorder;
-  void abandon() { active_ = false; encoder_.reset(); }
+  void abandon() { active_ = false; encoder_.reset(); pendingCount_ = 0; }
   bool fail(SampleError error) { error_ = error; return false; }
-  uint32_t capacity() const { return allocatedBytes_ / BlockBytes; }
+  uint32_t maxBlocks() const;
+  bool seal();
+  bool drain(bool wait);
+  bool waitErase();
+  bool writeBlock(const uint8_t *body);
   FlashDevice &flash_;
   flightlog::Encoder encoder_;
-  uint32_t start_ = 0, allocatedBytes_ = 0, blocks_ = 0, committedSamples_ = 0;
+  uint32_t flightStart_ = 0, headerBytes_ = 0, limitBytes_ = 0, ownedBytes_ = 0, erasedBytes_ = 0;
+  uint32_t blocks_ = 0, committedSamples_ = 0;
   uint64_t sequence_ = 0;
-  bool active_ = false;
+  bool active_ = false, eraseBusy_ = false;
+  uint8_t pending_[PendingBlocks][BodyBytes] = {};
+  uint16_t pendingFrames_[PendingBlocks] = {};
+  unsigned pendingHead_ = 0, pendingCount_ = 0;
   uint8_t body_[BodyBytes] = {}, page_[256] = {}, check_[256] = {};
   SampleError error_ = SampleError::None;
 };

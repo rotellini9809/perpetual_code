@@ -84,12 +84,15 @@ connection that opened it; a disconnect discards the draft, never the applied se
 Edits require a disarmed board and an active draft; `config begin` refuses if a draft already
 exists. Apply replies `"applied":true,"persisted":true,"verified":true` on success.
 
-The board keeps **one** saved copy. Boot loads and checks it; missing or invalid settings leave
-the board without a configuration, and the board never formats anything or installs a default.
-If a save fails after it started, the old copy may be lost: the draft stays available, the old
-plan is not silently reactivated, and further saves are disabled until reboot. Load and save
-errors are `Missing`, `Corrupt`, `UnsupportedVersion`, `InvalidConfiguration` and `Io`. Binary
-layout: [Storage format](STORAGE_FORMAT.md#configuration-package).
+Rules, orientation, state machine and airbrake enable are separate records in the device
+journal; each save writes a new copy beside the previous one. Boot loads and checks the newest
+copy; missing or invalid settings leave the board without a configuration, and the board never
+formats anything or installs a default. If a save fails after it started, the draft stays
+available, the old plan is not silently reactivated, and further saves are disabled until reboot.
+After the reboot an interrupted save falls back to the previous copy, while a complete copy
+damaged later reports `Corrupt`. Load and save errors are `Missing`, `Corrupt`,
+`UnsupportedVersion`, `InvalidConfiguration` and `Io`. Binary layout:
+[Storage format](STORAGE_FORMAT.md#device-journal-v1-block-0).
 
 ## Editing commands
 

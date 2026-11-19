@@ -176,8 +176,8 @@ backup.
 | BLUETOOTH_TEST | USB `status`, `at AT`; phone `ping` | UART probe/snapshot/echo; explicit `name set` changes module names; external flash untouched |
 | BLUETOOTH_NAME_TEST | `probe`, `name set "Perpetual"`, `module reboot` | Raw UART/name test; rename uses module memory; explicit reboot drops Bluetooth links; outputs inactive |
 | FLASH_TEST | ID sweep on connection; `r` repeats; `w` starts sector test; `c` sweeps SPI clocks 4-75 MHz (read-only region CRC with 0x03/0x0B, one page programmed per clock in the backed-up test sector, then restored); exact `ERASE ALL` erases the whole device | `w` backs up/restores `0xFFF000..0xFFFFFF`; `ERASE ALL` destroys and verifies all 16 MiB, including settings and flights; `FULL FLASH ERASE VERIFIED` |
-| FLASH_DIRECTORY_TEST | `d` | Backs up both banks `0x005000..0x014FFF` (64 KiB); `DIRECTORY TEST PASSED` |
-| CONFIG_STORE_TEST | `c` | Backs up settings `0x001000..0x004FFF` (16 KiB); `CONFIGURATION STORE TEST PASSED` |
+| FLASH_DIRECTORY_TEST | `d` | Backs up both directory banks `0x010000..0x02FFFF` (128 KiB); `DIRECTORY TEST PASSED` |
+| CONFIG_STORE_TEST | `c` | Backs up the device journal `0x000000..0x00FFFF` (64 KiB: rules, settings, calibration); `CONFIGURATION STORE TEST PASSED` |
 
 `SMOKE_TEST` preserves the board-level check from remote commit `e65ce64`, adapted to current
 drivers and selected in the existing PlatformIO environment. Flash identification accepts the

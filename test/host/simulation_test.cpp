@@ -199,9 +199,10 @@ void run() {
   assert(!sim.begin(true)); const auto recordOrigin = nowUs;
   for (uint32_t t = 0; t <= source.durationMs(); ++t) { nowUs = recordOrigin+t*1000; sim.poll(); }
   // PAD until BOOST at 8202 ms (about 1641 samples) becomes the pre-launch history:
-  // 0.5 s at full rate (101) plus 10 Hz before (77). Everything from BOOST on is kept.
+  // 0.5 s at full rate (101) plus 10 Hz before (77). LANDED from 30225 ms to the end
+  // (555 samples) is kept at 10 Hz (28). Everything in between is kept at full rate.
   const auto saved = sim.status().savedSamples;
-  assert(saved >= 6600 - 1641 + 178 - 5 && saved <= 6600 - 1641 + 178 + 5 && sim.status().droppedSamples == 0);
+  assert(saved == 4603 && sim.status().droppedSamples == 0); // Deterministic dataset: about 6600 - 1641 + 178 - 555 + 28.
   assert(recorder.current()->status == storage::FlightStatus::Completed);
   assert(!config.setStateMachine(recovery::StateMachineSettings{}));
   storage::RecordingInfo info; assert(recorder.inspect(1,info));

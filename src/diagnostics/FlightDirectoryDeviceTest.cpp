@@ -2,14 +2,16 @@
 #ifdef FLASH_DIRECTORY_TEST
 #include "storage/FlightDirectory.h"
 #include "storage/FlashLoggerAdapter.h"
+#include "storage/FlashLayout.h"
 #include "hardware/board_pins.h"
 
 namespace {
 SPIClassRP2040 directorySpi(FLASH_SPI_PORT, MISO_FLASH, CS_FLASH1, SCK_FLASH, MOSI_FLASH);
 FlashLogger directoryFlash(directorySpi, CS_FLASH1);
 storage::FlashLoggerAdapter directoryDevice(directoryFlash);
-constexpr uint32_t BackupBegin = 0x5000;
-constexpr uint32_t BackupBytes = 65536;
+// Both directory banks (blocks 1..2); the device journal and the ring are never touched.
+constexpr uint32_t BackupBegin = storage::FlashLayout::DirectoryA;
+constexpr uint32_t BackupBytes = 2 * storage::FlashLayout::DirectoryBankBytes;
 uint8_t directoryBackup[BackupBytes];
 bool backupAtRisk = false;
 bool connected = false;
@@ -27,21 +29,21 @@ void testDirectory() {
       !verifyBytes(BackupBegin, directoryBackup, BackupBytes)) {
     Serial.println("Backup failed; no changes."); return;
   }
-  Serial.println("Backup of 0x005000..0x014FFF verified. Testing directory A/B only.");
+  Serial.println("Backup of 0x010000..0x02FFFF verified. Testing directory A/B only.");
   backupAtRisk = true;
   storage::FlightDirectory directory(directoryDevice);
   bool passed = directory.format();
   storage::FlightEntry entry;
-  entry.sequence = 1; entry.start = 0x15000; entry.allocatedBytes = 4096;
+  entry.sequence = 1; entry.start = storage::FlashLayout::RingBegin; entry.allocatedBytes = storage::FlashLayout::BlockBytes;
   passed = passed && directory.update(entry);
-  for (unsigned i = 1; passed && i <= 80; ++i) {
+  for (unsigned i = 1; passed && i <= 150; ++i) { // More than one bank (128 slots): automatic compaction.
     entry.committedBytes = i * 10; passed = directory.update(entry);
   }
   entry.status = storage::FlightStatus::Completed;
   passed = passed && directory.update(entry) && directory.compact();
   storage::FlightDirectory reboot(directoryDevice);
   passed = passed && reboot.mount() && reboot.count() == 1 && reboot.highWater() == 1 &&
-      reboot.entries()[0].committedBytes == 800 &&
+      reboot.entries()[0].committedBytes == 1500 &&
       reboot.entries()[0].status == storage::FlightStatus::Completed && reboot.generation() >= 3;
   entry.status = storage::FlightStatus::Invalidated;
   passed = passed && reboot.update(entry) && reboot.compact();
@@ -52,10 +54,8 @@ void testDirectory() {
     Serial.print("Directory error: "); Serial.println(storage::FlightDirectory::errorName(directory.error()));
     Serial.print("Flash error: "); Serial.println(FlashLogger::errorName(directoryFlash.lastError()));
   }
-  bool restored = true;
-  for (uint32_t offset = 0; restored && offset < BackupBytes; offset += FlashLogger::SectorSize)
-    restored = directoryFlash.eraseSector(BackupBegin + offset) &&
-        directoryFlash.program(BackupBegin + offset, directoryBackup + offset, FlashLogger::SectorSize);
+  bool restored = directoryFlash.eraseRange(BackupBegin, BackupBytes) &&
+      directoryFlash.program(BackupBegin, directoryBackup, BackupBytes);
   restored = restored && verifyBytes(BackupBegin, directoryBackup, BackupBytes);
   backupAtRisk = !restored;
   Serial.println(restored ? "Original directory regions RESTORED and VERIFIED." : "RESTORE FAILED; do not reboot: backup is in RAM.");
@@ -76,7 +76,7 @@ void loop() {
   if (!connected) {
     connected = true; delay(300);
     Serial.println("\n=== FLASH_DIRECTORY_TEST ===");
-    Serial.println("Send d + Enter: test A/B banks 0x005000..0x014FFF (64KiB), then restore RAM backup.");
+    Serial.println("Send d + Enter: test A/B banks 0x010000..0x02FFFF (128KiB), then restore RAM backup.");
     Serial.println("Power loss during test can destroy those regions. Calibration/settings/flight data are untouched.");
   }
   if (Serial.available()) {

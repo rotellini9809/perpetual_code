@@ -11,63 +11,110 @@ are never serialized. Shared `BinaryEncoding.h` implements these primitives. Rec
 separate body/commit programming units, each programmed once between erases. Per-record rules
 below define the covered bytes; CRC alone does not establish extent ownership.
 
-## Fixed memory map
+## Memory map (layout v2)
 
-| Region | Begin | End inclusive | Size |
-|---|---|---|---|
-| Accelerometer calibration and approval journal | 0x000000 | 0x000FFF | 4 KiB |
-| Configuration reservation (rules + mounting) | 0x001000 | 0x004FFF | 16 KiB |
-| Directory A | 0x005000 | 0x00CFFF | 32 KiB |
-| Directory B | 0x00D000 | 0x014FFF | 32 KiB |
-| Flight headers and sample extents | 0x015000 | 0xFFFFFF | 0xFEB000 bytes |
+Goals: every small record is written beside the previous one and the old copy is erased only
+afterwards (no power cut can lose a setting); every large region is 64 KiB aligned (every erase is
+one command); flight space grows while flying and the oldest flights are overwritten.
 
-The W25Q128JV capacity, geometry and region map are fixed in `include/storage/FlashLayout.h`.
-Constructors accept only FlashDevice; alternate runtime layouts are not supported. Compile-time
-assertions check alignment and disjoint regions. Persisted directory headers must match this
-same map before mount. Directory operations erase/program only the two directory banks. Every
-allocation must be contiguous and end at or before DataEnd. Overlap checks use linear intervals;
-older wrapped metadata is rejected without writes.
+| 64 KiB block | Address | Size | Contents | Erase unit |
+|---|---|---|---|---|
+| 0 | 0x000000 | 32 KiB | Device journal, bank A | 32 KiB block (0x52) |
+| 0 | 0x008000 | 32 KiB | Device journal, bank B | 32 KiB block (0x52) |
+| 1 | 0x010000 | 64 KiB | Flight directory, bank A | 64 KiB block (0xD8) |
+| 2 | 0x020000 | 64 KiB | Flight directory, bank B | 64 KiB block (0xD8) |
+| 3..255 | 0x030000 | 253 x 64 KiB | Flight ring (15.81 MiB) | 64 KiB block (0xD8) |
 
-## Device IMU calibration journal v1
+Nothing else exists: no separate calibration, identity or settings sectors and no reserved gaps.
+The map is fixed in `include/storage/FlashLayout.h` (compile-time checks for alignment and
+disjoint regions); constructors accept only FlashDevice and alternate layouts are not supported.
+`flights format` erases only blocks 1..255 (directory and ring); block 0 is erased only by its own
+journal compaction or by the diagnostic ERASE ALL. A device with the previous layout (directory at
+0x005000) mounts as `Directory`/`Corrupt` and needs `flights format`; its old calibration, rules
+and settings are not read and must be saved again.
 
-The dedicated 0x000000 sector contains sixteen append-only 256-byte records. Each
-record stores magic 0x554D4950 at 0 (u32), version 1 at 4 (u8), approval at 5 (u8:
-0 required, 1 verified, 2 in-use), calibration revision at 8 (nonzero u32), XYZ bias
-at 12 (three float32, m/s^2), XYZ scale at 24 (three float32), and CRC32 of bytes
-0..251 at 252. Other bytes remain FF. Every approval record carries the complete
-coefficient set and revision, binding approval to that calibration.
+## Device journal v1 (block 0)
 
-Load is read-only. The last complete record supplies coefficients; a trailing torn
-record revokes approval rather than falling back to an earlier verified record.
-An in-use record loaded after reboot always requires a new verification. Invalid
-coefficients, unsupported records, erased memory and read failures cannot approve arm.
-An explicit later verification can append a new complete approval after a torn write.
+One typed, append-only journal for everything that describes the device
+(`DeviceJournal`). For each record type the valid record with the highest sequence number wins.
+Every operation rescans the bank, so the configuration and calibration stores never disagree.
 
-Before physical arming, the controller programs/readback-verifies in-use while idle.
-At physical Boost it consumes the RAM reservation without accessing calibration flash.
-Disarm before Boost restores verified after recording finalization. Simulations never
-reserve or consume approval. Full-journal compaction and new calibration erase this
-sector only while idle; interrupted erase/replacement may require recalibration.
-No automatic boot formatting or replacement coefficients are installed.
+Each 32 KiB bank: page 0 is the bank header, page 1 its commit page, pages 2..127 hold records.
 
-Gyro bias and initial attitude remain per-arming RAM values. Their historical copies,
-accelerometer bias/scale and calibration revision are frozen in the flight header.
-Mounting is a separate saved signed axis; see [navigation](NAVIGATION.md#calibration-and-mounting).
+| Bank header offset | Width | Meaning |
+|---|---|---|
+| 0 | 4 | Magic 0x4A564450 ("PDVJ") |
+| 4 | 2 | Journal version 1 |
+| 8 | 8 | Bank generation, nonzero; the valid header with the highest generation is active |
+| 16 | 8 | Next record sequence after the records copied into this bank |
+| 252 | 4 | CRC-32 of bytes 0..251 |
 
-## Configuration package
+Two valid headers with the same generation are `Corrupt`. A record is a header page,
+`ceil(length / 256)` payload pages and a commit page, written in that order, each programmed
+once and read back:
 
-| Region-relative address | Contents |
-|---|---|
-| 0x000..0x0FF | Header page |
-| 0x100..0x1FF | Completion page, programmed last |
-| 0x200 onward | Payload, padded to 256-byte pages |
+| Record header offset | Width | Meaning |
+|---|---|---|
+| 0 | 4 | Magic 0x52564450 ("PDVR") |
+| 4 | 1 | Record type (below) |
+| 5 | 1 | Type version 1 |
+| 6 | 1 | Flags, 0 for new writes: bit 0 damaged after, bit 1 corrupt after, bit 2 placeholder (compaction only) |
+| 8 | 8 | Sequence number, strictly increasing across the journal |
+| 16 | 4 | Payload length in bytes, 0..4096 |
+| 20 | 4 | CRC-32 of the payload |
+| 252 | 4 | CRC-32 of bytes 0..251 |
 
-Header: magic 0x47464350 at 0 (u32), version 3 at 4 (u16), payload byte length at 8 (u32),
-payload CRC at 12 (u32), header CRC over bytes 0..251 at 252 (u32). Completion page: magic
-0x54494D43 at 0, header CRC at 4, payload CRC at 8 and payload length at 12 (all u32). All
-metadata is checked before bounded decoding.
+The commit page holds magic 0x43564450 ("PDVC"), the header CRC and its complement at offsets
+0, 4, 8; the rest is FF. Bank commit pages use the same layout with the bank header CRC.
 
-Payload field order:
+| Type | Record | Payload |
+|---|---|---|
+| 1 | IMU calibration | 30 bytes: approval (u8: 0 required, 1 verified, 2 in use, 3 invalid), identity (u8: 0x49 factory identity coefficients, FF custom), revision (u32), accel bias XYZ (3 x float32, m/s^2), accel scale XYZ (3 x float32) |
+| 2 | Orientation | 1 byte: up axis +X, -X, +Y, -Y, +Z, -Z = 0..5 |
+| 3 | Rules | configuration codec version (u16, 3), then the [codec v3 package](#configuration-codec-v3) (at most 4094 bytes) |
+| 4 | IMU identity revoked | empty; its presence revokes the factory identity |
+| 5 | State machine | 5 bytes: bistage (u8 0/1), minimum COAST 1 velocity (float32 m/s) |
+| 6 | Airbrakes | 1 byte: enabled 0/1 |
+
+Each setting is its own type, so damage to one never resets another. A missing type means "not
+set": no rules (`Missing`), orientation unconfigured (physical arm blocked with
+ORIENTATION_NOT_READY), normal state machine, airbrakes disabled, no calibration.
+
+**Reading.** Pick the active bank, then walk pages from 2. A header with valid magic and CRC owns
+its declared extent: with a matching payload CRC, type version and commit it is a record; any
+other page that is not erased is skipped one page at a time and marks every type as damaged. The
+append position follows the last non-erased page.
+
+**Torn versus damaged.** A record without its commit never completed (a power cut while
+writing): it is ignored and the previous record of that type stays in force, but the type is
+reported as *damaged after*. A record whose commit is present but whose payload no longer
+matches was complete and was damaged later: the type is *corrupt after*. Settings and rules with
+a corrupt newer record report `Corrupt` (run readiness blocked until saved again) rather than
+silently falling back to an older value. For the IMU calibration, any damage after the newest
+record turns the approval into Invalid (recalibration required) without revoking the identity:
+a torn write is not a failed verification.
+
+**Writing.** The first write on a device whose block 0 has no valid bank erases bank A and
+commits generation 1. A new record is appended at the append position, then read back through the
+normal scan: it must be the newest valid record of its type. If it does not fit, the journal
+compacts first. IMU approval changes (verified, in use at arming, verified again after disarm)
+are new type-1 records with the same coefficients.
+
+**Compaction.** Erase the inactive bank (32 KiB), copy the newest valid record of every kept type
+into it with its original sequence and its damage flags (byte 6), then write the bank header with
+generation + 1 and its commit. A type that has damage but no valid copy is kept as an empty
+placeholder record (flag bit 2) carrying that damage. Until the commit the old bank stays active;
+after it, the new one is. A bank holds 126 record pages: a rules save uses at most 18, other saves
+3, so compaction happens every few tens of saves, only while disarmed and idle.
+
+**Factory reset** (`config reset`) is a compaction that keeps only types 1 and 4: rules, orientation
+and settings are gone; calibration and the identity revocation survive. The revocation is erased
+only by ERASE ALL.
+
+## Configuration codec v3
+
+The rules package stored in journal type 3 and frozen in every flight header. All metadata is
+checked before bounded decoding. Payload field order:
 
 1. Rule count (u8).
 2. Four pyro pulse durations (u32 milliseconds each).
@@ -96,9 +143,8 @@ payload bytes and excessive counts are rejected.
 
 Current maximum structural payload is 2,255 bytes (all arrays at capacity, before global
 channel-ownership validation). The largest semantically possible plan is smaller because there
-are only eight uniquely assignable physical channels. The codec buffer is 4,096 bytes, guarded
-by a compile-time single-sector size check; the reserved region remains 16 KiB. This
-configuration format is separate from the flight-log/header format, which embeds this same
+are only eight uniquely assignable physical channels. A compile-time check keeps it within one
+journal record (4094 bytes after the version prefix). The flight header embeds this same
 encoded plan.
 
 Condition-kind codes are Phase=0, ApogeeDetected=1, AltitudeComparison=2, AltitudeRange=3,
@@ -106,52 +152,87 @@ AbsoluteVelocityComparison=4, AbsoluteVelocityRange=5, TimeSinceLaunch=6, TimeSi
 TimeSinceRule=8. Comparison codes are Less=0, Greater=1, LessEqual=2, GreaterEqual=3. Output
 kind is Pyro=0, Servo=1.
 
-## Directory journal
+## Flight directory v2 (blocks 1..2)
 
-Each bank has 64 slots of 512 bytes: a 256-byte body and separate 256-byte commit. The body CRC
-includes reserved FF bytes; the commit binds that CRC and its complement.
+Each 64 KiB bank has 128 slots of 512 bytes: a 256-byte body and a separate 256-byte commit page.
+The body is written and read back first, the commit page last. The body CRC includes reserved FF
+bytes; the commit binds that CRC and its complement.
 
 | Body offset | Width | Meaning |
 |---|---|---|
 | 0 | 4 | Magic 0x52494450 |
-| 4 | 2 | Version 1 |
+| 4 | 2 | Version 2 |
 | 6 | 1 | Kind: 0 bank header, 1 flight update |
 | 8 | 8 | Bank generation, starting at 1 |
 | 16 | 4 | Slot index |
-| 24 | 8 | Flight sequence, or sequence high-water mark in header |
-| 32 | 4 | Flight start, or baseline entry count in header |
-| 36 | 4 | Committed logical byte length, flight updates only |
-| 40 | 4 | Allocated erase-aligned extent length, flight updates only |
-| 44 | 1 | Flight status, flight updates only |
+| 24 | 8 | Flight sequence (header: sequence high-water mark) |
+| 32 | 2 | First ring block 0..252 (header: baseline entry count, u32) |
+| 34 | 2 | Owned ring blocks, 1..253 |
+| 36 | 4 | Committed logical bytes from the flight start |
+| 40 | 1 | Flight status |
 | 252 | 4 | CRC-32/ISO-HDLC of body bytes 0..251 |
 
-Header bodies additionally bind the layout using five uint32 values at offsets 40,44,48,52,56: A
-start, B start, bank size, data begin and exclusive data end. Commit pages store magic
-0x54494D43 at offset 0, body CRC at 4 and its complement at 8; the rest is FF. Body is
-written/readback-verified first; commit page last.
+Header bodies bind the layout with five u32 values at offsets 40, 44, 48, 52, 56: bank A start,
+bank B start, bank bytes, ring start (0x030000) and ring block count (253); a mismatch is
+`Corrupt` and is never autoformatted. Commit pages store magic 0x54494D43 at offset 0, body CRC
+at 4 and its complement at 8; the rest is FF.
 
 Status values: 1 Recording, 2 Completed, 3 Interrupted, 4 StoppedFull, 5 Invalidated, 6 Corrupt.
-Existing status values and the normal format-1 encoding are unchanged; firmware must understand
-value 6 to mount a directory containing quarantined flights.
+Slot 0 is the bank header. Its baseline count is the number of copied retained entries; its saved
+high-water mark prevents sequence reuse after deletion. Generation and recording sequence are
+nonzero u64 values; exhaustion fails without wrapping. The RAM ordering of entries is not their
+stable identity. See [transactions](STORAGE.md#directory-transactions).
 
-Slot zero is the bank header. Its baseline count is the number of copied retained entries; its
-saved high-water mark prevents sequence reuse after deletion. Generation and recording sequence
-are nonzero uint64 values; exhaustion fails without wrapping. Each bank has 64 slots; MaxEntries
-is 48 retained flights.
-The RAM ordering of entries is not their stable identity. See [transactions](STORAGE.md#directory-transactions).
+At most 32 retained flights (MaxEntries); placement invalidates the oldest beyond that. One
+flight writes at most 65 updates: start, growths, close, and one invalidation for each older
+flight it overwrites. Arming compacts the directory first (erase the other 64 KiB bank, copy at
+most 32 entries) when fewer than 65 slots are free; a compacted bank leaves at least 95, so
+compaction never happens during a flight. Overlap checks are circular over the ring; an extent
+longer than the ring is rejected at mount without writes.
+
+## Flight ring (blocks 3..255)
+
+A flight owns `n` consecutive ring blocks starting at block `b`, wrapping: blocks
+`b, b+1, ..., b+n-1` modulo 253. Logical byte `o` of the flight lives at
+`0x030000 + ((b * 65536 + o) mod (253 * 65536))`. The flight header (recording header, starts
+table, summary; at most 8 KiB) occupies the start of block `b`; v4 sample blocks follow at
+logical offset `headerBytes`. 2 KiB sample blocks never straddle a 64 KiB block, and each stores
+its physical address.
+
+- **Placement.** A new flight starts at the block after the newest retained flight (block 0 on
+  an empty directory).
+- **Arming.** Own and erase a base of 8 blocks (512 KiB, about 30 s at 476 Hz) before the flight
+  starts. Measured on the board: 8 erases in about 1.2 s; preparation about 1.5 s.
+- **Growth.** When less than 128 KiB (about 7.5 s at 476 Hz) of erased space remains ahead, own
+  8 more blocks: write the directory update first, then erase them one 64 KiB block at a time
+  (asynchronous erase command and status polling on core 1). While an erase is busy nothing else
+  touches the flash: sealed 2 KiB blocks wait in a RAM ring of 16 (28 KiB, about 2 s at 476 Hz,
+  the W25Q128JV worst-case 64 KiB erase time) and are written once the erase completes.
+- **Overwrite.** Blocks needed by growth or placement that belong to older flights are freed by
+  invalidating those flights, oldest first, whatever their status (including Corrupt), before
+  any erase. A flight is invalidated whole even if only part of it is needed.
+- **Full.** The current flight stops with StoppedFull only when its next block would be its own
+  first block, after the whole ring is used (about 16 minutes at 476 Hz).
+
+### Logging rate by phase
+
+PAD keeps the [pre-launch history](#pre-launch-history) (last 0.5 s at full rate, 10 Hz for the
+10 s before). BOOST, COAST and DESCENT are logged at the full IMU rate. LANDED is logged at 10 Hz
+(one sample per 100 ms with the newest barometer reading attached, decimation GAPs flagged
+deliberate) for the 15 s landing window, after which the run closes. State changes between kept
+samples appear on the next kept sample; output start times stay exact in the header starts table.
 
 ## Recording header v8
 
 `plan(config, limits, layout)` validates the complete plan and computes layout without flash
 access. It reserves exactly one slot per assigned output, ordered by rule order and assignment
 order, up to all eight physical channels. There are no slots for unassigned channels. Duplicate
-ownership is rejected by configuration validation. `create()` accepts only sector-aligned
-locations inside the flight-data region, checks the complete header reservation is erased, and
-never overwrites existing bytes. The caller must already own the reserved extent; erased space
+ownership is rejected by configuration validation. `create()` accepts only the start of a ring
+block, checks the complete header reservation is erased, and never overwrites existing bytes. The caller must already own the reserved extent; erased space
 is not proof that it is free. Allocation and explicit reuse belong to FlightRecorder.
 
-The header reservation is sector-aligned, allowing the existing `FlightSampleStore` to start at
-`flightStart + layout.headerBytes` in a separately owned sample extent. The table is sized
+The header reservation is sector-aligned; `FlightSampleStore` starts at logical offset
+`layout.headerBytes` of the same flight extent. The table is sized
 before any samples are written and is never extended later. The small three-output fixture needs
 4 KiB; an eight-output header needs 8 KiB. The exact size also depends on the encoded
 configuration.
@@ -209,7 +290,7 @@ summary; v1..v7/unknown headers are rejected without migration. Layout equations
 tableOffset   = 512 + align256(configBytes)
 summaryOffset = tableOffset + slotCount * 512
 headerBytes   = align4096(summaryOffset + 512)
-sampleStart   = flightStart + headerBytes
+sampleStart   = ringAddress(flightStart, headerBytes)
 ```
 
 ## Output-start slot v1
@@ -254,7 +335,8 @@ changes. The board stores and transfers raw blocks; only the PC decodes and cali
 
 A block is 2048 bytes = 8 pages: pages 0..6 are the 1792-byte body, page 7 the commit page. Every
 page is programmed once between erases, body before commit. Blocks are contiguous after the
-header reservation; two blocks fit one 4 KiB sector.
+header reservation at logical offsets of the flight extent (wrapping with the ring); 32 blocks
+fill one 64 KiB block and a block never straddles two.
 
 | Body offset | Width | Meaning |
 |---|---|---|
@@ -281,8 +363,8 @@ header reservation; two blocks fit one 4 KiB sector.
 
 Commit page: magic 0x4D435350 at offset 0, body CRC at 4, its uint32 complement at 8; remaining
 bytes FF (unchanged from v3). A block is committed once those 12 bytes follow the body. The
-writer programs the 7 body pages with `programErased()` (the extent was verified erased at
-preparation; the driver verifies each page), then the commit page, then reads the 2 KiB back
+writer programs the 7 body pages with `programErased()` (each 64 KiB block is erased just
+before use, at arming or by growth; the driver verifies each page), then the commit page, then reads the 2 KiB back
 once and compares it end to end. A write failure is never retried. Bytes 40..55 make every block decodable on its own: a decoder
 starts each block from this state snapshot, so a damaged earlier block never corrupts a later one.
 Recovery and `flights info` count samples from offset 36 without decoding records; recovery
@@ -310,7 +392,7 @@ never split across blocks.
 
 FRAME flags: bit 0 estimates present; bit 1 pre-launch history (written from the pad buffer);
 bit 2 IMU invalid (the six values are then 0; -32768 remains a valid saturated code).
-GAP flags: bit 0 deliberate decimation (pad history), clear for real loss (queue full, FIFO
+GAP flags: bit 0 deliberate decimation (pad history, LANDED at 10 Hz), clear for real loss (queue full, FIFO
 overrun, invalid acquisition).
 
 FRAME `dt` is the time since the previous FRAME of the same block, 0 for the first one (whose
@@ -355,15 +437,16 @@ each kept group). On the first non-PAD frame it encodes the 10 Hz history, then 
 tail, both with FRAME flag bit 1 and decimation GAPs, then continues live. A run that ends in
 PAD is discarded as today for hardware; simulation/HIL write their buffer at close. Writing the
 buffer (about 11 KB) takes about 40 ms of core 1 while live frames wait in the 128-entry queue
-(about 270 ms at 476 Hz). On the board, the Hoppino replay (200 Hz, 8.2 s of PAD) kept 175
-history samples and 5137 of 6600 overall; the boost-time write was the longest worker job
-(64 ms, queue peak 15 of 128).
+(about 270 ms at 476 Hz). On the board, the Hoppino replay (200 Hz, 8.2 s of PAD) keeps 175
+history samples and, with LANDED at 10 Hz, 4603 of 6600 overall (82 blocks); the boost-time
+write is the longest worker job (about 75 ms, queue peak 17 of 128).
 
 ### Size
 
 At 476 Hz with valid estimates: FRAME 28 B x 476 + BARO 8 B x 100 = 14.1 KB/s of records; with
-84 % payload efficiency (1724 of 2048 bytes) about 16.8 KB/s of flash. 1 MiB holds about 62 s
-of flight after the pre-launch history; v3 held about 19 s at the same rate. Measured on the
+84 % payload efficiency (1724 of 2048 bytes) about 16.8 KB/s of flash. The 512 KiB base holds about
+30 s after the pre-launch history and each growth step another 30 s; the whole ring about
+16 minutes (v3 held about 19 s per MiB). Measured on the
 board: about 55 frames per block and 7.8 ms of worker time per block (write + read-back), i.e.
 about 7 % of core 1 at 476 Hz (v3: about 33 %).
 
@@ -373,7 +456,7 @@ about 7 % of core 1 at 476 Hz (v3: about 33 %).
 `block_chunk_bytes: 448`. `flights block <sequence> <index> <offset>` returns `bytes` of the
 validated body starting at `offset` as base64 (`data`), with the block's `frames`; four chunks
 make one body. The board validates header, CRC and commit before sending; the PC decoder checks
-everything again and rejects any damaged byte. The Hoppino flight (93 blocks) downloads in
+everything again and rejects any damaged byte. The Hoppino flight (82 blocks) downloads in
 about 3 s over USB.
 
 ### CSV export (PC decoder)
@@ -422,15 +505,13 @@ unclosed directory entry does not turn that entry into Completed after a restart
 
 ## Compatibility
 
-Component versions are independent: configuration codec is v3 and recording header is v8;
-sample blocks are v4; directory/start/summary remain v1. Only configuration codec v3 is read and written;
+Component versions are independent: device journal v1, flight directory v2, configuration
+codec v3, recording header v8, sample blocks v4, start slots and summary v1. Only configuration codec v3 is read and written;
 older packages and snapshots are rejected. There is no conversion or legacy decoder.
-No automatic erase or migration writes occur at boot. `flights info` reports `config_version:3`
+No automatic erase or migration writes occur at boot; the previous layout is not read. `flights info` reports `config_version:3`
 and `flights config` exports that codec.
-Directory status values are Recording=1, Completed=2, Interrupted=3,
-StoppedFull=4, Invalidated=5, Corrupt=6. Firmware that only accepts 1..5 cannot mount a bank
-containing Corrupt and must not autoformat it. The frozen whole-image FNV64 regression value is
-`0xf08714d236eb60fb` (header v8, sample blocks v4; the fixture uses zero channel delays).
+The frozen whole-image FNV64 regression value is
+`0xf00e48afbf5b4dc9` (header v8, sample blocks v4; the fixture uses zero channel delays).
 
 ## Per-flight calibration snapshot (header v8)
 
@@ -461,39 +542,6 @@ than inventing a physical calibration. The finite barometric reference is still 
 All remaining descriptor padding stays FF. `flights calibration <sequence>` exports this
 snapshot separately to keep replies bounded; the downloader stores it under `calibration`
 in the flight JSON sidecar. No current device settings are consulted when displaying it.
-
-## Board mounting record
-
-The second sector of the configuration reservation (0x002000) contains the orientation,
-independent of the v3 rule package at 0x001000. Its first 256-byte page stores
-magic 0x544E524F at 0 (u32), version 1 at 4 (u8), signed axis enum at 5 (u8:
-+X, -X, +Y, -Y, +Z, -Z = 0..5), and CRC32 of bytes 0..251 at 252 (u32).
-Other bytes remain FF. Saving erases only this sector and programs one verified page.
-An erased page means orientation is unconfigured; missing/invalid records or read errors block physical arm with ORIENTATION_NOT_READY until an explicit orientation is saved.
-Factory reset clears the rule package and erases the orientation sector; formatting flights preserves this sector.
-
-## State-machine device record
-
-The third sector of the configuration reservation (0x003000) stores mode independently
-of rules and orientation. Its first page uses magic 0x4D534650 at offset 0 (u32), version 1
-at 4 (u8), bistage 0/1 at 5, minimum COAST 1 velocity at 8 (float32 m/s), and CRC32 over
-0..251 at 252 (u32). Reserved bytes are FF. Missing/erased record defaults to normal and 0;
-invalid records prevent run readiness until rewritten. Saves erase/program/read back this
-sector. Factory reset erases it; flight-memory format preserves it. No calibration
-reservation or retained flight extent is touched by a mode change.
-
-Descriptor offset 200 (u32) freezes `AirbrakeLawVersion` when calibration is available;
-205..251 remain FF. Offset 204 freezes the saved enable flag (0/1).
-Unavailable calibration retains FF at 192..204. The immutable configuration
-snapshot includes the airbrake channel mask and AND conditions. Airbrakes do not allocate
-once-only output-start slots; their continuous state belongs to sample records.
-
-## Airbrake device enable record
-
-The fourth configuration sector (0x004000) stores the independent enable setting.
-Its first page uses magic 0x52424150 at offset 0 (u32), version 1 at 4 (u8), enabled
-0/1 at 5 (u8), and CRC32 over 0..251 at 252 (u32); reserved bytes are FF. An erased
-record defaults to disabled. Invalid records block run readiness until explicitly
-saved again. Saving erases only this sector and verifies its programmed page.
-Factory reset erases this record; formatting flights preserves it. The configuration
-codec remains v3, so existing channel/rule plans can be reapplied without conversion.
+Offset 200 freezes `AirbrakeLawVersion` and 204 the saved airbrake enable flag; the immutable
+configuration snapshot includes the airbrake channel mask and AND conditions. Airbrakes do not
+allocate once-only output-start slots; their continuous state belongs to sample records.

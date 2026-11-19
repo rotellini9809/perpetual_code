@@ -12,7 +12,7 @@ using namespace storage;
 using namespace replay_test;
 struct Cut {};
 struct Device : FlashDevice {
-  std::vector<uint8_t> bytes=std::vector<uint8_t>(0x50000,255);
+  std::vector<uint8_t> bytes=std::vector<uint8_t>(0x130000,255); // Directory and ring blocks 0..15.
   long budget=-1; unsigned erases=0; bool failProgram=false, corruptAfterProgram=false, corruptReads=false;
   FlashError typedCause=FlashError::Verify;
   bool read(uint32_t a,void *p,std::size_t n) override {
@@ -33,7 +33,7 @@ struct Device : FlashDevice {
       FlightDirectory proof(*this); assert(proof.mount()); bool owned=false;
       for (std::size_t i=0;i<proof.count();++i) {
         const auto &e=proof.entries()[i];
-        if (e.status==FlightStatus::Recording && a>=e.start && a-e.start<e.allocatedBytes) owned=true;
+        if (e.status==FlightStatus::Recording && FlightDirectory::overlaps(FlightDirectory::blockOf(e.start),e.allocatedBytes/FlashLayout::BlockBytes,FlightDirectory::blockOf(a),1)) owned=true;
       }
       assert(owned); // Physical erasure requires the new durable reservation.
     }
@@ -139,7 +139,7 @@ namespace test_flight_corruption {
 using namespace storage;
 struct Cut {};
 struct Device : FlashDevice {
-  std::vector<uint8_t> bytes=std::vector<uint8_t>(0x50000,255);
+  std::vector<uint8_t> bytes=std::vector<uint8_t>(0x130000,255); // Directory and ring blocks 0..15.
   long budget=-1;
   unsigned programs=0, erases=0;
   bool failProgram=false;

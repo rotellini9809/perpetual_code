@@ -43,12 +43,14 @@ class Encoder {
 public:
   enum class Result : uint8_t { Ok, Full, Invalid };
   void reset(); // New recording: no previous sample, default state.
-  Result add(const FlightSample &sample, bool history);
+  // history: written from the pre-launch buffer; deliberate: samples skipped on purpose since
+  // the previous stored one (pre-launch history, 10 Hz LANDED), not lost.
+  Result add(const FlightSample &sample, bool history, bool deliberate);
   bool empty() const { return frames_ == 0; }
   uint16_t frames() const { return frames_; }
   void seal(uint8_t (&body)[BodyBytes], uint64_t sequence, uint32_t index, uint32_t address);
 private:
-  unsigned group(const FlightSample &sample, bool history, uint8_t *out) const;
+  unsigned group(const FlightSample &sample, bool history, bool deliberate, uint8_t *out) const;
   uint8_t payload_[PayloadBytes] = {};
   uint16_t used_ = 0, frames_ = 0;
   uint64_t firstTimeUs_ = 0, previousTimeUs_ = 0;

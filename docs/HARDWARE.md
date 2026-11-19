@@ -23,7 +23,7 @@ GPIO numbers are RP GPIO numbers, not package or header pin numbers. The authori
 | Servo PWM 1..4 | GP21, GP20, GP23, GP22 |
 
 The flash is **128 Mbit / 16 MiB**; the driver accepts JEDEC IDs EF4018 and EF7018. Its
-[fixed region map](technical/STORAGE_FORMAT.md#fixed-memory-map) is the only supported layout.
+[fixed region map](technical/STORAGE_FORMAT.md#memory-map-layout-v2) is the only supported layout.
 No magnetometer is fitted. A pin or communication failure alone does not prove a defective chip;
 see [diagnostics](testing/README.md).
 

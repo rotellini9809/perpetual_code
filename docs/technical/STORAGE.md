@@ -7,7 +7,7 @@ map/offsets; [Recording](../testing/RECORDING.md) owns commands and timing usage
 
 ## Driver and verification
 
-`FlashLogger` operates the fixed W25Q128 at the board's 18.75 MHz SPI setting (FLASH_TEST `c`: error-free to 37.5 MHz, 75 MHz fails). Busy waits poll status every 10 us for the first 5 ms (page programs take ~0.4 ms), then every 1 ms. Flight sample blocks use `programErased()`, which skips the pre-write NeedsErase read because preparation erased and verified the whole extent; post-write verification is unchanged. Measured with the onboard Hoppino replay recording (200 Hz): worker 8.3 ms per 1 KiB block (was 21.8 ms at 4 MHz with 1 ms sleeps), about 44% of core 1 at 476 Hz. Preparation erases the new extent with `eraseRange()` (64 KiB block erases where aligned, 4 KiB elsewhere, no read-back); `FlightHeaderStore::create` and `FlightSampleStore::begin` then verify the whole extent erased exactly once. 1 MiB arming went from 7.9 s to 3.3 s and the worker to 6.3 ms per block (about 33% of core 1 at 476 Hz) after also replacing the bitwise CRC with a nibble table and removing fixed microsecond delays around flash transactions. With log format v4 ([2 KiB blocks of tagged records](STORAGE_FORMAT.md#samples-and-blocks-v4)) the worker needs about 7.8 ms per block including one end-to-end read-back, about 7% of core 1 at 476 Hz; PAD samples stay in the RAM pre-launch history and reach flash only at the first non-PAD sample. Initialize wakes the
+`FlashLogger` operates the fixed W25Q128 at the board's 18.75 MHz SPI setting (FLASH_TEST `c`: error-free to 37.5 MHz, 75 MHz fails). Busy waits poll status every 10 us for the first 5 ms (page programs take ~0.4 ms), then every 1 ms. Flight sample blocks use `programErased()`, which skips the pre-write NeedsErase read because each 64 KiB block was erased just before use; post-write verification is unchanged. Measured with the onboard Hoppino replay recording (200 Hz): worker 8.3 ms per 1 KiB block (was 21.8 ms at 4 MHz with 1 ms sleeps), about 44% of core 1 at 476 Hz. `eraseRange()` uses 64 KiB, 32 KiB or 4 KiB erases by alignment (no read-back). Flight blocks are erased with `startBlockErase()`/`eraseDone()`: the 64 KiB erase command is issued and its status polled from the worker loop, so core 1 never blocks for the erase itself (3 s timeout). 1 MiB arming went from 7.9 s to 3.3 s and the worker to 6.3 ms per block (about 33% of core 1 at 476 Hz) after also replacing the bitwise CRC with a nibble table and removing fixed microsecond delays around flash transactions. With log format v4 ([2 KiB blocks of tagged records](STORAGE_FORMAT.md#samples-and-blocks-v4)) the worker needs about 7.8 ms per block including one end-to-end read-back, about 7% of core 1 at 476 Hz; PAD samples stay in the RAM pre-launch history and reach flash only at the first non-PAD sample. Initialize wakes the
 chip, requires three matching supported JEDEC reads and waits for ready. Read/program/erase
 reject invalid arguments, bounds and alignment. Program preflights the entire range for
 forbidden 0-to-1 changes, splits at page boundaries, checks write-enable and verifies each
@@ -35,19 +35,31 @@ damaged storage is never formatted, and failed mounting leaves recording unready
 `flights status/failure`.
 `flights recover` can repeat mounting manually; `initializeBlank()` (`flights init`) formats only
 if both complete directory banks are erased.
-Unknown non-erased metadata fails closed. Settings/calibration are outside the recording banks.
+Unknown non-erased metadata fails closed. Settings, rules and calibration live in the device
+journal (block 0), outside the directory and the ring.
 Erased data is not proof of free ownership.
 
-Begin validates the frozen plan/modes and positive sector-aligned sample budget, then finds a
-free contiguous header+sample extent. Retained Interrupted, Completed, StoppedFull and Corrupt
-flights all occupy space. There are 48 retained identities; NoSpace, DirectoryFull and
-SequenceExhausted are distinct. There is no active growth, wrapped extent, erase-ahead,
-automatic oldest deletion or periodic `checkpoint()`.
+Flight space is a circular ring of 253 64 KiB blocks ([map](STORAGE_FORMAT.md#flight-ring-blocks-3255)).
+Begin validates the frozen plan/modes, compacts the directory if fewer than 65 slots are free,
+and places the new flight in the block after the newest retained one. Older flights that own
+any of the needed blocks are invalidated first, oldest first and whatever their status
+(Interrupted, Completed, StoppedFull, Corrupt), as is the oldest flight when 32 are already
+retained. DirectoryFull and SequenceExhausted remain distinct errors; NoSpace no longer happens
+while the ring holds only older flights.
 
-The transaction is: commit a new Recording reservation (committed length zero), erase only that
-extent, create/verify its header, preflight the sample area, then publish the header-ready
-length in the directory. Only afterward accept samples. A zero-length reservation cannot
-authorize stale bytes left before erasure.
+The transaction is: commit a new Recording reservation of 8 blocks (committed length zero), erase
+those blocks, create/verify the header at the start of the first one, then publish the
+header-ready length in the directory. Only afterward accept samples. A zero-length reservation
+cannot authorize stale bytes left before erasure.
+
+While recording, `service()` grows the flight when less than 128 KiB of erased space remains
+ahead: it commits ownership of 8 more blocks in the directory (invalidating overlapped older
+flights first), then erases them one at a time asynchronously. During an erase no other flash
+access is made; sealed blocks wait in a 16-block RAM ring and are written when it completes. If
+the RAM ring is full the append waits for the erase. Growth stops only when the next block would
+be the flight's own first block; the flight then closes as StoppedFull. In LANDED the recorder
+keeps one sample every 100 ms (with the newest barometer reading) and records the skipped ones as
+deliberate GAPs.
 
 ## Producer and worker contract
 
@@ -135,34 +147,36 @@ or to development HIL.
 
 ## Directory transactions
 
-Each 32 KiB bank has 64 body/commit slots. Append updates, skip/consume torn slots, and never
+Each 64 KiB bank has 128 body/commit slots. Append updates, skip/consume torn slots, and never
 reprogram them. Committed bad bodies fail closed. Mutation failure invalidates the mount: a
 reported error might already have committed.
 
-Before appends consume the two reserved slots, compact into the inactive bank: erase it, copy
+Before appends consume the two reserved slots (and, at arming, whenever fewer than 65 slots
+are free, so a flight never compacts), compact into the inactive bank: erase it, copy
 retained entries, then commit its generation+1 header last. Mount requires the whole baseline
 and selects the complete compatible highest generation; equal generations are ambiguous. Old
 bank remains until a later compaction. Compaction drops only tombstones and preserves the
 durable uint64 high-water mark, including an empty baseline; deleted identities cannot return
 under old sequence IDs.
 
-Recording can grow monotonically and close, or be invalidated at orderly pre-launch closure.
+Recording can grow monotonically (committed bytes and owned blocks) and close, or be
+invalidated at orderly pre-launch closure.
 Invalidation preserves its published length and extent. Corrupt conversion preserves length/ extent and
 cannot revert. Invalidated never returns to retained state. All retained extents must be
-disjoint and contiguous, including CRC-valid metadata; unsupported wrapped metadata is rejected
-without treating its region as free.
+disjoint over the ring (circular overlap check), including CRC-valid metadata; an extent longer
+than the ring is rejected at mount without treating its region as free.
 
 ## Explicit deletion and inspection
 
-`flights format` explicitly formats both flight directory banks while disarmed and idle. All flights become inaccessible and their storage is reusable; this is a logical format, not secure data erasure. Configuration and calibration regions are preserved. It also works when the directory cannot be mounted.
+`flights format` explicitly formats both flight directory banks while disarmed and idle. All flights become inaccessible and their storage is reusable; this is a logical format, not secure data erasure. The device journal (configuration, settings and calibration, block 0) is preserved. It also works when the directory cannot be mounted.
 
 User deletion is explicit, disarmed and inactive; the lifecycle also discards unflown hardware
 recordings during orderly closure. Commit Invalidated before space becomes
 allocatable. It does not erase flight sectors; later allocation reserves the new owner before
 erasing reused data. A surviving tombstone makes repeated delete idempotent; after compaction,
-the old ID returns StaleSelection. Retained identity capacity is reusable rather than limited to
-48 lifetime recordings. Corrupt flights remain occupied until explicit deletion; no new user
-deletion UI or automatic cleanup of retained/corrupt history was introduced.
+the old ID returns StaleSelection. Retained identity capacity (32) is reusable rather than limited to
+lifetime recordings. Corrupt flights stay retained until explicit deletion or until a new flight
+needs their blocks, which overwrites them like any other old flight.
 
 Select by stable sequence, not mutable list index. Valid inspection scans every published block;
 individual reads check adjacent ordinal/time continuity. Failures leave caller outputs

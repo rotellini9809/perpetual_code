@@ -10,7 +10,7 @@ FlashLogger configFlash(configSpi, CS_FLASH1);
 storage::FlashLoggerAdapter device(configFlash);
 storage::ConfigurationStore store(device);
 const recovery::ValidationLimits limits{1000, 2000, 1000, 60000}; // Test policy only.
-uint8_t backup[storage::ConfigurationStore::Bytes];
+uint8_t backup[2 * storage::FlashLayout::JournalBankBytes]; // The whole device journal (block 0).
 uint8_t encodedBefore[storage::ConfigurationStore::MaxPayload];
 uint8_t encodedAfter[storage::ConfigurationStore::MaxPayload];
 recovery::Configuration fixture, loaded;
@@ -31,11 +31,11 @@ bool samePlan() {
 void runConfigTest() {
   if (backupAtRisk) { Serial.println("Blocked: previous restore failed; preserve RAM, do not reboot."); return; }
   if (!configFlash.initialize(FLASH_CLOCK_HZ)) { Serial.println("Flash initialization failed; no changes."); return; }
-  constexpr uint32_t begin = storage::ConfigurationStore::Begin;
+  constexpr uint32_t begin = storage::FlashLayout::JournalA;
   if (!configFlash.read(begin, backup, sizeof(backup)) || !verifyBytes(begin, backup, sizeof(backup))) {
     Serial.println("Backup failed; no changes."); return;
   }
-  Serial.println("Backup of 0x001000..0x004FFF verified. No outputs will move.");
+  Serial.println("Backup of the device journal 0x000000..0x00FFFF verified. No outputs will move.");
   fixture = {}; fixture.ruleCount = 1; fixture.pyros[0].pulseMs = 100;
   auto &rule = fixture.rules[0]; rule.id = 42; strcpy(rule.name.data(), "Storage test only");
   rule.conditionCount = rule.assignmentCount = 1; rule.assignments[0].channel = 1;
@@ -53,17 +53,16 @@ void runConfigTest() {
   // Fresh store instance uses only persisted data, not an in-memory applied plan.
   static storage::ConfigurationStore reboot(device);
   passed = passed && reboot.load(loaded, limits) && samePlan();
-  Serial.println(passed ? "Single-copy save/load/replacement/reload: PASS" : "Configuration test: FAIL");
+  Serial.println(passed ? "Journal save/load/replacement/reload: PASS" : "Configuration test: FAIL");
   if (!passed) {
     Serial.print("Store result: "); Serial.println(storage::ConfigurationStore::errorName(store.error()));
     Serial.print("Flash result: "); Serial.println(FlashLogger::errorName(configFlash.lastError()));
   }
   bool restored = true;
-  for (uint32_t offset = 0; restored && offset < sizeof(backup); offset += FlashLogger::SectorSize)
-    restored = configFlash.eraseSector(begin + offset) && configFlash.program(begin + offset, backup + offset, FlashLogger::SectorSize);
+  restored = configFlash.eraseRange(begin, sizeof(backup)) && configFlash.program(begin, backup, sizeof(backup));
   restored = restored && verifyBytes(begin, backup, sizeof(backup));
   backupAtRisk = !restored;
-  Serial.println(restored ? "Original configuration region RESTORED and VERIFIED." : "RESTORE FAILED; preserve RAM, do not reboot.");
+  Serial.println(restored ? "Original device journal RESTORED and VERIFIED." : "RESTORE FAILED; preserve RAM, do not reboot.");
   Serial.println(passed && restored ? "=== CONFIGURATION STORE TEST PASSED ===" : "=== CONFIGURATION STORE TEST FAILED ===");
 }
 }
@@ -81,8 +80,8 @@ void loop() {
   if (!connected) {
     connected = true; delay(300);
     Serial.println("\n=== CONFIG_STORE_TEST ===");
-    Serial.println("Send c + Enter: test single-copy configuration at 0x001000..0x004FFF, then restore RAM backup.");
-    Serial.println("Power loss during test can destroy settings. Calibration/directory/flight data are untouched.");
+    Serial.println("Send c + Enter: test the device journal 0x000000..0x00FFFF (rules/settings), then restore RAM backup.");
+    Serial.println("Power loss during test can destroy settings and calibration. Directory/flight data are untouched.");
   }
   if (Serial.available()) { const int c = Serial.read(); if (c == 'c' || c == 'C') runConfigTest(); }
 }

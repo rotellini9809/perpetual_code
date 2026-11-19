@@ -1,21 +1,21 @@
 #pragma once
 #include "storage/FlashLayout.h"
 #include "storage/FlashDevice.h"
+#include "storage/DeviceJournal.h"
 #include "configuration/RecoveryConfiguration.h"
 
 namespace storage {
 enum class ConfigError : uint8_t { None, Armed, InvalidConfiguration, Io, Missing, UnsupportedVersion, Corrupt };
 class ConfigurationStore {
 public:
-  static constexpr uint32_t Begin = FlashLayout::ConfigurationBegin;
-  static constexpr uint32_t Bytes = FlashLayout::ConfigurationBytes;
-  static constexpr std::size_t MaxPayload = 4096;
+  // Encoded plan limit; the journal record adds a 2-byte codec version.
+  static constexpr std::size_t MaxPayload = DeviceJournal::MaxPayload - 2;
   static constexpr uint16_t FormatVersion = 3;
-  explicit ConfigurationStore(FlashDevice &flash) : flash_(flash) {}
+  explicit ConfigurationStore(FlashDevice &flash) : journal_(flash) {}
   // Output is assigned only after integrity, version and semantic validation.
   bool load(recovery::Configuration &output, const recovery::ValidationLimits &limits);
   // Explicit operation only; caller supplies trusted runtime disarmed state.
-  // An interrupted save may destroy the old copy. No fallback or active defaults.
+  // Written beside the previous copy in the device journal: a power cut keeps the old one.
   bool save(const recovery::Configuration &config, const recovery::ValidationLimits &limits, bool disarmed);
   bool clear(bool disarmed);
   bool loadStateMachine(recovery::StateMachineSettings &settings);
@@ -31,8 +31,10 @@ public:
   static bool decode(const uint8_t *bytes, std::size_t length, recovery::Configuration &output);
 private:
   bool fail(ConfigError e) { error_ = e; return false; }
-  FlashDevice &flash_;
-  uint8_t scratch_[MaxPayload] = {};
+  bool readSetting(DeviceJournal::Type type, std::size_t length, bool &present);
+  bool writeSetting(DeviceJournal::Type type, const uint8_t *payload, std::size_t length);
+  DeviceJournal journal_;
+  uint8_t scratch_[DeviceJournal::MaxPayload] = {};
   recovery::Configuration decoded_{}; // Avoid stacking multiple large plans on RP2350.
   ConfigError error_ = ConfigError::None;
   recovery::ValidationResult validation_{};

@@ -9,18 +9,20 @@ namespace {
 using binary::put;
 using binary::get64;
 using binary::crc;
-static_assert(FlashLayout::DirectoryBankBytes >= (FlightDirectory::MaxEntries + 4) * FlightDirectory::SlotBytes, "Directory bank too small");
-constexpr uint32_t Sector = FlashLayout::SectorBytes, Page = FlashLayout::PageBytes, Magic = 0x52494450, Commit = 0x54494D43;
+// A compacted bank keeps room for the worst-case updates of one flight (see STORAGE_FORMAT.md).
+static_assert(FlightDirectory::Slots - 1 - FlightDirectory::MaxEntries >= 65, "Directory bank too small");
+constexpr uint32_t Page = FlashLayout::PageBytes, Magic = 0x52494450, Commit = 0x54494D43;
+constexpr uint16_t Version = 2;
 bool allFF(const uint8_t *p) { for (unsigned i = 0; i < Page; ++i) if (p[i] != 255) return false; return true; }
 bool bodyValid(const uint8_t *p, uint32_t slot, uint64_t generation) {
-  return get64(p, 4) == Magic && get64(p + 4, 2) == 1 && get64(p + 8, 8) == generation &&
+  return get64(p, 4) == Magic && get64(p + 4, 2) == Version && get64(p + 8, 8) == generation &&
          get64(p + 16, 4) == slot && get64(p + 252, 4) == crc(p, 252);
 }
 FlightEntry decode(const uint8_t *p) {
   FlightEntry e;
-  e.sequence = get64(p + 24, 8); e.start = uint32_t(get64(p + 32, 4));
-  e.committedBytes = uint32_t(get64(p + 36, 4)); e.allocatedBytes = uint32_t(get64(p + 40, 4));
-  e.status = static_cast<FlightStatus>(p[44]); return e;
+  e.sequence = get64(p + 24, 8); e.start = FlashLayout::blockAddress(uint32_t(get64(p + 32, 2)));
+  e.allocatedBytes = uint32_t(get64(p + 34, 2)) * FlashLayout::BlockBytes;
+  e.committedBytes = uint32_t(get64(p + 36, 4)); e.status = static_cast<FlightStatus>(p[40]); return e;
 }
 }
 const char *FlightDirectory::errorName(DirectoryError e) {
@@ -34,10 +36,10 @@ const char *FlightDirectory::errorName(DirectoryError e) {
 }
 bool FlightDirectory::entryValid(const FlightEntry &e) const {
   const auto status = static_cast<uint8_t>(e.status);
-  return e.sequence != 0 && e.start >= FlashLayout::DataBegin && e.start < FlashLayout::DataEnd &&
-      e.start % Sector == 0 && e.allocatedBytes != 0 && e.allocatedBytes % Sector == 0 &&
-      e.allocatedBytes <= FlashLayout::DataEnd - e.start && e.committedBytes <= e.allocatedBytes &&
-      status >= 1 && status <= 6;
+  return e.sequence != 0 && e.start >= FlashLayout::RingBegin && e.start < FlashLayout::Capacity &&
+      (e.start - FlashLayout::RingBegin) % FlashLayout::BlockBytes == 0 && e.allocatedBytes != 0 &&
+      e.allocatedBytes % FlashLayout::BlockBytes == 0 && e.allocatedBytes / FlashLayout::BlockBytes <= FlashLayout::RingBlocks &&
+      e.committedBytes <= e.allocatedBytes && status >= 1 && status <= 6;
 }
 bool FlightDirectory::readSlot(uint32_t bank, uint32_t slot, uint8_t *body, bool &erased, bool &committed) {
   uint8_t marker[Page];
@@ -52,16 +54,16 @@ bool FlightDirectory::writeSlot(uint32_t bank, uint32_t slot, uint64_t generatio
                                 const FlightEntry *entry, uint32_t baseline, uint64_t highWater) {
   uint8_t body[Page], marker[Page], check[Page];
   memset(body, 255, Page); memset(marker, 255, Page);
-  put(body, Magic, 4); put(body + 4, 1, 2); body[6] = entry ? 1 : 0;
+  put(body, Magic, 4); put(body + 4, Version, 2); body[6] = entry ? 1 : 0;
   put(body + 8, generation, 8); put(body + 16, slot, 4);
   if (entry) {
-    put(body + 24, entry->sequence, 8); put(body + 32, entry->start, 4);
-    put(body + 36, entry->committedBytes, 4); put(body + 40, entry->allocatedBytes, 4);
-    body[44] = static_cast<uint8_t>(entry->status);
+    put(body + 24, entry->sequence, 8); put(body + 32, blockOf(entry->start), 2);
+    put(body + 34, entry->allocatedBytes / FlashLayout::BlockBytes, 2);
+    put(body + 36, entry->committedBytes, 4); body[40] = static_cast<uint8_t>(entry->status);
   } else {
     put(body + 24, highWater, 8); put(body + 32, baseline, 4);
     put(body + 40, FlashLayout::DirectoryA, 4); put(body + 44, FlashLayout::DirectoryB, 4);
-    put(body + 48, FlashLayout::DirectoryBankBytes, 4); put(body + 52, FlashLayout::DataBegin, 4); put(body + 56, FlashLayout::DataEnd, 4);
+    put(body + 48, FlashLayout::DirectoryBankBytes, 4); put(body + 52, FlashLayout::RingBegin, 4); put(body + 56, FlashLayout::RingBlocks, 4);
   }
   const uint32_t checksum = crc(body, 252);
   put(body + 252, checksum, 4); put(marker, Commit, 4); put(marker + 4, checksum, 4);
@@ -76,8 +78,7 @@ bool FlightDirectory::writeSlot(uint32_t bank, uint32_t slot, uint64_t generatio
   return true;
 }
 bool FlightDirectory::eraseBank(uint32_t bank) {
-  for (uint32_t offset = 0; offset < FlashLayout::DirectoryBankBytes; offset += Sector)
-    if (!flash_.eraseSector(bank + offset)) { mounted_ = false; return fail(DirectoryError::Io); }
+  if (!flash_.eraseRange(bank, FlashLayout::DirectoryBankBytes)) { mounted_ = false; return fail(DirectoryError::Io); }
   return true;
 }
 bool FlightDirectory::apply(const FlightEntry &e) {
@@ -88,7 +89,7 @@ bool FlightDirectory::apply(const FlightEntry &e) {
       if (other.sequence == e.sequence || other.status == FlightStatus::Invalidated) continue;
       if (other.status == FlightStatus::Recording && e.status == FlightStatus::Recording)
         return fail(DirectoryError::InvalidEntry);
-      if (e.start < other.start + other.allocatedBytes && other.start < e.start + e.allocatedBytes)
+      if (overlaps(blockOf(e.start), e.allocatedBytes / FlashLayout::BlockBytes, blockOf(other.start), other.allocatedBytes / FlashLayout::BlockBytes))
         return fail(DirectoryError::InvalidEntry);
     }
   }
@@ -132,9 +133,8 @@ bool FlightDirectory::mount() {
     valid[i] = committed && headers[i][6] == 0 && get64(headers[i] + 8, 8) != 0 &&
         bodyValid(headers[i], 0, get64(headers[i] + 8, 8)) && get64(headers[i] + 32, 4) <= MaxEntries &&
         get64(headers[i] + 40, 4) == FlashLayout::DirectoryA && get64(headers[i] + 44, 4) == FlashLayout::DirectoryB &&
-        get64(headers[i] + 48, 4) == FlashLayout::DirectoryBankBytes && get64(headers[i] + 52, 4) == FlashLayout::DataBegin &&
-        (get64(headers[i] + 56, 4) == FlashLayout::DataEnd ||
-         get64(headers[i] + 56, 4) == FlashLayout::Capacity); // Previous boundary: entries still checked against the new end.
+        get64(headers[i] + 48, 4) == FlashLayout::DirectoryBankBytes && get64(headers[i] + 52, 4) == FlashLayout::RingBegin &&
+        get64(headers[i] + 56, 4) == FlashLayout::RingBlocks;
   }
   if (!valid[0] && !valid[1]) return fail(anyBytes ? DirectoryError::Corrupt : DirectoryError::Missing);
   if (valid[0] && valid[1] && get64(headers[0] + 8, 8) == get64(headers[1] + 8, 8)) return fail(DirectoryError::Corrupt);
@@ -144,7 +144,7 @@ bool FlightDirectory::mount() {
   const uint32_t baseline = uint32_t(get64(headers[chosen] + 32, 4));
   nextSlot_ = 1;
   if (!baseline) highWater_=savedHighWater;
-  for (uint32_t slot = 1; slot < FlashLayout::DirectoryBankBytes / SlotBytes; ++slot) {
+  for (uint32_t slot = 1; slot < Slots; ++slot) {
     uint8_t body[Page]; bool erased, committed;
     if (!readSlot(activeBank_, slot, body, erased, committed)) return false;
     if (!erased) nextSlot_ = slot + 1; // Never program a torn slot again.
@@ -186,7 +186,7 @@ bool FlightDirectory::update(const FlightEntry &e) {
   entries_ = oldEntries; count_ = oldCount; highWater_ = oldHighWater;
   if (!valid) return false;
   // Keep two slots in reserve; compact before normal appends consume them.
-  if (nextSlot_ + 2 >= FlashLayout::DirectoryBankBytes / SlotBytes && !compact()) return false;
+  if (nextSlot_ + 2 >= Slots && !compact()) return false;
   if (!writeSlot(activeBank_, nextSlot_, generation_, &e, 0, 0)) return false;
   ++nextSlot_;
   if (!apply(e)) { mounted_ = false; return fail(DirectoryError::Corrupt); }

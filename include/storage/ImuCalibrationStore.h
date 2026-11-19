@@ -1,5 +1,6 @@
 #pragma once
 #include "storage/FlashDevice.h"
+#include "storage/DeviceJournal.h"
 #include "navigation/SensorPipeline.h"
 
 namespace storage {
@@ -10,11 +11,11 @@ struct ImuCalibrationRecord {
   ImuApproval approval = ImuApproval::Required;
   bool identity = false;
 };
-// Dedicated sector: full coefficient record followed by append-only approval records.
+// Device journal type 1: every approval change is a new complete record (coefficients + state).
 // InUse is written before arming, so resets cannot resurrect a consumed approval.
 class ImuCalibrationStore {
 public:
-  explicit ImuCalibrationStore(FlashDevice &flash) : flash_(flash) {}
+  explicit ImuCalibrationStore(FlashDevice &flash) : journal_(flash) {}
   bool load();
   bool save(const ImuCalibrationRecord &record);
   bool approve(ImuApproval approval);
@@ -29,15 +30,15 @@ public:
   const ImuCalibrationRecord &record() const { return record_; }
   void apply(navigation::SensorCalibration &calibration) const;
 private:
-  bool write(unsigned page, const ImuCalibrationRecord &record);
-  FlashDevice &flash_;
+  bool write(const ImuCalibrationRecord &record);
+  DeviceJournal journal_;
+  uint8_t buffer_[32] = {};
   ImuCalibrationRecord record_;
-  // One byte in its own sector, never erased by the application: erased (0xFF) as delivered means
-  // the factory identity is allowed; written to 0x00 by a failed post-Boost verification, forever.
+  // Journal type 4: absent as delivered (factory identity allowed); written by a failed
+  // post-Boost verification and carried by every compaction, forever (only ERASE ALL resets it).
   bool loadIdentityPolicy();
   bool revokeIdentity();
   bool identityAllowed_ = false, policyReadable_ = false;
   bool present_ = false;
-  unsigned next_ = 0;
 };
 }

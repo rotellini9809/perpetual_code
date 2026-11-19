@@ -37,6 +37,18 @@ public:
     const auto start = now(); const bool ok = device_.eraseRange(address, bytes);
     record(stats_.erase, start, bytes, ok); failure(ok, FlashOperation::Erase, address, bytes); return ok;
   }
+  // Asynchronous erases are timed from start to the poll that sees completion.
+  bool startBlockErase(uint32_t address) override {
+    eraseStart_ = now(); const bool ok = device_.startBlockErase(address);
+    if (!ok) { record(stats_.erase, eraseStart_, FlashLayout::BlockBytes, false); failure(false, FlashOperation::Erase, address, FlashLayout::BlockBytes); }
+    else failure_ = {};
+    return ok;
+  }
+  bool eraseDone(bool &done) override {
+    const bool ok = device_.eraseDone(done);
+    if (!ok || done) record(stats_.erase, eraseStart_, FlashLayout::BlockBytes, ok);
+    failure(ok, FlashOperation::Erase, 0, FlashLayout::BlockBytes); return ok;
+  }
   bool timingValid() const { return clock_ != nullptr; }
   const FlashTiming &timing() const { return stats_; }
   void resetTiming() { stats_ = {}; } // Caller must exclude active producers.
@@ -58,5 +70,6 @@ private:
   timing::Clock clock_;
   FlashTiming stats_;
   FlashFailure failure_;
+  uint32_t eraseStart_ = 0;
 };
 }

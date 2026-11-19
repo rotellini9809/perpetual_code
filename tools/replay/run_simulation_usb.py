@@ -82,7 +82,7 @@ def run(client, output, record=False, clock=time.monotonic, sleep=time.sleep):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--port', required=True)
-    parser.add_argument('--record', action='store_true', help='Reserve 1 MiB sample space and record to board flash')
+    parser.add_argument('--record', action='store_true', help='Record to board flash (512 KiB erased at start, growing as needed)')
     parser.add_argument('--output', type=Path)
     args = parser.parse_args()
     output = args.output or ROOT / '.pio' / f'simulation_{uuid.uuid4().hex}.json'

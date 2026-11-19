@@ -629,11 +629,23 @@ void run() {
   while (queued.poll()) {}
   assert(live.state()==flight::ArmingState::Disarmed && config.disarmed() && !config.runLocked());
   assert(writer.directory().retainedCount()==1 && writer.current()->status==storage::FlightStatus::Completed);
-  // ~5 s of PAD (about 1000 samples at 200 Hz) are reduced to the pre-launch history:
-  // 0.5 s at full rate plus 10 Hz before, about 145 samples.
-  const auto &recorded=live.runtime().status();
-  assert(recorded.savedSamples+1000-145>=recorded.samples-20 && recorded.savedSamples+1000-145<=recorded.samples+20);
-  assert(recorded.droppedSamples==0);
+  // ~5 s of PAD become the pre-launch history; LANDED is kept at 10 Hz; the flight in between
+  // is complete. Read the stored log back to check each part.
+  const auto &recorded=live.runtime().status(); assert(recorded.droppedSamples==0);
+  storage::RecordingInfo stored; assert(writer.inspect(writer.current()->sequence,stored) && stored.samples==recorded.savedSamples);
+  unsigned history=0, landedFrames=0, flown=0; uint64_t previousLanded=0; uint32_t previousSequence=0;
+  for (uint32_t index=0; index*storage::FlightSampleStore::BlockBytes<stored.entry.committedBytes-stored.headerBytes; ++index) {
+    storage::RawBlock raw; assert(writer.readBlock(stored.entry.sequence,index,raw)); const auto block=decodeRaw(raw);
+    for (unsigned i=0;i<block.frames;++i) {
+      const auto &f=block.frame[i];
+      if (f.history) ++history;
+      else if (f.state.phase==uint8_t(recovery::FlightPhase::Landed)) {
+        assert(!landedFrames || (f.timeUs-previousLanded>=100000 && f.deliberateGap)); previousLanded=f.timeUs; ++landedFrames;
+      } else { ++flown; if (flown>1) assert(f.sequence==previousSequence+1); } // Full rate.
+      previousSequence=f.sequence;
+    }
+  }
+  assert(history>=140 && history<=150 && landedFrames>=140 && landedFrames<=170 && flown>1000);
   assert(!gpio.mask && !gpio.positions[0] && !outputs.hasPreparation());
   unsigned starts=0;
   for (const auto &slot:writer.metadata()->starts) {

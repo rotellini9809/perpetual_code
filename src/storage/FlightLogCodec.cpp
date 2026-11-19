@@ -23,7 +23,7 @@ void Encoder::reset() {
   havePrevious_ = false; blockStart_ = current_ = LogState{};
 }
 
-unsigned Encoder::group(const FlightSample &s, bool history, uint8_t *out) const {
+unsigned Encoder::group(const FlightSample &s, bool history, bool deliberate, uint8_t *out) const {
   unsigned n = 0;
   const auto phase = uint8_t(s.phase), abort = uint8_t(s.abortReason);
   if (phase != current_.phase || abort != current_.abortReason) {
@@ -38,7 +38,7 @@ unsigned Encoder::group(const FlightSample &s, bool history, uint8_t *out) const
   }
   if (havePrevious_ && s.imuSequence != previousSequence_ + 1) {
     const uint32_t lost = s.imuSequence - previousSequence_ - 1;
-    out[n++] = uint8_t(Gap << 5 | (history ? GapDeliberate : 0)); put(out + n, lost > 0xFFFF ? 0xFFFF : lost, 2); n += 2;
+    out[n++] = uint8_t(Gap << 5 | (deliberate ? GapDeliberate : 0)); put(out + n, lost > 0xFFFF ? 0xFFFF : lost, 2); n += 2;
   }
   uint16_t dt = 0;
   if (frames_) {
@@ -76,7 +76,7 @@ unsigned Encoder::group(const FlightSample &s, bool history, uint8_t *out) const
   return n;
 }
 
-Encoder::Result Encoder::add(const FlightSample &s, bool history) {
+Encoder::Result Encoder::add(const FlightSample &s, bool history, bool deliberate) {
   if (havePrevious_ && (s.imuSequence <= previousSequence_ || s.timeUs <= previousTimeUs_)) return Result::Invalid;
   if (uint8_t(s.phase) > uint8_t(recovery::FlightPhase::Abort) || uint8_t(s.abortReason) > uint8_t(recovery::AbortReason::Tilt) ||
       s.airbrakes.channelMask > 15 || (s.airbrakes.flags & ~511u)) return Result::Invalid;
@@ -84,7 +84,7 @@ Encoder::Result Encoder::add(const FlightSample &s, bool history) {
   // block starts from absolute values in its header instead.
   if (frames_ && (s.imuSequence - previousSequence_ - 1 > 0xFFFF || s.timeUs - previousTimeUs_ > 0xFFFFFFFFu)) return Result::Full;
   uint8_t bytes[MaxGroupBytes];
-  const unsigned n = group(s, history, bytes);
+  const unsigned n = group(s, history, deliberate, bytes);
   if (frames_ == MaxFrames || used_ + n > PayloadBytes) return Result::Full;
   if (!frames_) { blockStart_ = current_; firstTimeUs_ = s.timeUs; firstSequence_ = s.imuSequence; }
   memcpy(payload_ + used_, bytes, n); used_ = uint16_t(used_ + n); ++frames_;

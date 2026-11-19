@@ -21,7 +21,7 @@
 namespace test_storage_encoding {
 using namespace storage;
 struct Device : FlashDevice {
-  std::vector<uint8_t> bytes = std::vector<uint8_t>(0x18000, 255);
+  std::vector<uint8_t> bytes = std::vector<uint8_t>(0x40000, 255);
   bool read(uint32_t a, void *p, std::size_t n) override {
     if (a > bytes.size() || n > bytes.size()-a) return false;
     memcpy(p, bytes.data()+a, n); return true;
@@ -42,12 +42,12 @@ void formatFixture(Device &flash) {
   ConfigurationStore settings(flash); assert(settings.save(config, replay_test::limits, true));
   FlightDirectory directory(flash); assert(directory.format());
   FlightEntry entry; entry.sequence = UINT64_C(0x12345678ABCDEF01); entry.start = FlashLayout::DataBegin;
-  entry.allocatedBytes = 8192; assert(directory.update(entry));
+  entry.allocatedBytes = FlashLayout::BlockBytes; assert(directory.update(entry));
   FlightHeaderStore header(flash); assert(header.create(entry.start, config, replay_test::limits,
       SensorMode::Simulation, OutputMode::Virtual, sensors::FrameConvention::LoggedCalibratedBody));
   assert(header.recordStart(10, recovery::OutputKind::Pyro, 1, 0));
   assert(header.recordStart(10, recovery::OutputKind::Servo, 1, 14744)); assert(header.finish(true));
-  FlightSampleStore samples(flash); assert(samples.begin(entry.sequence, entry.start+4096, 4096));
+  FlightSampleStore samples(flash); assert(samples.begin(entry.sequence, entry.start, 4096, 4096, FlashLayout::BlockBytes));
   for (unsigned i = 0; i < 5; ++i) {
     FlightSample sample; sample.timeUs = uint64_t(i)*1234000; sample.imuSequence = i+1; sample.phase = recovery::FlightPhase::Descent;
     sample.values[FlightSample::AltitudeM] = 12000.5f + float(i);
@@ -84,8 +84,8 @@ void run() {
   // Fixed image with zero channel delays, directory, header,
   // summary reservation, historical start timestamps and sample blocks.
   // The data area ends one sector early: the last sector holds the IMU identity policy.
-  if (fingerprint != UINT64_C(0xf08714d236eb60fb)) std::cerr << "Storage image fingerprint: 0x" << std::hex << fingerprint << std::dec << '\n';
-  assert(fingerprint == UINT64_C(0xf08714d236eb60fb));
+  if (fingerprint != UINT64_C(0xf00e48afbf5b4dc9)) std::cerr << "Storage image fingerprint: 0x" << std::hex << fingerprint << std::dec << '\n';
+  assert(fingerprint == UINT64_C(0xf00e48afbf5b4dc9));
   std::cout << "Storage encoding tests passed: known CRC vector, incremental CRC, endian widths and unchanged full storage image.\n";
 }
 } // namespace test_storage_encoding
@@ -159,7 +159,7 @@ namespace test_flight_summary {
 using namespace storage;
 struct Cut {};
 struct Device : FlashDevice {
-  std::vector<uint8_t> bytes=std::vector<uint8_t>(0x16000,255);
+  std::vector<uint8_t> bytes=std::vector<uint8_t>(0x31000,255);
   long budget=-1; unsigned writes=0;
   bool read(uint32_t a,void *p,std::size_t n) override { memcpy(p,bytes.data()+a,n); return true; }
   bool program(uint32_t a,const void *p,std::size_t n) override {
@@ -170,7 +170,7 @@ struct Device : FlashDevice {
   bool eraseSector(uint32_t) override { assert(false); return false; }
 };
 void run() {
-  constexpr uint32_t address=0x15400, header=0x15000, checksum=0x13572468;
+  constexpr uint32_t address=0x30400, header=0x30000, checksum=0x13572468;
   constexpr uint64_t sequence=UINT64_C(0xFEDCBA9812345678);
   RecordingSummary summary; summary.savedSamples=9203; summary.droppedSamples=230;
   summary.queuePeak=64; summary.queueCapacity=64; summary.reason=RecordingEnd::Stopped;
@@ -210,17 +210,28 @@ namespace test_flight_sample_store {
 using namespace storage;
 struct Cut {};
 struct MemoryFlash : FlashDevice {
-  std::vector<uint8_t> bytes = std::vector<uint8_t>(0x18000, 255);
+  std::vector<uint8_t> bytes = std::vector<uint8_t>(0x50000, 255); // Ring blocks 0..1 (resized for wrap tests).
   long budget = -1;
-  unsigned writes = 0;
-  bool failRead = false, failProgram = false;
+  unsigned writes = 0, erasePolls = 0, eraseLatency = 0;
+  bool failRead = false, failProgram = false, erasing = false;
+  uint32_t eraseAt = 0;
   unsigned failAfterProgram = 0;
   bool read(uint32_t a, void *p, std::size_t n) override {
+    assert(!erasing); // Nothing may touch the flash during an erase.
     if (failRead || a > bytes.size() || n > bytes.size() - a) return false;
     memcpy(p, bytes.data() + a, n); return true;
   }
+  bool startBlockErase(uint32_t a) override {
+    assert(!erasing && a >= FlashLayout::RingBegin && a % FlashLayout::BlockBytes == 0);
+    erasing = true; eraseAt = a; erasePolls = eraseLatency; return true;
+  }
+  bool eraseDone(bool &done) override {
+    done = !erasing;
+    if (erasing && !erasePolls--) { memset(bytes.data() + eraseAt, 255, FlashLayout::BlockBytes); erasing = false; done = true; }
+    return true;
+  }
   bool program(uint32_t a, const void *p, std::size_t n) override {
-    assert(a >= 0x15000 && a + n <= bytes.size() && n == 256 && a % 256 == 0);
+    assert(!erasing && a >= FlashLayout::RingBegin && a + n <= bytes.size() && n == 256 && a % 256 == 0);
     if (failProgram) return false;
     ++writes; const auto *in = static_cast<const uint8_t *>(p);
     for (std::size_t i = 0; i < n; ++i) {
@@ -261,12 +272,12 @@ void codec() {
   auto s = sample(0, recovery::FlightPhase::Pad); s.imuValid = false;
   s.values[FlightSample::AltitudeM] = std::numeric_limits<float>::quiet_NaN();
   s.values[FlightSample::TemperatureC] = std::numeric_limits<float>::quiet_NaN();
-  assert(encoder.add(s, true) == Encoder::Result::Ok);
+  assert(encoder.add(s, true, true) == Encoder::Result::Ok);
   s = sample(3, recovery::FlightPhase::Pad); s.timeUs += 100000; // 2 samples deliberately skipped, 106 ms later.
-  assert(encoder.add(s, true) == Encoder::Result::Ok);
-  s = sample(5); s.timeUs += 100000; assert(encoder.add(s, false) == Encoder::Result::Ok); // 1 sample lost.
-  assert(encoder.add(s, false) == Encoder::Result::Invalid); // Same sequence/time.
-  auto far = sample(5 + 70000); assert(encoder.add(far, false) == Encoder::Result::Full); // Gap beyond 16 bits.
+  assert(encoder.add(s, true, true) == Encoder::Result::Ok);
+  s = sample(5); s.timeUs += 100000; assert(encoder.add(s, false, false) == Encoder::Result::Ok); // 1 sample lost.
+  assert(encoder.add(s, false, false) == Encoder::Result::Invalid); // Same sequence/time.
+  auto far = sample(5 + 70000); assert(encoder.add(far, false, false) == Encoder::Result::Full); // Gap beyond 16 bits.
   encoder.seal(body, 3, 0, 0x20000); DecodedBlock block; assert(decodeBody(body, block) && block.frames == 3);
   assert(!block.frame[0].imuValid && block.frame[0].imu[0] == 0 && block.frame[0].altitudeCm == -8388608);
   assert(block.frame[0].temperatureCenti == INT16_MIN && block.frame[0].history && block.frame[0].state.phase == 0);
@@ -274,7 +285,7 @@ void codec() {
   assert(block.frame[1].timeUs == sample(3).timeUs + 100000); // Delta 106300 us needs a TIME record.
   assert(!block.frame[2].history && block.frame[2].gapBefore == 1 && !block.frame[2].deliberateGap && block.frame[2].sequence == 6);
   assert(block.frame[2].state.phase == uint8_t(recovery::FlightPhase::Coast) && block.start.phase == 0);
-  assert(encoder.add(far, false) == Encoder::Result::Ok); encoder.seal(body, 3, 1, 0x20800);
+  assert(encoder.add(far, false, false) == Encoder::Result::Ok); encoder.seal(body, 3, 1, 0x20800);
   assert(decodeBody(body, block) && block.frames == 1 && block.frame[0].sequence == 70006 && block.frame[0].gapBefore == 65535);
   assert(block.start.phase == uint8_t(recovery::FlightPhase::Coast) && block.start.batteryMv == 8240); // Standalone snapshot.
   // Any single damaged byte is rejected by the CRC or the record syntax.
@@ -304,21 +315,22 @@ void run() {
   codec(); padHistory();
   MemoryFlash flash; FlightSampleStore writer(flash);
   const auto pristine = flash.bytes;
-  assert(!writer.begin(0, 0x15000, 4096));
-  assert(!writer.begin(1, 0x14000, 4096));
-  assert(!writer.begin(1, 0x15001, 4096));
-  assert(!writer.begin(1, FlashLayout::DataEnd - 4096, 8192));
-  assert(!writer.begin(1, 0xFFFFF000, 8192));
+  constexpr uint32_t Block = FlashLayout::BlockBytes;
+  assert(!writer.begin(0, 0x30000, 0, 4096, Block));
+  assert(!writer.begin(1, 0x20000, 0, 4096, Block)); // Below the ring.
+  assert(!writer.begin(1, 0x30800, 0, 4096, Block)); // Not on a 64 KiB block.
+  assert(!writer.begin(1, 0x30000, 0, 4096, FlashLayout::RingBytes + Block));
+  assert(!writer.begin(1, 0xFFFFF000, 0, 4096, Block));
   assert(flash.bytes == pristine && flash.writes == 0);
-  assert(writer.begin(7, 0x15000, 4096));
-  assert(!writer.begin(8, 0x16000, 4096) && writer.error() == SampleError::Active);
+  assert(writer.begin(7, 0x30000, 0, 4096, Block));
+  assert(!writer.begin(8, 0x40000, 0, 4096, Block) && writer.error() == SampleError::Active);
   // Samples stay in RAM until a block is full; then 7 body pages and the commit page.
   uint32_t n = 0;
   while (!writer.committedSamples()) assert(writer.append(sample(n++)));
   const uint32_t first = writer.committedSamples();
   assert(first >= 50 && first <= 62 && flash.writes == 8 && writer.committedBytes() == 2048 && writer.bufferedSamples() == 1);
-  RawBlock raw; assert(writer.readBlock(0x15000, 7, 0, raw) && raw.frames == first && raw.firstSequence == 1 && raw.firstTimeUs == 7);
-  const auto block = decoded(flash, 0x15000);
+  RawBlock raw; assert(writer.readBlock(0x30000, 7, 0, raw) && raw.frames == first && raw.firstSequence == 1 && raw.firstTimeUs == 7);
+  const auto block = decoded(flash, 0x30000);
   for (unsigned i = 0; i < block.frames; ++i) {
     const auto &f = block.frame[i];
     assert(f.timeUs == sample(i).timeUs && f.sequence == i + 1 && f.imuValid && f.estimates && !f.history && !f.gapBefore);
@@ -330,9 +342,9 @@ void run() {
     assert(f.state.batteryMv == (i ? 8240 : UINT16_MAX) && f.state.airbrakes.opening[1] == 10000 && f.state.airbrakes.flags == 3);
   }
   // Golden little-endian layout, independent of the reference decoder.
-  const uint8_t *b = flash.bytes.data() + 0x15000;
+  const uint8_t *b = flash.bytes.data() + 0x30000;
   assert(b[0] == 'P' && b[1] == 'S' && b[2] == 'B' && b[3] == 'K' && b[4] == 4 && b[5] == 0 && b[6] == 0x00 && b[7] == 0x07);
-  assert(b[8] == 7 && b[16] == 0 && b[20] == 0x00 && b[21] == 0x50 && b[22] == 0x01 && b[24] == 7 && b[32] == 1);
+  assert(b[8] == 7 && b[16] == 0 && b[20] == 0x00 && b[21] == 0x00 && b[22] == 0x03 && b[24] == 7 && b[32] == 1);
   assert(b[40] == 0 && b[42] == 0xFF && b[43] == 0xFF && b[47] == 0); // Default state before the first record.
   assert(b[64] == 0x60 && b[65] == 2 && b[66] == 0);                  // STATUS: COAST.
   assert(b[67] == 0xA0 && b[68] == 3 && b[71] == 3 && b[72] == 0xC4 && b[73] == 0x09 && b[74] == 0x10 && b[75] == 0x27); // AIRBRAKE.
@@ -345,39 +357,39 @@ void run() {
   assert(!writer.append(invalid));
   auto missing = sample(n); missing.values[0] = std::numeric_limits<float>::infinity();
   assert(writer.append(missing)); assert(writer.finish());
-  assert(writer.readBlock(0x15800, 7, 1, raw) && raw.frames == 2 && raw.firstSequence == first + 1);
-  const auto tail = decoded(flash, 0x15800);
+  assert(writer.readBlock(0x30800, 7, 1, raw) && raw.frames == 2 && raw.firstSequence == first + 1);
+  const auto tail = decoded(flash, 0x30800);
   assert(tail.frame[1].sequence == n + 1 && !tail.frame[1].imuValid && tail.start.batteryMv == 8240);
   assert(!writer.append(sample(n + 1)) && writer.error() == SampleError::Inactive);
-  assert(!writer.begin(8, 0x15000, 4096) && writer.error() == SampleError::NotErased);
+  assert(!writer.begin(8, 0x30000, 0, 4096, Block) && writer.error() == SampleError::NotErased);
   raw.frames = 77;
-  assert(!writer.readBlock(0x15000, 8, 0, raw) && writer.error() == SampleError::Identity && raw.frames == 77);
-  assert(!writer.readBlock(0x15000, 7, 1, raw) && writer.error() == SampleError::Identity);
-  assert(!writer.readBlock(0x16000, 7, 2, raw) && writer.error() == SampleError::Empty);
-  std::copy(flash.bytes.begin() + 0x15000, flash.bytes.begin() + 0x15800, flash.bytes.begin() + 0x16000);
-  assert(!writer.readBlock(0x16000, 7, 0, raw) && writer.error() == SampleError::Identity);
-  flash.bytes[0x15024] ^= 1;
-  assert(!writer.readBlock(0x15000, 7, 0, raw) && writer.error() == SampleError::Corrupt);
+  assert(!writer.readBlock(0x30000, 8, 0, raw) && writer.error() == SampleError::Identity && raw.frames == 77);
+  assert(!writer.readBlock(0x30000, 7, 1, raw) && writer.error() == SampleError::Identity);
+  assert(!writer.readBlock(0x31000, 7, 2, raw) && writer.error() == SampleError::Empty);
+  std::copy(flash.bytes.begin() + 0x30000, flash.bytes.begin() + 0x30800, flash.bytes.begin() + 0x40000);
+  assert(!writer.readBlock(0x40000, 7, 0, raw) && writer.error() == SampleError::Identity);
+  flash.bytes[0x30024] ^= 1;
+  assert(!writer.readBlock(0x30000, 7, 0, raw) && writer.error() == SampleError::Corrupt);
   // Every byte boundary of a block write, retaining the preceding block unchanged.
   for (long cut = 0; cut <= 2048; ++cut) {
     MemoryFlash f = stable; FlightSampleStore w(f);
     // Separate allocated extent: deliberately leave the prior committed block intact.
-    assert(w.begin(8, 0x16000, 4096));
+    assert(w.begin(8, 0x40000, 0, 4096, Block));
     assert(w.append(sample(100))); f.budget = cut;
     try { w.flush(); } catch (const Cut &) {}
     f.budget = -1;
     FlightSampleStore reader(f); RawBlock recovered;
-    assert(reader.readBlock(0x15000, 7, 0, recovered) && recovered.frames == first);
-    const bool valid = reader.readBlock(0x16000, 8, 0, recovered);
+    assert(reader.readBlock(0x30000, 7, 0, recovered) && recovered.frames == first);
+    const bool valid = reader.readBlock(0x40000, 8, 0, recovered);
     // Committed once the commit magic, CRC and complement (12 bytes) follow the body; the rest is FF.
     if (valid) assert(recovered.frames == 1 && recovered.firstSequence == 101 && cut >= 1792 + 12);
     else assert(cut < 1792 + 12 && (reader.error() == SampleError::Empty || reader.error() == SampleError::Incomplete));
-    assert(std::equal(stable.bytes.begin(), stable.bytes.begin() + 0x16000, f.bytes.begin()));
-    if (cut > 0) assert(!reader.begin(9, 0x16000, 4096) && reader.error() == SampleError::NotErased);
+    assert(std::equal(stable.bytes.begin(), stable.bytes.begin() + 0x40000, f.bytes.begin()));
+    if (cut > 0) assert(!reader.begin(9, 0x40000, 0, 4096, Block) && reader.error() == SampleError::NotErased);
   }
   // A 4 KiB extent holds two blocks; then Full, with no wrap or erase.
   MemoryFlash full; FlightSampleStore small(full);
-  assert(small.begin(1, 0x15000, 4096));
+  assert(small.begin(1, 0x30000, 0, 4096, Block));
   uint32_t m = 0;
   while (small.append(sample(m))) ++m;
   assert(small.error() == SampleError::Full && small.committedBytes() == 4096 && small.committedSamples() == m);
@@ -385,19 +397,42 @@ void run() {
   assert(!small.append(sample(m + 1)) && small.error() == SampleError::Full);
   assert(small.finish() && beforeFull == full.bytes);
   MemoryFlash io; FlightSampleStore fault(io);
-  io.failRead = true; assert(!fault.begin(1, 0x15000, 4096)); io.failRead = false;
-  assert(fault.begin(1, 0x15000, 4096)); assert(fault.append(sample(0)));
+  io.failRead = true; assert(!fault.begin(1, 0x30000, 0, 4096, Block)); io.failRead = false;
+  assert(fault.begin(1, 0x30000, 0, 4096, Block)); assert(fault.append(sample(0)));
   io.failProgram = true; assert(!fault.flush() && !fault.active() && fault.committedSamples() == 0);
   const auto attempted = io.writes;
   assert(!fault.flush() && io.writes == attempted);
   MemoryFlash ambiguous; FlightSampleStore uncertain(ambiguous);
-  assert(uncertain.begin(99, 0x15000, 4096)); assert(uncertain.append(sample(0)));
+  assert(uncertain.begin(99, 0x30000, 0, 4096, Block)); assert(uncertain.append(sample(0)));
   ambiguous.failAfterProgram = 8; // Commit is durable although the driver reports failure.
   assert(!uncertain.flush() && !uncertain.active() && uncertain.committedSamples() == 0);
   assert(!uncertain.flush() && ambiguous.writes == 8);
   FlightSampleStore boot(ambiguous);
-  assert(boot.readBlock(0x15000, 99, 0, raw) && raw.frames == 1 && raw.firstTimeUs == 7);
-  std::cout << "Flight sample storage tests passed: v4 codec, raw codes, bounds, CRC, full extent, I/O failure and 2049 power cuts.\n";
+  assert(boot.readBlock(0x30000, 99, 0, raw) && raw.frames == 1 && raw.firstTimeUs == 7);
+  // A flight in the last ring block continues in block 0.
+  MemoryFlash ring; ring.bytes.resize(FlashLayout::Capacity, 255); FlightSampleStore wrap(ring);
+  const uint32_t last = FlashLayout::blockAddress(FlashLayout::RingBlocks - 1);
+  assert(wrap.begin(5, last, 0, 2 * Block, 2 * Block));
+  assert(wrap.address(31) == last + 31 * 2048 && wrap.address(32) == FlashLayout::RingBegin);
+  uint32_t k = 0;
+  while (wrap.committedSamples() == 0 || wrap.committedBytes() < 33 * 2048) assert(wrap.append(sample(k++)));
+  assert(wrap.readBlock(FlashLayout::RingBegin, 5, 32, raw) && raw.firstSequence > 1);
+  // Growth: added blocks are erased asynchronously. The whole chip is busy during an erase, so
+  // every sealed block waits in RAM, then is written once the erase has finished.
+  MemoryFlash slow; slow.eraseLatency = 1000000; FlightSampleStore grow(slow);
+  assert(grow.begin(6, 0x30000, 0, 4 * Block, Block) && grow.extend(1) && grow.service() && slow.erasing);
+  k = 0;
+  for (; k < 200; ++k) assert(grow.append(sample(k)));
+  assert(grow.committedBytes() == 0 && slow.erasing && grow.erasing() && grow.service() && slow.erasing);
+  slow.erasePolls = 0; assert(grow.service() && !slow.erasing && !grow.erasing());
+  assert(grow.committedBytes() == 3 * 2048 && grow.committedSamples() == k - grow.bufferedSamples());
+  assert(grow.finish());
+  // More than 16 sealed blocks during one erase: the writer waits for the erase, losing nothing.
+  MemoryFlash busy; busy.eraseLatency = 5000; FlightSampleStore wait(busy);
+  assert(wait.begin(7, 0x30000, 0, 4 * Block, Block) && wait.extend(1) && wait.service() && busy.erasing);
+  for (k = 0; k < 1200; ++k) assert(wait.append(sample(k)));
+  assert(!busy.erasing && wait.committedBytes() >= 16 * 2048 && wait.finish() && wait.committedSamples() == k);
+  std::cout << "Flight sample storage tests passed: v4 codec, raw codes, bounds, CRC, full extent, I/O failure, 2049 power cuts, ring wrap and asynchronous growth.\n";
 }
 } // namespace test_flight_sample_store
 

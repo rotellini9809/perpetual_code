@@ -77,8 +77,8 @@ of a run and cleared at the end. Each flight header stores the values the flight
 
 ### IMU calibration
 
-A six-face fit of per-axis bias and scale (no cross-axis terms), stored in its own 4 KiB flash
-sector with an approval record ([format](STORAGE_FORMAT.md#device-imu-calibration-journal-v1)).
+A six-face fit of per-axis bias and scale (no cross-axis terms), stored with its approval state
+in the device journal ([format](STORAGE_FORMAT.md#device-journal-v1-block-0)).
 
 | Command | Effect |
 |---|---|

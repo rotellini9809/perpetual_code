@@ -148,7 +148,7 @@ rollover for this bounded run. This is cooperative scheduling, not an ISR/hard-r
 guarantee. A full virtual replay has 6600 frames; check `samples + missed_ticks == 6600`. Phase/start
 arrays are bounded to five/eight.
 
-The 1 MiB record budget is prepared before the profile clock begins. Physical outputs retain the
+The first 512 KiB of recording space is prepared before the profile clock begins; it grows while recording. Physical outputs retain the
 shared landing-window shutdown policy, which may complete before the last dataset timestamp.
 At completion or manual
 stop, cancel future starts and request asynchronous storage close. `active:false` ends sensor

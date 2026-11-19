@@ -162,7 +162,7 @@ using command_test::send;
 using namespace storage;
 class MemoryFlash : public FlashDevice {
 public:
-  std::vector<uint8_t> bytes = std::vector<uint8_t>(0x5000, 255);
+  std::vector<uint8_t> bytes = std::vector<uint8_t>(storage::FlashLayout::DirectoryA, 255); // Device journal.
   unsigned mutations = 0;
   bool failProgram = false;
   bool read(uint32_t a, void *p, std::size_t n) override {
@@ -171,13 +171,13 @@ public:
   }
   bool program(uint32_t a, const void *p, std::size_t n) override {
     if (failProgram) return false;
-    assert(a >= 0x1000 && a + n <= 0x5000); ++mutations;
+    assert(a + n <= bytes.size()); ++mutations;
     const auto *source = static_cast<const uint8_t *>(p);
     for (std::size_t i = 0; i < n; ++i) { assert((bytes[a + i] & source[i]) == source[i]); bytes[a + i] &= source[i]; }
     return true;
   }
   bool eraseSector(uint32_t a) override {
-    assert(a >= 0x1000 && a + 4096 <= 0x5000); ++mutations; memset(bytes.data() + a, 255, 4096); return true;
+    assert(a % 4096 == 0 && a + 4096 <= bytes.size()); ++mutations; memset(bytes.data() + a, 255, 4096); return true;
   }
 };
 const recovery::ValidationLimits limits{1000, 2000, 1000, 3600000};
@@ -492,7 +492,7 @@ struct Device : storage::FlashDevice {
   }
   bool eraseSector(uint32_t a) override {
     elapsedUs += 1000;
-    assert(a >= 0x1000 && a%4096 == 0 && a+4096 <= bytes.size()); ++erases;
+    assert(a%4096 == 0 && a+4096 <= bytes.size()); ++erases;
     memset(bytes.data()+a, 255, 4096); return true;
   }
 };
@@ -517,9 +517,9 @@ void run() {
   has(send(usb, "hil begin 0 200 logged_body"), "\"active\":true");
   has(send(usb, "hil sample 0 0 0 9.80665 0 0 0 101325"), "\"imu_valid\":true");
   send(usb, "hil stop"); assert(flash.programs == before); // Plain HIL remains write-free.
-  flash.bytes[0x5000+512] = 0; // Blank headers alone are not enough to authorize initialization.
+  flash.bytes[storage::FlashLayout::DirectoryA+512] = 0; // Blank headers alone are not enough to authorize initialization.
   has(send(usb, "flights init"), "NotBlank"); assert(flash.programs == before);
-  flash.bytes[0x5000+512] = 255;
+  flash.bytes[storage::FlashLayout::DirectoryA+512] = 255;
   has(send(usb, "flights init"), "\"ready\":true");
   const auto initialized = flash.programs; send(usb, "flights init"); assert(flash.programs == initialized);
   const auto timingWrites = flash.programs;
@@ -590,7 +590,7 @@ void run() {
   assert(recorder.begin(wide, limits, 4096, storage::SensorMode::Simulation, storage::OutputMode::Virtual,
                         sensors::FrameConvention::LoggedCalibratedBody));
   for (const auto &a : rule.assignments) assert(recorder.recordStart(rule.id, a.kind, a.channel, UINT32_MAX));
-  storage::FlightSample sample; sample.phase = recovery::FlightPhase::Landed;
+  storage::FlightSample sample; sample.phase = recovery::FlightPhase::Descent; // LANDED would be thinned to 10 Hz.
   sample.values.fill(-std::numeric_limits<float>::max()); sample.timeUs = UINT64_MAX-1; sample.imuSequence = UINT32_MAX-1;
   assert(recorder.append(sample)); ++sample.timeUs; ++sample.imuSequence; assert(recorder.append(sample)); assert(recorder.finish(true));
   const auto info = send(usb, "@4294967294 flights info 4");

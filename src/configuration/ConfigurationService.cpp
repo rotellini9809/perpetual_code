@@ -76,7 +76,7 @@ const char *ConfigurationService::apply() {
   if (!drafting_) return "NO_DRAFT";
   if (!validateDraft().ok()) return "CONFIG_INVALID";
   if (!storageReady_) return "STORAGE_ERROR";
-  // The single persisted copy cannot remain a fallback once a save starts.
+  // Fail closed: after a failed save the outcome on flash is uncertain until the next boot reads the journal.
   appliedValid_ = false;
   if (!store_.save(draft_, limits_, disarmed_) || !store_.load(verified_, limits_)) {
     loadError_ = store_.error(); storageReady_ = false; return "STORAGE_ERROR";

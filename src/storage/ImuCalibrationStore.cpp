@@ -6,92 +6,76 @@
 
 namespace storage {
 namespace {
-constexpr uint32_t Magic=0x554d4950;
-bool decode(const uint8_t *p, ImuCalibrationRecord &r) {
-  if (binary::get32(p,4)!=Magic || p[4]!=1 || p[5]>3 ||
-      binary::get32(p+252,4)!=binary::crc(p,252)) return false;
-  r.revision=binary::get32(p+8,4); r.approval=ImuApproval(p[5]);
-  if (p[6]!=255 && p[6]!=0x49) return false;
-  r.identity=p[6]==0x49;
-  for (unsigned i=0;i<3;++i) {
-    uint32_t b=binary::get32(p+12+4*i,4),s=binary::get32(p+24+4*i,4);
-    std::memcpy(&r.bias[i],&b,4); std::memcpy(&r.scale[i],&s,4);
-    if (!std::isfinite(r.bias[i]) || std::fabs(r.bias[i])>2 ||
-        !std::isfinite(r.scale[i]) || r.scale[i]<.8f || r.scale[i]>1.2f) return false;
-  }
+// Journal type 1 payload: approval, identity marker, revision, accel bias XYZ, accel scale XYZ.
+constexpr std::size_t RecordBytes = 30;
+bool validCoefficients(const ImuCalibrationRecord &r) {
+  for (unsigned i=0;i<3;++i)
+    if (!std::isfinite(r.bias[i]) || std::fabs(r.bias[i])>2 || !std::isfinite(r.scale[i]) || r.scale[i]<.8f || r.scale[i]>1.2f) return false;
   return r.revision!=0;
+}
+void encode(const ImuCalibrationRecord &r, uint8_t *p) {
+  p[0]=uint8_t(r.approval); p[1]=r.identity ? 0x49 : 0xFF; binary::put(p+2,r.revision,4);
+  for (unsigned i=0;i<3;++i) {
+    uint32_t b,s; std::memcpy(&b,&r.bias[i],4); std::memcpy(&s,&r.scale[i],4);
+    binary::put(p+6+4*i,b,4); binary::put(p+18+4*i,s,4);
+  }
+}
+bool decode(const uint8_t *p, ImuCalibrationRecord &r) {
+  if (p[0]>3 || (p[1]!=0xFF && p[1]!=0x49)) return false;
+  r.approval=ImuApproval(p[0]); r.identity=p[1]==0x49; r.revision=binary::get32(p+2,4);
+  for (unsigned i=0;i<3;++i) {
+    uint32_t b=binary::get32(p+6+4*i,4),s=binary::get32(p+18+4*i,4);
+    std::memcpy(&r.bias[i],&b,4); std::memcpy(&r.scale[i],&s,4);
+  }
+  return validCoefficients(r);
 }
 }
 bool ImuCalibrationStore::load() {
-  present_=false; identityAllowed_=policyReadable_=false; next_=0; record_={};
-  bool damaged=false;
-  for (unsigned n=0;n<FlashLayout::CalibrationBytes/256;++n) {
-    uint8_t page[256];
-    if (!flash_.read(FlashLayout::CalibrationBegin+n*256,page,sizeof(page))) { present_=false; return false; }
-    bool empty=true; for (auto b:page) if (b!=255) empty=false;
-    if (empty) continue;
-    next_=n+1; ImuCalibrationRecord candidate;
-    if (!decode(page,candidate) || (present_ && candidate.revision!=record_.revision)) { damaged=true; continue; }
-    record_=candidate; present_=true; damaged=false;
-  }
-  // A torn approval write must never fall back to an older Verified record.
+  present_=false; identityAllowed_=policyReadable_=false; record_={};
+  if (!loadIdentityPolicy()) { if (!policyReadable_) return false; }
+  DeviceJournal::Found found;
+  if (!journal_.read(DeviceJournal::ImuCalibration,buffer_,sizeof(buffer_),found)) return false;
+  // A torn or unreadable newer record never falls back to an older approval.
+  const bool damaged=found.damagedAfter;
+  if (found.present && found.length==RecordBytes && decode(buffer_,record_)) present_=true;
+  else record_={};
   if (damaged && present_) record_.approval=ImuApproval::Invalid;
-  loadIdentityPolicy();
   // Only a persisted Invalid record comes from invalidate(): finish a revocation interrupted by a reset.
   // A torn write (damaged) is not a failed verification and never revokes the identity.
-  if (present_ && !damaged && record_.approval==ImuApproval::Invalid) revokeIdentity();
+  if (present_ && !damaged && record_.approval==ImuApproval::Invalid && identityAllowed_) revokeIdentity();
   return present_;
 }
-bool ImuCalibrationStore::write(unsigned n,const ImuCalibrationRecord &r) {
-  uint8_t page[256]; std::memset(page,255,sizeof(page));
-  binary::put(page,Magic,4); page[4]=1; page[5]=uint8_t(r.approval); page[6]=r.identity ? 0x49 : 255;
-  binary::put(page+8,r.revision,4);
-  for (unsigned i=0;i<3;++i) {
-    uint32_t b,s; std::memcpy(&b,&r.bias[i],4); std::memcpy(&s,&r.scale[i],4);
-    binary::put(page+12+4*i,b,4); binary::put(page+24+4*i,s,4);
-  }
-  binary::put(page+252,binary::crc(page,252),4);
+bool ImuCalibrationStore::write(const ImuCalibrationRecord &r) {
+  uint8_t payload[RecordBytes]; encode(r,payload);
   ImuCalibrationRecord check;
-  if (!decode(page,check)) return false;
-  const auto address=FlashLayout::CalibrationBegin+n*256;
-  uint8_t readback[256];
-  return flash_.program(address,page,256) && flash_.read(address,readback,256) && !std::memcmp(page,readback,256);
+  if (!decode(payload,check)) return false;
+  return journal_.write(DeviceJournal::ImuCalibration,payload,sizeof(payload));
 }
 bool ImuCalibrationStore::save(const ImuCalibrationRecord &r) {
-  if (!r.revision || unsigned(r.approval)>3 || (r.identity && !identityAllowed_)) return false;
-  for (unsigned i=0;i<3;++i)
-    if (!std::isfinite(r.bias[i]) || std::fabs(r.bias[i])>2 || !std::isfinite(r.scale[i]) || r.scale[i]<.8f || r.scale[i]>1.2f) return false;
+  if (!r.revision || unsigned(r.approval)>3 || (r.identity && !identityAllowed_) || !validCoefficients(r)) return false;
   if (!policyReadable_ && !loadIdentityPolicy() && !policyReadable_) return false; // Unknown policy: do not write.
-  // Explicit idle operation. Loss of power during erase leaves calibration unavailable.
-  present_=false;
-  if (!flash_.eraseSector(FlashLayout::CalibrationBegin)) return false;
-  next_=1;
-  if (!write(0,r)) return false;
+  // Written beside the previous calibration: a power cut keeps the old one.
+  if (!write(r)) { record_.approval=ImuApproval::Invalid; return false; }
   record_=r; present_=true; return true;
 }
 bool ImuCalibrationStore::approve(ImuApproval approval) {
   if (!present_ || (approval!=ImuApproval::Invalid && needsCalibration())) return false;
   auto r=record_; r.approval=approval;
-  if (next_>=FlashLayout::CalibrationBytes/256) {
-    // Compaction is only called while idle, never in flight.
-    return save(r);
-  }
-  const unsigned page=next_++;
-  if (!write(page,r)) { record_.approval=ImuApproval::Invalid; return false; }
+  if (!write(r)) { record_.approval=ImuApproval::Invalid; return false; }
   record_=r; return true;
 }
 bool ImuCalibrationStore::loadIdentityPolicy() {
-  uint8_t value=0;
-  if (!flash_.read(FlashLayout::IdentityPolicyBegin,&value,1)) return false;
+  DeviceJournal::Found found;
+  if (!journal_.read(DeviceJournal::IdentityRevoked,buffer_,sizeof(buffer_),found)) return false;
   policyReadable_=true;
-  identityAllowed_=value==255; // Anything but the erased value (0x00, or damage) counts as revoked.
+  identityAllowed_=!found.present; // The revocation record is copied by every compaction; only ERASE ALL removes it.
   return identityAllowed_;
 }
 bool ImuCalibrationStore::revokeIdentity() {
   identityAllowed_=false;
-  const uint8_t revoked=0; uint8_t check=255;
-  const auto address=FlashLayout::IdentityPolicyBegin;
-  return flash_.program(address,&revoked,1) && flash_.read(address,&check,1) && check==0;
+  DeviceJournal::Found found;
+  if (journal_.read(DeviceJournal::IdentityRevoked,buffer_,sizeof(buffer_),found) && found.present) return true;
+  return journal_.write(DeviceJournal::IdentityRevoked,nullptr,0);
 }
 bool ImuCalibrationStore::discard() {
   if (!present_) return true;

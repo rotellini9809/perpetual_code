@@ -85,8 +85,8 @@ void runDiagnostics() {
   Serial.println("An ID match verifies identification only, not memory integrity.");
   Serial.println("=== END: r + Enter repeats ID checks; w + Enter tests the last flight-data sector; c + Enter sweeps SPI clocks 4-75 MHz ===");
   Serial.println("w saves/restores that sector in RAM; power loss can destroy its original contents.");
-  Serial.println("w never touches the IMU identity policy sector (0xFFF000), which nothing may erase.");
-  Serial.println("ERASE ALL + Enter erases the entire 16MiB device: settings, flights and the IMU identity policy.");
+  Serial.println("w uses the last flight-ring sector only, never the device journal or directory (blocks 0..2).");
+  Serial.println("ERASE ALL + Enter erases the entire 16MiB device: journal (calibration, settings, rules, identity revocation), directory and flights.");
 }
 void eraseAll() {
   inactiveOutputs();
@@ -105,9 +105,9 @@ void eraseAll() {
   }
   Serial.println("=== FULL FLASH ERASE VERIFIED: 16777216 bytes ===");
 }
-// Last flight-data sector: the following one holds the IMU identity policy and is never erased here.
-constexpr uint32_t TestSector = storage::FlashLayout::DataEnd - FlashLogger::SectorSize;
-static_assert(TestSector + FlashLogger::SectorSize <= storage::FlashLayout::IdentityPolicyBegin, "Test sector overlaps the policy");
+// Last sector of the flight ring; device metadata (blocks 0..2) is never touched here.
+constexpr uint32_t TestSector = storage::FlashLayout::Capacity - FlashLogger::SectorSize;
+static_assert(TestSector >= storage::FlashLayout::RingBegin, "Test sector overlaps device metadata");
 uint8_t backup[FlashLogger::SectorSize];
 bool backupAtRisk = false; // Shared by w and c: a failed restore blocks both until reboot.
 uint32_t crc32(const uint8_t *p, std::size_t n, uint32_t crc) {

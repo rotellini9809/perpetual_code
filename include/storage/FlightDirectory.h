@@ -13,8 +13,15 @@ enum class DirectoryError : uint8_t {
 };
 class FlightDirectory {
 public:
-  static constexpr std::size_t MaxEntries = 48;
+  static constexpr std::size_t MaxEntries = 32;
   static constexpr uint32_t SlotBytes = 512; // Data page + separate commit page.
+  static constexpr uint32_t Slots = FlashLayout::DirectoryBankBytes / SlotBytes; // 128, slot 0 is the bank header.
+  // Ring extents: `blocks` consecutive 64 KiB ring blocks from `first`, wrapping after the last.
+  static bool overlaps(uint32_t first, uint32_t blocks, uint32_t otherFirst, uint32_t otherBlocks) {
+    const uint32_t n = FlashLayout::RingBlocks;
+    return (otherFirst + n - first) % n < blocks || (first + n - otherFirst) % n < otherBlocks;
+  }
+  static uint32_t blockOf(uint32_t address) { return (address - FlashLayout::RingBegin) / FlashLayout::BlockBytes; }
   explicit FlightDirectory(FlashDevice &flash) : flash_(flash) {}
   bool mount(); // Read-only, never formats unknown contents.
   bool format(); // Explicit destructive operation: directory banks only.
@@ -31,6 +38,7 @@ public:
     return count;
   }
   uint64_t highWater() const { return highWater_; }
+  uint32_t freeSlots() const { return mounted_ && nextSlot_ < Slots ? Slots - nextSlot_ : 0; }
   uint64_t generation() const { return generation_; }
   DirectoryError error() const { return error_; }
   static const char *errorName(DirectoryError error);

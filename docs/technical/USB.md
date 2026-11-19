@@ -157,7 +157,7 @@ Physical blockers include `IMU_UNAVAILABLE`, `BAROMETER_UNAVAILABLE`, `STORAGE_N
 `CONTINUITY_FAULT`, `SERVOS_NOT_PREPARED`, `SERVOS_NOT_CONFIGURED`, `ORIENTATION_NOT_READY` and
 an IMU calibration that is missing or needs verification. There is no way to override them.
 
-**`arm`** starts a physical flight (480 Hz IMU, 1 MiB of recording space). It fails with the same
+**`arm`** starts a physical flight (480 Hz IMU; 512 KiB of recording space erased at arming, growing while flying, see [Storage](STORAGE.md#preparation-and-allocation)). It fails with the same
 blocker list if `preflight` is not ready. A rejected arm reserves nothing and writes nothing.
 
 **`disarm`** (or `ds`) stops the active run: physical flight, on-board simulation or sensor HIL.

@@ -157,12 +157,29 @@ bool FlashLogger::eraseRange(uint32_t address, uint32_t bytes) {
   for (uint32_t offset = 0; offset < bytes;) {
     const uint32_t current = address + offset;
     const bool block = current % BlockSize == 0 && bytes - offset >= BlockSize;
+    const bool half = !block && current % HalfBlockSize == 0 && bytes - offset >= HalfBlockSize;
     if (!waitReady(2000) || !writeEnable()) return false;
-    select(); sendAddress(block ? 0xD8 : 0x20, current); deselect();
-    if (!waitReady(block ? 3000 : 1000)) return false; // tBE2 max 2 s, tSE max 400 ms.
-    offset += block ? BlockSize : SectorSize;
+    select(); sendAddress(block ? 0xD8 : half ? 0x52 : 0x20, current); deselect();
+    if (!waitReady(block || half ? 3000 : 1000)) return false; // tBE2 max 2 s, tBE1 max 1.6 s, tSE max 400 ms.
+    offset += block ? BlockSize : half ? HalfBlockSize : SectorSize;
   }
   error_ = Error::None; return true;
+}
+bool FlashLogger::startBlockErase(uint32_t address) {
+  uint8_t probe = 0;
+  if (!checkRange(address, &probe, BlockSize)) return false;
+  if (address % BlockSize) return fail(Error::Alignment);
+  if (!waitReady(2000) || !writeEnable()) return false;
+  select(); sendAddress(0xD8, address); deselect();
+  erasing_ = true; eraseStartMs_ = millis();
+  error_ = Error::None; return true;
+}
+bool FlashLogger::eraseDone(bool &done) {
+  done = !erasing_;
+  if (!erasing_) return true;
+  if (!(readStatus1() & 1)) { erasing_ = false; done = true; error_ = Error::None; return true; }
+  if (uint32_t(millis() - eraseStartMs_) >= 3000) { erasing_ = false; ready_ = false; return fail(Error::Timeout); }
+  return true;
 }
 bool FlashLogger::eraseSector(uint32_t address) {
   uint8_t buffer[PageSize];

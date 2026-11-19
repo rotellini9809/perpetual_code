@@ -1,84 +1,67 @@
 #include "configuration/StateMachineValidation.h"
 #include "storage/ConfigurationStore.h"
 #include "storage/BinaryEncoding.h"
-#include "storage/VerifiedPage.h"
 #include <cstring>
 #include <limits>
-#include <initializer_list>
 #include <cmath>
 
 namespace storage {
-namespace {
-constexpr uint32_t OrientationAddress=ConfigurationStore::Begin+FlashLayout::SectorBytes;
-constexpr uint32_t AirbrakeAddress=ConfigurationStore::Begin+3*FlashLayout::SectorBytes;
-constexpr uint32_t MachineAddress=ConfigurationStore::Begin+2*FlashLayout::SectorBytes;
+bool ConfigurationStore::readSetting(DeviceJournal::Type type, std::size_t length, bool &present) {
+  DeviceJournal::Found found;
+  if (!journal_.read(type, scratch_, sizeof(scratch_), found)) return fail(ConfigError::Io);
+  // A committed setting damaged later is never silently replaced by an older copy.
+  if (found.corruptAfter) return fail(ConfigError::Corrupt);
+  present = found.present;
+  if (present && found.length != length) return fail(ConfigError::Corrupt);
+  return true;
+}
+bool ConfigurationStore::writeSetting(DeviceJournal::Type type, const uint8_t *payload, std::size_t length) {
+  if (!journal_.write(type, payload, length)) return fail(ConfigError::Io);
+  error_ = ConfigError::None; return true;
 }
 bool ConfigurationStore::loadAirbrakes(bool &enabled) {
-  uint8_t page[FlashLayout::PageBytes];
-  if (!flash_.read(AirbrakeAddress,page,sizeof(page))) return fail(ConfigError::Io);
-  bool blank=true; for (auto byte:page) blank &= byte==255;
-  if (blank) { enabled=false; error_=ConfigError::None; return true; }
-  if (binary::get32(page,4)!=0x52424150 || page[4]!=1 || page[5]>1 || binary::get32(page+252,4)!=binary::crc(page,252)) return fail(ConfigError::Corrupt);
-  enabled=page[5]; error_=ConfigError::None; return true;
+  bool present = false;
+  if (!readSetting(DeviceJournal::Airbrakes, 1, present)) return false;
+  if (present && scratch_[0] > 1) return fail(ConfigError::Corrupt);
+  enabled = present && scratch_[0] == 1; error_ = ConfigError::None; return true;
 }
-bool ConfigurationStore::saveAirbrakes(bool enabled,bool disarmed) {
+bool ConfigurationStore::saveAirbrakes(bool enabled, bool disarmed) {
   if (!disarmed) return fail(ConfigError::Armed);
-  uint8_t page[FlashLayout::PageBytes],check[FlashLayout::PageBytes]; memset(page,255,sizeof(page));
-  binary::put(page,0x52424150,4); page[4]=1; page[5]=enabled; binary::put(page+252,binary::crc(page,252),4);
-  if (!flash_.eraseSector(AirbrakeAddress) || writeVerifiedPage(flash_,AirbrakeAddress,page,check)!=PageWriteError::None) return fail(ConfigError::Io);
-  error_=ConfigError::None; return true;
+  const uint8_t value = enabled; return writeSetting(DeviceJournal::Airbrakes, &value, 1);
 }
-bool ConfigurationStore::loadStateMachine(recovery::StateMachineSettings &settings) {
-  uint8_t page[FlashLayout::PageBytes];
-  if (!flash_.read(MachineAddress,page,sizeof(page))) return fail(ConfigError::Io);
-  bool blank=true; for (auto byte:page) blank &= byte==255;
-  if (blank) { settings={}; error_=ConfigError::None; return true; }
-  if (binary::get32(page,4)!=0x4d534650 || page[4]!=1 || page[5]>1 || binary::get32(page+252,4)!=binary::crc(page,252)) return fail(ConfigError::Corrupt);
-  recovery::StateMachineSettings decoded; decoded.bistage=page[5];
-  uint32_t bits=binary::get32(page+8,4); memcpy(&decoded.minimumCoastVelocity,&bits,4);
-  if (!recovery::validStateMachineSettings(decoded)) return fail(ConfigError::Corrupt);
-  settings=decoded; error_=ConfigError::None; return true;
+bool ConfigurationStore::loadStateMachine(recovery::StateMachineSettings &output) {
+  bool present = false;
+  if (!readSetting(DeviceJournal::StateMachine, 5, present)) return false;
+  if (!present) { output = {}; error_ = ConfigError::None; return true; }
+  recovery::StateMachineSettings decoded; decoded.bistage = scratch_[0] == 1;
+  const uint32_t bits = binary::get32(scratch_ + 1, 4); memcpy(&decoded.minimumCoastVelocity, &bits, 4);
+  if (scratch_[0] > 1 || !recovery::validStateMachineSettings(decoded)) return fail(ConfigError::Corrupt);
+  output = decoded; error_ = ConfigError::None; return true;
 }
-bool ConfigurationStore::saveStateMachine(const recovery::StateMachineSettings &settings,bool disarmed) {
+bool ConfigurationStore::saveStateMachine(const recovery::StateMachineSettings &machine, bool disarmed) {
   if (!disarmed) return fail(ConfigError::Armed);
-  if (!recovery::validStateMachineSettings(settings)) return fail(ConfigError::InvalidConfiguration);
-  uint8_t page[FlashLayout::PageBytes],check[FlashLayout::PageBytes]; memset(page,255,sizeof(page));
-  binary::put(page,0x4d534650,4); page[4]=1; page[5]=settings.bistage;
-  uint32_t bits; memcpy(&bits,&settings.minimumCoastVelocity,4); binary::put(page+8,bits,4);
-  binary::put(page+252,binary::crc(page,252),4);
-  if (!flash_.eraseSector(MachineAddress) || writeVerifiedPage(flash_,MachineAddress,page,check)!=PageWriteError::None) return fail(ConfigError::Io);
-  error_=ConfigError::None; return true;
+  if (!recovery::validStateMachineSettings(machine)) return fail(ConfigError::InvalidConfiguration);
+  uint8_t payload[5]; uint32_t bits; memcpy(&bits, &machine.minimumCoastVelocity, 4);
+  payload[0] = machine.bistage; binary::put(payload + 1, bits, 4);
+  return writeSetting(DeviceJournal::StateMachine, payload, sizeof(payload));
 }
 bool ConfigurationStore::loadOrientation(uint8_t &axis) {
-  uint8_t page[FlashLayout::PageBytes];
-  if (!flash_.read(OrientationAddress,page,sizeof(page))) return fail(ConfigError::Io);
-  bool blank=true; for (auto byte:page) blank &= byte==255;
-  if (blank) return fail(ConfigError::Missing);
-  if (binary::get32(page,4)!=0x544e524f || page[4]!=1 || page[5]>=6 ||
-      binary::get32(page+252,4)!=binary::crc(page,252)) return fail(ConfigError::Corrupt);
-  axis=page[5]; error_=ConfigError::None; return true;
+  bool present = false;
+  if (!readSetting(DeviceJournal::Orientation, 1, present)) return false;
+  if (!present) return fail(ConfigError::Missing);
+  if (scratch_[0] >= 6) return fail(ConfigError::Corrupt);
+  axis = scratch_[0]; error_ = ConfigError::None; return true;
 }
 bool ConfigurationStore::saveOrientation(uint8_t axis, bool disarmed) {
   if (!disarmed) return fail(ConfigError::Armed);
-  if (axis>=6) return fail(ConfigError::InvalidConfiguration);
-  uint8_t page[FlashLayout::PageBytes], check[FlashLayout::PageBytes];
-  memset(page,255,sizeof(page)); binary::put(page,0x544e524f,4); page[4]=1; page[5]=axis;
-  binary::put(page+252,binary::crc(page,252),4);
-  if (!flash_.eraseSector(OrientationAddress) || writeVerifiedPage(flash_,OrientationAddress,page,check)!=PageWriteError::None)
-    return fail(ConfigError::Io);
-  error_=ConfigError::None; return true;
+  if (axis >= 6) return fail(ConfigError::InvalidConfiguration);
+  return writeSetting(DeviceJournal::Orientation, &axis, 1);
 }
 
 bool ConfigurationStore::clear(bool disarmed) {
   if (!disarmed) return fail(ConfigError::Armed);
-  uint8_t page[FlashLayout::PageBytes];
-  for (const auto address:{Begin,OrientationAddress,MachineAddress,AirbrakeAddress}) {
-    if (!flash_.eraseSector(address)) return fail(ConfigError::Io);
-    for (uint32_t offset=0;offset<FlashLayout::SectorBytes;offset+=sizeof(page)) {
-      if (!flash_.read(address+offset,page,sizeof(page))) return fail(ConfigError::Io);
-      for (auto byte:page) if (byte!=255) return fail(ConfigError::Io);
-    }
-  }
+  // Factory reset: rules and settings go; IMU calibration and the identity revocation stay.
+  if (!journal_.reset(uint8_t(1u << DeviceJournal::ImuCalibration | 1u << DeviceJournal::IdentityRevoked))) return fail(ConfigError::Io);
   error_=ConfigError::None; return true;
 }
 
@@ -86,11 +69,10 @@ namespace {
 using binary::put;
 using binary::get32;
 using binary::crc;
-constexpr uint32_t Magic = 0x47464350, Commit = 0x54494D43, Page = FlashLayout::PageBytes, PayloadOffset = 512;
 constexpr uint16_t Version = ConfigurationStore::FormatVersion;
 static_assert(sizeof(float) == 4 && std::numeric_limits<float>::is_iec559, "Requires IEEE-754 binary32");
 static_assert(39 + recovery::MaxConditions * 19 + recovery::MaxRules * (58 + recovery::MaxConditions * 19 + recovery::MaxAssignments * 6)
-              <= FlashLayout::SectorBytes - PayloadOffset, "Supported configuration must fit one sector");
+              <= ConfigurationStore::MaxPayload, "Supported configuration must fit one journal record");
 struct Writer {
   uint8_t *data; std::size_t capacity, pos = 0; bool ok = true;
   Writer(uint8_t *p, std::size_t n) : data(p), capacity(n) {}
@@ -191,20 +173,14 @@ bool ConfigurationStore::decode(const uint8_t *bytes, std::size_t length, recove
 }
 bool ConfigurationStore::load(recovery::Configuration &output, const recovery::ValidationLimits &limits) {
   validation_ = {};
-  uint8_t header[Page], marker[Page];
-  if (!flash_.read(Begin, header, Page) || !flash_.read(Begin + Page, marker, Page)) return fail(ConfigError::Io);
-  bool erased = true; for (auto byte : header) erased &= byte == 255;
-  if (erased) return fail(ConfigError::Missing);
-  if (get32(header, 4) != Magic || get32(header + 252, 4) != crc(header, 252)) return fail(ConfigError::Corrupt);
-  const auto version = get32(header + 4, 2);
-  if (version != Version) return fail(ConfigError::UnsupportedVersion);
-  const uint32_t length = get32(header + 8, 4), checksum = get32(header + 12, 4);
-  if (length == 0 || length > MaxPayload || length > Bytes - PayloadOffset ||
-      get32(marker, 4) != Commit || get32(marker + 4, 4) != get32(header + 252, 4) ||
-      get32(marker + 8, 4) != checksum || get32(marker + 12, 4) != length) return fail(ConfigError::Corrupt);
-  if (!flash_.read(Begin + PayloadOffset, scratch_, length)) return fail(ConfigError::Io);
-  if (crc(scratch_, length) != checksum) return fail(ConfigError::Corrupt);
-  if (!decode(scratch_, length, decoded_)) return fail(ConfigError::Corrupt);
+  DeviceJournal::Found found;
+  if (!journal_.read(DeviceJournal::Rules, scratch_, sizeof(scratch_), found)) return fail(ConfigError::Io);
+  if (found.corruptAfter) return fail(ConfigError::Corrupt);
+  if (!found.present) return fail(ConfigError::Missing);
+  if (!found.length || found.length < 2) return fail(ConfigError::Corrupt);
+  // The package starts with its codec version (u16), followed by the encoded plan.
+  if (get32(scratch_, 2) != Version) return fail(ConfigError::UnsupportedVersion);
+  if (!decode(scratch_ + 2, found.length - 2, decoded_)) return fail(ConfigError::Corrupt);
   validation_ = recovery::validate(decoded_, limits);
   if (!validation_.ok()) return fail(ConfigError::InvalidConfiguration);
   output = decoded_; error_ = ConfigError::None; return true;
@@ -215,25 +191,10 @@ bool ConfigurationStore::save(const recovery::Configuration &config, const recov
   validation_ = recovery::validate(config, limits);
   if (!validation_.ok()) return fail(ConfigError::InvalidConfiguration);
   std::size_t length;
-  if (!encode(config, scratch_, sizeof(scratch_), length)) return fail(ConfigError::InvalidConfiguration);
-  if (length > FlashLayout::SectorBytes - PayloadOffset) return fail(ConfigError::InvalidConfiguration);
-  const uint32_t checksum = crc(scratch_, length);
-  uint8_t header[Page], marker[Page], check[Page];
-  memset(header, 255, Page); memset(marker, 255, Page);
-  put(header, Magic, 4); put(header + 4, Version, 2); put(header + 8, uint32_t(length), 4); put(header + 12, checksum, 4);
-  const uint32_t headerCrc = crc(header, 252); put(header + 252, headerCrc, 4);
-  put(marker, Commit, 4); put(marker + 4, headerCrc, 4); put(marker + 8, checksum, 4); put(marker + 12, uint32_t(length), 4);
-  // All supported settings fit the first sector. The remaining reservation stays untouched.
-  if (!flash_.eraseSector(Begin)) return fail(ConfigError::Io);
-  if (writeVerifiedPage(flash_, Begin, header, check) != PageWriteError::None) return fail(ConfigError::Io);
-  for (std::size_t offset = 0; offset < length; offset += Page) {
-    uint8_t page[Page]; memset(page, 255, Page);
-    const auto count = length - offset < Page ? length - offset : Page;
-    memcpy(page, scratch_ + offset, count);
-    const auto address = Begin + PayloadOffset + uint32_t(offset);
-    if (writeVerifiedPage(flash_, address, page, check) != PageWriteError::None) return fail(ConfigError::Io);
-  }
-  if (writeVerifiedPage(flash_, Begin + Page, marker, check) != PageWriteError::None) return fail(ConfigError::Io);
+  if (!encode(config, scratch_ + 2, sizeof(scratch_) - 2, length)) return fail(ConfigError::InvalidConfiguration);
+  put(scratch_, Version, 2);
+  // Written beside the previous rules; a power cut keeps the old ones.
+  if (!journal_.write(DeviceJournal::Rules, scratch_, length + 2)) return fail(ConfigError::Io);
   // Verify via the same boot load path, including semantic validation.
   return load(decoded_, limits);
 }

@@ -5,28 +5,20 @@
 namespace test_imu_calibration {
 using namespace test_arming_controller;
 constexpr float G=9.80665f;
+// The device journal (block 0) only: calibration, identity revocation and settings records.
 struct CalibrationFlash : storage::FlashDevice {
-  uint8_t bytes[4096],policy[4096]; unsigned writes=0; bool tear=false,failRead=false;
-  CalibrationFlash() { std::memset(bytes,255,sizeof(bytes)); std::memset(policy,255,sizeof(policy)); }
+  std::vector<uint8_t> bytes=std::vector<uint8_t>(storage::FlashLayout::DirectoryA,255); unsigned writes=0; bool tear=false,failRead=false;
   bool read(uint32_t a,void *p,std::size_t n) override {
-    if (failRead) return false;
-    if (a>=storage::FlashLayout::IdentityPolicyBegin) {
-      a-=storage::FlashLayout::IdentityPolicyBegin;
-      if (a+n>sizeof(policy)) return false;
-      std::memcpy(p,policy+a,n); return true;
-    }
-    if (a+n>sizeof(bytes)) return false;
-    std::memcpy(p,bytes+a,n); return true;
+    if (failRead || a+n>bytes.size()) return false;
+    std::memcpy(p,bytes.data()+a,n); return true;
   }
   bool program(uint32_t a,const void *p,std::size_t n) override {
-    uint8_t *target=bytes;
-    if (a>=storage::FlashLayout::IdentityPolicyBegin) { a-=storage::FlashLayout::IdentityPolicyBegin; target=policy; }
-    assert(a+n<=sizeof(bytes)); ++writes;
+    assert(a+n<=bytes.size()); ++writes;
     const auto *b=static_cast<const uint8_t *>(p);
-    for (unsigned i=0;i<(tear?std::min<std::size_t>(17,n):n);++i) target[a+i]&=b[i];
+    for (unsigned i=0;i<(tear?std::min<std::size_t>(17,n):n);++i) bytes[a+i]&=b[i];
     return !tear;
   }
-  bool eraseSector(uint32_t a) override { assert(!a); ++writes; std::memset(bytes,255,sizeof(bytes)); return true; }
+  bool eraseSector(uint32_t a) override { assert(a%4096==0 && a<bytes.size()); ++writes; std::memset(bytes.data()+a,255,4096); return true; }
 };
 struct Source : sensors::SensorSource {
   sensors::Reading reading; bool pending=false;
@@ -76,11 +68,11 @@ void run() {
   assert(reboot.needsCalibration() && !reboot.approve(storage::ImuApproval::Verified));
   assert(reboot.save(measured));
   assert(store.load() && store.verified());
-  for (unsigned i=0;i<30;++i) assert(store.approve(i%2 ? storage::ImuApproval::Verified:storage::ImuApproval::InUse));
-  assert(reboot.load() && reboot.verified()); // Journal compaction.
+  for (unsigned i=0;i<90;++i) assert(store.approve(i%2 ? storage::ImuApproval::Verified:storage::ImuApproval::InUse));
+  assert(reboot.load() && reboot.verified()); // Journal compaction (126 record pages per bank).
   flash.failRead=true; assert(!reboot.load() && !reboot.verified()); flash.failRead=false;
 
-  // The identity eligibility bit survives coefficient erases and journal compaction.
+  // The identity revocation survives journal compaction and a factory reset.
   CalibrationFlash factoryFlash; storage::ImuCalibrationStore factory(factoryFlash);
   assert(!factory.load() && factory.identityAllowed());
   storage::ImuCalibrationRecord identity; identity.revision=1; identity.identity=true;
@@ -91,22 +83,20 @@ void run() {
   assert(factoryReboot.load() && !factoryReboot.identityAllowed() && factoryReboot.needsCalibration());
   assert(!factoryReboot.approve(storage::ImuApproval::Verified) && !factoryReboot.save(identity));
   assert(factoryReboot.save(measured) && factoryReboot.verified());
-  for (unsigned i=0;i<30;++i) assert(factoryReboot.approve(i%2 ? storage::ImuApproval::Verified:storage::ImuApproval::InUse));
+  for (unsigned i=0;i<90;++i) assert(factoryReboot.approve(i%2 ? storage::ImuApproval::Verified:storage::ImuApproval::InUse));
   assert(factory.load() && !factory.identityAllowed());
-  factoryFlash.eraseSector(0); // Even lost coefficient records cannot resurrect factory identity.
-  assert(!factory.load() && !factory.identityAllowed());
-  // Only the policy byte decides: unreadable coefficients do not revoke the identity...
+  { storage::ConfigurationStore settings(factoryFlash); assert(settings.clear(true)); } // Factory reset.
+  assert(factory.load() && !factory.identityAllowed() && factory.verified());
+  // An unreadable journal has no records: it neither revokes the identity nor invents one.
   CalibrationFlash unknownFlash; unknownFlash.bytes[0]=0;
   storage::ImuCalibrationStore unknown(unknownFlash);
   assert(!unknown.load() && unknown.identityAllowed());
-  // ...while any value other than the erased one counts as revoked, and is never rewritten as allowed.
-  CalibrationFlash damagedPolicy; damagedPolicy.policy[0]=0x5A; storage::ImuCalibrationStore damagedStore(damagedPolicy);
-  assert(!damagedStore.load() && !damagedStore.identityAllowed() && damagedPolicy.policy[0]==0x5A);
-  // A revocation interrupted by a reset (Invalid saved, byte not yet written) is completed at load.
+  // A revocation interrupted by a reset (Invalid saved, revocation not yet written) is completed at load.
   CalibrationFlash interruptedFlash; storage::ImuCalibrationStore interrupted(interruptedFlash);
   assert(!interrupted.load() && interrupted.save(identity) && interrupted.approve(storage::ImuApproval::Invalid));
-  assert(interruptedFlash.policy[0]==255); storage::ImuCalibrationStore resumed(interruptedFlash);
-  assert(resumed.load() && !resumed.identityAllowed() && interruptedFlash.policy[0]==0);
+  storage::ImuCalibrationStore resumed(interruptedFlash);
+  assert(resumed.load() && !resumed.identityAllowed());
+  storage::ImuCalibrationStore again(interruptedFlash); assert(again.load() && !again.identityAllowed());
   CalibrationFlash unreadableFlash; unreadableFlash.failRead=true;
   storage::ImuCalibrationStore unreadable(unreadableFlash);
   assert(!unreadable.load() && !unreadable.identityAllowed());
@@ -118,7 +108,7 @@ void run() {
   for (unsigned i=0;i<3;++i) assert(custom.record().bias[i]==0 && custom.record().scale[i]==1);
   assert(!custom.needsCalibration());
   // Without identity, a failed custom calibration must be redone.
-  factory.load(); // Coefficients were erased above; the revoked identity stays revoked.
+  factory.load(); // The revoked identity stays revoked.
   assert(!factory.identityAllowed() && factory.save(attempt) && factory.discard() && factory.needsCalibration());
   // Wrong position retries; a stable correctly oriented but biased measurement fails.
   storage::ImuCalibrationRecord shifted; shifted.bias[0]=.8f;

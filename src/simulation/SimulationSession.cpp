@@ -1,4 +1,5 @@
 #include "simulation/SimulationSession.h"
+#include "storage/FlightRecorder.h"
 #include <cstring>
 
 namespace simulation {
@@ -7,7 +8,7 @@ const char *SimulationSession::begin(bool record, bool physical) {
   if (!source_.selectBistage(config_.stateMachine().bistage)) return "BUSY";
   if (!physical) if (const auto error=controller_.releaseForVirtualSimulation(record)) return error;
   if (const char *error = controller_.arm(source_, flight::FlightMode::Simulation, source_.activeReferenceAltitude(), source_.nominalHz(), navigation::SensorCalibration{},
-                                       record ? 1048576 : 0, nullptr, physical ? storage::OutputMode::Physical : storage::OutputMode::Virtual)) return error;
+                                       record ? storage::FlightRecorder::Unlimited : 0, nullptr, physical ? storage::OutputMode::Physical : storage::OutputMode::Virtual)) return error;
   navigation_ = {}; cycles_ = {}; overBudget_ = invalid_ = 0;
   cancelled_ = phaseCount_ = startCount_ = 0; phases_ = {}; starts_ = {};
   reason_ = "running"; error_ = "None"; running_ = true;

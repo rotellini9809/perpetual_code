@@ -109,16 +109,22 @@ def check_recording_usb():
                 with (folder / 'live.csv').open(newline='') as source:
                     live = list(csv.DictReader(source))
                 launch = next(i for i, row in enumerate(live) if row['phase'] != '0')
-                kept = pad_history([int(row['t_ms']) * 1000 for row in live[:launch]]) + list(range(launch, len(live)))
-                assert final['saved_samples'] == len(kept) == 5137 and final['dropped_samples'] == 0 and final['recording_error'] == 'None', final
+                kept = pad_history([int(row['t_ms']) * 1000 for row in live[:launch]])
+                last_landed = None
+                for index in range(launch, len(live)):  # LANDED is kept at 10 Hz, everything else at full rate.
+                    stamp = int(live[index]['t_ms']) * 1000
+                    if live[index]['phase'] != '4' or last_landed is None or stamp - last_landed >= 100000:
+                        kept.append(index)
+                        if live[index]['phase'] == '4': last_landed = stamp
+                assert final['saved_samples'] == len(kept) == 4603 and final['dropped_samples'] == 0 and final['recording_error'] == 'None', final
                 assert final['recording_sequence'] == '1' and not final['recording_active']
                 assert final['recording_async'] == queued and final['pending_samples'] == 0
                 timings = json.loads((folder / 'live.timing.json').read_text())
                 assert timings['sequence'] == '1' and not timings['hil']['timing_valid'] and not timings['flash']['timing_valid']
                 assert timings['hil']['compute'] == timings['hil']['storage'] == timings['hil']['step'] == [6600, 0, 0]
                 assert timings['hil']['over_budget'] == 0 and timings['flash']['failures'] == [0, 0, 0]
-                # One bulk erase of the 1 MiB extent; 8 pages per 2 KiB block.
-                assert timings['flash']['program'][0] >= 8 * (len(kept) // 114) and timings['flash']['erase'][0] == 1
+                # The base of 8 ring blocks is erased at arming (one 64 KiB erase each); 8 pages per 2 KiB block.
+                assert timings['flash']['program'][0] >= 8 * (len(kept) // 114) and timings['flash']['erase'][0] == 8
                 if queued:
                     assert 0 < timings['flash']['queue_peak'] <= 128 and timings['flash']['queue_capacity'] == 128
                     assert timings['flash']['worker'][0] >= 6600
@@ -189,7 +195,8 @@ def check_recording_usb():
                     for field in ('accelX', 'accelY', 'accelZ', 'gyroX', 'gyroY', 'gyroZ'):
                         assert abs(float(b[field]) - float(old[field])) <= quantum[field], field
                     assert all(b[name] == '' for name in ('raw_ax', 'raw_gz')) # Calibrated BODY input has no sensor codes.
-                    if b['pressure'] and index >= launch - 240:  # 10 Hz history rows carry the newest nearby reading.
+                    # 10 Hz history and LANDED rows carry the newest nearby reading, not their own.
+                    if b['pressure'] and index >= launch - 240 and live[index]['phase'] != '4':
                         fresh += 1
                         assert abs(float(b['pressure']) - float(old['pressure'])) <= .0001, 'pressure'
                         assert abs(float(b['temp']) - float(old['temp'])) <= quantum['temp'], 'temp'

@@ -40,10 +40,10 @@ python tools/replay/replay_sensors_usb.py --port COM9 --record
 python tools/replay/run_simulation_usb.py --port COM9 --record
 ```
 
-Both USB Hoppino HIL and onboard Hoppino use a 1 MiB sample budget (9,216 samples),
-plus a configuration-dependent aligned header reservation. Preparation may take seconds and
-erases only the new durably owned extent. HIL accepts `--record-bytes
-<positive_multiple_of_4096>`, `--input`, `--pressure-unit hpa|pa` and `--output`. Temperature is
+Onboard Hoppino records like a physical flight: 512 KiB erased at preparation (about 1.5 s),
+growing in 512 KiB steps while recording, the oldest flights overwritten when the ring is full.
+USB Hoppino HIL keeps an explicit sample budget (`--record-bytes
+<positive_multiple_of_4096>`, 1 MiB by default) inside the same growth scheme. HIL also accepts `--input`, `--pressure-unit hpa|pa` and `--output`. Temperature is
 sent from Hoppino, or NaN when absent. The live USB CSV and later flash export are separate
 artifacts.
 
@@ -76,11 +76,11 @@ destinations to be unused/non-overlapping. Incomplete transfers keep partial CSV
 publish complete metadata. A Corrupt flight cannot be exported as healthy; another healthy
 flight still can.
 
-CSV columns are defined once in [Storage formats](../technical/STORAGE_FORMAT.md#samples-and-blocks-v2).
+CSV columns are defined once in [Storage formats](../technical/STORAGE_FORMAT.md#samples-and-blocks-v4).
 The metadata contains sequence/status/sample count, sensor/output/frame modes, frozen
 configuration with rule names and codec hex, output-start states/timestamps, and
 recording_summary or its unavailable state, and the frozen `calibration` snapshot retrieved with
-`flights calibration <sequence>`. Its schema is [defined once in Storage formats](../technical/STORAGE_FORMAT.md#per-flight-calibration-snapshot-header-v7). Historical names/actions come from that flight, even
+`flights calibration <sequence>`. Its schema is [defined once in Storage formats](../technical/STORAGE_FORMAT.md#per-flight-calibration-snapshot-header-v8). Historical names/actions come from that flight, even
 if applied settings change. Null numeric values decode as NaN. An empty/invalid output slot is
 not proof the physical output never operated.
 

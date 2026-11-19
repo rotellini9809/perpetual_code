@@ -14,12 +14,12 @@ from host_build import HostBuild, default_compiler
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ['src/configuration/' + name + '.cpp' for name in
           ('RecoveryConfiguration', 'RecoveryRuleEngine', 'ConfigurationService')]
-CONFIG += ['src/storage/ConfigurationStore.cpp']
+CONFIG += ['src/storage/DeviceJournal.cpp', 'src/storage/ConfigurationStore.cpp']
 NAVIGATION = ['src/navigation/' + name + '.cpp' for name in
               ('AttitudeEstimator', 'VerticalKalman', 'FlightDetector', 'Navigation')]
 SENSORS = [*NAVIGATION, 'src/navigation/SensorPipeline.cpp',
            'src/hardware/HardwareSensorSource.cpp', 'src/flight/ArmingCalibration.cpp',
-           'src/flight/ImuCalibration.cpp', 'src/storage/ImuCalibrationStore.cpp']
+           'src/flight/ImuCalibration.cpp', 'src/storage/DeviceJournal.cpp', 'src/storage/ImuCalibrationStore.cpp']
 STORAGE = ['src/storage/' + name + '.cpp' for name in
            ('FlightDirectory', 'FlightHeaderStore', 'FlightLogCodec', 'FlightSampleStore', 'FlightSummaryStore',
             'FlightRecorder', 'QueuedRecorder')]
@@ -36,7 +36,7 @@ CPP = {
     'navigation': SENSORS,
     'flight': RUNTIME,
     'storage_format': [*CONFIG, *STORAGE],
-    'storage_metadata': [*CONFIG, *STORAGE],
+    'storage_metadata': [*CONFIG, *STORAGE, 'src/storage/ImuCalibrationStore.cpp'],
     'storage_recording': [*CONFIG, *STORAGE],
     'storage_recovery': [*CONFIG, *STORAGE],
     'commands': RUNTIME,
@@ -129,7 +129,7 @@ def main():
             targets[name] = list(dict.fromkeys([*CPP[name], f'test/host/{name}_test.cpp']))
         else:
             for fixture in PYTHON[name]:
-                targets[fixture] = FIXTURES[fixture]
+                targets[fixture] = list(dict.fromkeys(FIXTURES[fixture])) # Shared groups may overlap.
     build_start = time.perf_counter()
     executables = builder.build_many(targets)
     print(f'Compiler: {builder.banner}', flush=True)

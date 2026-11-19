@@ -6,19 +6,19 @@
 namespace replay_test {
 class MemoryFlash : public storage::FlashDevice {
 public:
-  std::vector<uint8_t> bytes = std::vector<uint8_t>(0x5000, 255);
+  std::vector<uint8_t> bytes = std::vector<uint8_t>(storage::FlashLayout::DirectoryA, 255); // Device journal (block 0).
   unsigned mutations = 0;
   bool read(uint32_t a, void *p, std::size_t n) override {
     if (a > bytes.size() || n > bytes.size() - a) return false;
     memcpy(p, bytes.data() + a, n); return true;
   }
   bool program(uint32_t a, const void *p, std::size_t n) override {
-    assert(a >= 0x1000 && a + n <= 0x5000); ++mutations;
+    assert(a + n <= bytes.size()); ++mutations;
     const auto *source = static_cast<const uint8_t *>(p);
     for (std::size_t i = 0; i < n; ++i) bytes[a + i] &= source[i];
     return true;
   }
-  bool eraseSector(uint32_t a) override { assert(a >= 0x1000 && a < 0x5000); ++mutations; memset(bytes.data() + a, 255, 4096); return true; }
+  bool eraseSector(uint32_t a) override { assert(a % 4096 == 0 && a < bytes.size()); ++mutations; memset(bytes.data() + a, 255, 4096); return true; }
 };
 const recovery::ValidationLimits limits{1000, 2000, 1000, 3600000};
 inline recovery::Configuration fixture() {

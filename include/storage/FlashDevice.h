@@ -37,6 +37,10 @@ public:
       if (!eraseSector(address + offset)) return false;
     return true;
   }
+  // Asynchronous 64 KiB block erase for the recording worker: start it, then poll eraseDone().
+  // No other flash access is allowed until it reports done. The default erases synchronously.
+  virtual bool startBlockErase(uint32_t address) { return eraseRange(address, FlashLayout::BlockBytes); }
+  virtual bool eraseDone(bool &done) { done = true; return true; }
   virtual FlashFailure lastFailure() const { return {}; }
 };
 }

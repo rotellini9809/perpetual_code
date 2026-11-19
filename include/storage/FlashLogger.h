@@ -41,7 +41,10 @@ public:
   // Sector-aligned range: 64 KiB block erases where aligned, 4 KiB elsewhere.
   // No read-back: the owner must verify the erased state before relying on it.
   bool eraseRange(uint32_t address, uint32_t bytes);
-  static constexpr uint32_t BlockSize = 65536;
+  // One 64 KiB block erase without waiting; eraseDone() polls the busy bit (3 s timeout).
+  bool startBlockErase(uint32_t address);
+  bool eraseDone(bool &done);
+  static constexpr uint32_t BlockSize = 65536, HalfBlockSize = 32768;
   bool waitReady(uint32_t timeoutMs);
   Error lastError() const { return error_; }
   static const char *errorName(Error error);
@@ -61,5 +64,7 @@ private:
   bool begun_ = false;
   bool ready_ = false;
   bool fastRead_ = false;
+  bool erasing_ = false;
+  uint32_t eraseStartMs_ = 0;
   Error error_ = Error::None;
 };

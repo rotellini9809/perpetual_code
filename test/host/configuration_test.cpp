@@ -7,6 +7,7 @@
 #include "configuration/RecoveryRuleEngine.h"
 #include <utility>
 #include "configuration/ConfigurationService.h"
+#include "storage/BinaryEncoding.h"
 #include "flight/RunController.h"
 #include "../fixtures/ReplayFixture.h"
 #include <functional>
@@ -387,7 +388,12 @@ void run() {
   config.setDisarmed(false); assert(!strcmp(config.setOrientation(0),"ARMED") && flash.bytes==bytes); config.setDisarmed(true);
   assert(!config.beginDraft()); assert(!strcmp(config.setOrientation(0),"DRAFT_ACTIVE") && flash.bytes==bytes); config.discardDraft();
   assert(config.acquireRun()); assert(!strcmp(config.setOrientation(0),"BUSY") && flash.bytes==bytes); config.releaseRun();
-  flash.bytes[storage::ConfigurationStore::Begin+storage::FlashLayout::SectorBytes+5]^=1;
+  // Damage the newest committed orientation record (journal type 2) after the fact.
+  for (uint32_t a=0, best=UINT32_MAX; ; a+=256) {
+    if (a>=storage::FlashLayout::DirectoryA) { assert(best!=UINT32_MAX); flash.bytes[best+256]^=1; break; }
+    if (storage::binary::get32(flash.bytes.data()+a,4)==0x52564450 && flash.bytes[a+4]==storage::DeviceJournal::Orientation &&
+        (best==UINT32_MAX || storage::binary::get64(flash.bytes.data()+a+8,8)>=storage::binary::get64(flash.bytes.data()+best+8,8))) best=a;
+  }
   ConfigurationService damaged(store,limits); damaged.boot(true); assert(!damaged.orientationReady() && damaged.configValid());
   assert(!damaged.setOrientation(3) && damaged.orientationReady());
   recovery::StateMachineSettings machine; machine.bistage=true; machine.minimumCoastVelocity=35.5f;

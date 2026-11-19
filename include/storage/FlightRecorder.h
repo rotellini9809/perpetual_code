@@ -19,6 +19,12 @@ public:
   explicit FlightRecorder(FlashDevice &flash)
       : flash_(flash), directory_(flash), header_(flash), samples_(flash), summary_(flash) {}
   static const char *errorName(RecorderError error);
+  // Sample limit meaning "the whole ring": the flight grows while recording.
+  static constexpr uint32_t Unlimited = 0xFFFFF000;
+  static constexpr uint32_t BaseBlocks = 8, GrowBlocks = 8; // 512 KiB at arming, then 512 KiB steps.
+  static constexpr uint32_t GrowAheadBytes = 2 * FlashLayout::BlockBytes; // About 8 s at 476 Hz.
+  static constexpr uint32_t FlightUpdates = 65; // Worst-case directory updates of one flight.
+  static constexpr uint64_t LandedSpacingUs = 100000; // LANDED is logged at 10 Hz.
   bool format(); // Explicit logical format; preserves settings and calibration.
   bool initializeBlank(); // Explicit request; refuses any non-erased/unknown directory.
   // Boot: mount existing storage; prepare only a never-used (missing and fully erased) directory.
@@ -50,8 +56,9 @@ public:
 private:
   bool fail(RecorderError error, const char *component = nullptr, const char *cause = nullptr);
   bool fault(RecorderError error);
-  bool available(uint32_t start, uint32_t bytes) const;
-  bool findSpace(uint32_t bytes, uint32_t &start) const;
+  uint32_t nextStartBlock() const;
+  bool makeRoom(uint32_t first, uint32_t blocks, bool newFlight);
+  bool grow();
   const FlightEntry *resolve(uint64_t sequence) const;
   bool openMetadata(const FlightEntry &entry);
   bool scan(const FlightEntry &entry, bool recover, RecordingInfo &info);
@@ -59,7 +66,7 @@ private:
   bool markCorrupt(const FlightEntry &entry);
   bool rejectRead(const FlightEntry &entry); // Retain the decoding error while persisting quarantine.
   bool persistProgress(FlightStatus status);
-  bool store(const FlightSample &sample, bool history);
+  bool store(const FlightSample &sample, bool history, bool deliberate);
   bool writeHistory();
   FlashDevice &flash_;
   FlightDirectory directory_;
@@ -69,6 +76,9 @@ private:
   RawBlock block_;
   PadHistory pad_;
   bool launched_ = false; // A non-PAD sample was seen; history written.
+  bool ringFull_ = false, haveLanded_ = false, landedBaroPending_ = false;
+  uint64_t lastLandedUs_ = 0, landedBaroUs_ = 0;
+  float landedPressure_ = 0, landedTemperature_ = 0;
   FlightEntry current_;
   uint32_t headerBytes_ = 0, sampleBytes_ = 0;
   bool initialized_ = false, active_ = false, samplesFull_ = false, metadataValid_ = false;

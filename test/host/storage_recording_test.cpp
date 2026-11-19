@@ -16,7 +16,7 @@ using namespace storage;
 using namespace replay_test;
 struct PowerCut {};
 struct MemoryDevice : FlashDevice {
-  std::vector<uint8_t> bytes = std::vector<uint8_t>(0x35000, 255);
+  std::vector<uint8_t> bytes = std::vector<uint8_t>(0x130000, 255); // Directory and ring blocks 0..15.
   long budget = -1;
   unsigned programs = 0, erases = 0, failAfterProgram = 0;
   bool failErase = false, failRead = false;
@@ -26,18 +26,18 @@ struct MemoryDevice : FlashDevice {
     memcpy(p, bytes.data()+a, n); return true;
   }
   bool program(uint32_t a, const void *p, std::size_t n) override {
-    assert(a >= 0x5000 && a+n <= bytes.size() && a%256 == 0 && n == 256);
+    assert(a >= FlashLayout::DirectoryA && a+n <= bytes.size() && a%256 == 0 && n == 256);
     ++programs; const auto *source = static_cast<const uint8_t *>(p);
     for (std::size_t i = 0; i < n; ++i) { tick(); assert((bytes[a+i] & source[i]) == source[i]); bytes[a+i] &= source[i]; }
     return programs != failAfterProgram;
   }
   bool eraseSector(uint32_t a) override {
-    assert(a >= 0x5000 && a+4096 <= bytes.size() && a%4096 == 0);
-    if (a >= 0x15000) { // A durable reservation must exist before erasing any flight sector.
+    assert(a >= FlashLayout::DirectoryA && a+4096 <= bytes.size() && a%4096 == 0);
+    if (a >= FlashLayout::RingBegin) { // A durable reservation must exist before erasing any flight sector.
       FlightDirectory proof(*this); assert(proof.mount()); bool owned = false;
       for (std::size_t i = 0; i < proof.count(); ++i) {
         const auto &e = proof.entries()[i];
-        if (e.status == FlightStatus::Recording && a >= e.start && a-e.start < e.allocatedBytes) owned = true;
+        if (e.status == FlightStatus::Recording && FlightDirectory::overlaps(FlightDirectory::blockOf(e.start), e.allocatedBytes/FlashLayout::BlockBytes, FlightDirectory::blockOf(a), 1)) owned = true;
       }
       assert(owned);
     }
@@ -66,12 +66,12 @@ void run() {
   assert(!missing.initialize() && missing.error() == RecorderError::Directory && empty.bytes == unknown);
   format(empty);
   MemoryDevice flash = empty; FlightRecorder recorder(flash); assert(recorder.initialize());
-  const auto protectedBytes = std::vector<uint8_t>(flash.bytes.begin(), flash.bytes.begin()+0x5000);
+  const auto protectedBytes = std::vector<uint8_t>(flash.bytes.begin(), flash.bytes.begin()+FlashLayout::DirectoryA); // Device journal.
   const auto before = flash.bytes;
-  assert(!recorder.begin(fixture(), limits, UINT32_MAX-4095, SensorMode::Simulation, OutputMode::Virtual,
+  assert(!recorder.begin(fixture(), limits, 4097, SensorMode::Simulation, OutputMode::Virtual, // Not sector aligned.
                          sensors::FrameConvention::LoggedCalibratedBody) && flash.bytes == before);
   assert(begin(recorder) && recorder.current()->sequence == 1);
-  assert(recorder.current()->committedBytes == 4096 && recorder.current()->allocatedBytes == 8192);
+  assert(recorder.current()->committedBytes == 4096 && recorder.current()->allocatedBytes == FlashLayout::BlockBytes); // One 64 KiB ring block.
   assert(!begin(recorder) && recorder.error() == RecorderError::Busy);
   RecordingInfo info; assert(!recorder.inspect(1, info) && recorder.error() == RecorderError::Busy);
   const auto programs = flash.programs;
@@ -92,9 +92,10 @@ void run() {
   assert(block.firstTimeUs == uint64_t(perBlock) * 1000);
   block.frames = 99; assert(!recorder.readBlock(1, 2, block) && block.frames == 99);
   assert(!recorder.inspect(999, info) && recorder.error() == RecorderError::StaleSelection && !recorder.metadata());
-  const auto retained = std::vector<uint8_t>(flash.bytes.begin()+0x15000, flash.bytes.begin()+0x17000);
-  assert(begin(recorder) && recorder.current()->start == 0x17000 && recorder.current()->sequence == 2);
-  assert(std::equal(retained.begin(), retained.end(), flash.bytes.begin()+0x15000));
+  // Ring placement: the next flight starts in the block after the newest one.
+  const auto retained = std::vector<uint8_t>(flash.bytes.begin()+0x30000, flash.bytes.begin()+0x40000);
+  assert(begin(recorder) && recorder.current()->start == 0x40000 && recorder.current()->sequence == 2);
+  assert(std::equal(retained.begin(), retained.end(), flash.bytes.begin()+0x30000));
   // A 4 KiB budget holds two blocks; the sample that cannot fit is refused and the log is full.
   uint32_t stored = 0;
   while (recorder.append(sample(stored))) { assert(recorder.service()); ++stored; }
@@ -126,8 +127,8 @@ void run() {
     if (info.samples) assert(recovered.readBlock(entry.sequence, 0, block) && block.firstSequence == 1 && block.firstTimeUs == 0);
   }
   // Reservation cuts, erase cuts, header cuts and the header-ready checkpoint.
-  const unsigned preparationBytes = 512 + 8192 + 768 + 512;
-  for (unsigned cut = 0; cut <= preparationBytes; cut += 17) {
+  const unsigned preparationBytes = 512 + 65536 + 768 + 512; // Reservation, one block erase, header, checkpoint.
+  for (unsigned cut = 0; cut <= preparationBytes; cut += 97) {
     MemoryDevice f = empty; FlightRecorder r(f); assert(r.initialize()); f.budget = cut;
     try { begin(r); } catch (const PowerCut &) {}
     f.budget = -1; FlightRecorder recovered(f); assert(recovered.initialize());
@@ -141,7 +142,7 @@ void run() {
   MemoryDevice stale = empty;
   {
     FlightDirectory d(stale); assert(d.mount());
-    FlightEntry e; e.sequence = 1; e.start = 0x15000; e.allocatedBytes = 8192;
+    FlightEntry e; e.sequence = 1; e.start = FlashLayout::RingBegin; e.allocatedBytes = FlashLayout::BlockBytes;
     assert(d.update(e));
     // Existing bytes deliberately look like a valid old header, before erases have begun.
     FlightHeaderStore old(stale);
@@ -151,7 +152,7 @@ void run() {
   assert(staleBoot.directory().entries()[0].committedBytes == 0);
   assert(!staleBoot.inspect(1, info) && staleBoot.error() == RecorderError::EmptyRecording);
   // A committed damaged block must be reported, rather than shortening published data.
-  MemoryDevice damaged = flash; damaged.bytes[0x15000+4096+36] ^= 1;
+  MemoryDevice damaged = flash; damaged.bytes[0x30000+4096+36] ^= 1;
   FlightRecorder damagedReader(damaged); assert(damagedReader.initialize());
   assert(!damagedReader.inspect(1, info) && damagedReader.error() == RecorderError::Corrupt);
   // I/O errors leave a durable Recording entry; explicit reinitialize reconciles it.
@@ -164,17 +165,19 @@ void run() {
   assert(!u.finish(true) && !u.initialized());
   FlightRecorder reconciled(uncertain); assert(reconciled.initialize());
   assert(reconciled.directory().entries()[0].status == FlightStatus::Completed);
-  // Exhausted free extents do not reclaim any retained flight implicitly.
+  // A full ring overwrites the oldest flight: invalidated in the directory before any erase.
   MemoryDevice full = empty;
   {
     FlightDirectory d(full); assert(d.mount());
-    FlightEntry e; e.sequence = 1; e.start = FlashLayout::DataBegin;
-    e.allocatedBytes = FlashLayout::DataEnd - FlashLayout::DataBegin;
+    FlightEntry e; e.sequence = 1; e.start = FlashLayout::RingBegin;
+    e.allocatedBytes = FlashLayout::RingBytes;
     assert(d.update(e)); e.status = FlightStatus::Interrupted; assert(d.update(e));
   }
-  FlightRecorder bounded(full); assert(bounded.initialize());
-  const auto fullBytes = full.bytes;
-  assert(!begin(bounded) && bounded.error() == RecorderError::NoSpace && full.bytes == fullBytes);
+  FlightRecorder overwrite(full); assert(overwrite.initialize());
+  assert(begin(overwrite) && overwrite.current()->sequence == 2 && overwrite.current()->start == FlashLayout::RingBegin);
+  assert(overwrite.directory().retainedCount() == 1);
+  assert(overwrite.append(sample(0)) && overwrite.finish(true));
+  assert(!overwrite.inspect(1, info) && overwrite.error() == RecorderError::StaleSelection);
   std::cout << "Flight recorder tests passed: ownership before erase, lifecycle, recovery, stopped-full, stable reads, 3073 close cuts and preparation cuts.\n";
 }
 } // namespace test_flight_recorder
