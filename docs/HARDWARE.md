@@ -148,4 +148,4 @@ current and IMU sleep/wake behavior still require bench verification.
 | [BMP581](datasheets/bst-bmp581-ds004.pdf) | Barometer |
 | [W25Q128JV](datasheets/W25Q128JV.pdf) | SPI NOR flash |
 | [JDY-34 manual V1.3](datasheets/JDY-34%20High%20Speed%20Dual-mode%20Bluetooth%20User%20Manual-V1.3.pdf) | Bluetooth module: AT commands, factory defaults (9600, BTMODE1, ENLOG1) and pins |
-| [FS90](datasheets/FS90-specs.pdf) | Reference servo; mechanism end points still need calibration |
+| [FS90](datasheets/FS90-specs.pdf) | Reference servo, tested on the board; set the end points for each installation in the app |
