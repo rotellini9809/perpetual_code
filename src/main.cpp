@@ -430,6 +430,11 @@ void loop() {
   commandStatus.outputMode = (owner && (owner->mode()==flight::FlightMode::Physical || owner->runtime().status().outputMode == storage::OutputMode::Physical)) || outputExecutor.hasPreparation() ? "PHYSICAL" : "VIRTUAL";
   commandStatus.outputsActive = (owner && owner->runtime().status().outputsActive) || outputExecutor.hasPreparation();
   commandStatus.phase = owner && owner->navigation().valid ? int(owner->navigation().phase) : -1;
+  commandStatus.attitudeValid = commandStatus.phase >= 0;
+  if (commandStatus.attitudeValid) {
+    const auto &n = owner->navigation(); commandStatus.tiltDeg = n.tiltRadians * 57.2957795f;
+    for (unsigned i = 0; i < 3; ++i) commandStatus.upBody[i] = n.upBody[i];
+  }
   commandStatus.gyroSamples = owner ? owner->calibrationSamples() : 0;
   commandStatus.gyroTarget = flight::ArmingCalibration::TargetSamples;
   updateHardwareStatus();

@@ -19,7 +19,8 @@ NavigationOutput Navigation::output(const SensorFrame &f) const {
   NavigationOutput out;
   out.timeUs = f.timeUs; out.sequence = f.imuSequence; out.phase = detector_.phase();
   out.startsAllowed=detector_.startsAllowed(); out.abortReason=detector_.abortReason(); out.coastVelocityMedian=detector_.velocityMedian();
-  out.tiltRadians=std::acos(std::fmax(-1.0f,std::fmin(1.0f,attitude_.verticalInBody()[0])));
+  out.upBody=attitude_.verticalInBody();
+  out.tiltRadians=std::acos(std::fmax(-1.0f,std::fmin(1.0f,out.upBody[0])));
   for (unsigned i=0;i<3;++i) for (unsigned j=0;j<3;++j) out.covariance[i][j]=filter_.covariance(i,j);
   out.altitude = filter_.altitude(); out.verticalVelocity = filter_.velocity();
   out.accelerationBias = filter_.bias(); out.eulerRadians = attitude_.eulerRadians(); out.padBaseline = baseline_;
@@ -49,7 +50,7 @@ NavigationOutput Navigation::step(const SensorFrame &f) {
     if (!attitude_.reset(aligned)) return out;
     attitudeAligned_=true;
   }
-  if (!attitude_.step(f.accel, f.gyro, dt, detector_.phase())) { detector_.interruptConfirmation(); return out; }
+  if (!attitude_.step(f.accel, f.gyro, dt, detector_.navigationPhase())) { detector_.interruptConfirmation(); return out; }
   const auto vertical = attitude_.verticalInBody();
   const float force = vertical[0]*f.accel[0] + vertical[1]*f.accel[1] + vertical[2]*f.accel[2];
   float baro = std::numeric_limits<float>::quiet_NaN();
@@ -71,8 +72,10 @@ NavigationOutput Navigation::step(const SensorFrame &f) {
     baro -= baseline_;
   }
   detector_.update(dt, magnitude, f.accel[0], std::sqrt(g2), baro, filter_.velocity(),std::acos(std::fmax(-1.0f,std::fmin(1.0f,vertical[0]))));
-  if (!filter_.predict(dt, force, detector_.phase())) return output(f);
-  filter_.constrainPadVelocity(detector_.phase());
+  // An ignition being confirmed is integrated as BOOST (see FlightDetector::navigationPhase).
+  const Phase filterPhase=detector_.navigationPhase();
+  if (!filter_.predict(dt, force, filterPhase)) return output(f);
+  filter_.constrainPadVelocity(filterPhase);
   bool corrected = false;
   if (std::isfinite(baro)) corrected = filter_.correctAltitude(baro, detector_.phase());
   if (std::isfinite(filter_.altitude()) && std::isfinite(filter_.velocity()) && std::isfinite(filter_.bias())) detector_.confirmCoastVelocity(filter_.velocity());

@@ -191,18 +191,18 @@ void run() {
   assert(sim.starts()[1].timeMs == sim.starts()[0].timeMs);
   assert(flash.writes == writes && sim.cycles().count == 6600);
   has(send(usb,"sim status"),"\"samples\":6600"); has(send(usb,"sim status"),"\"source\":\"hoppino\"");
-  has(send(usb,"sim events"),"\"phases\":[[0,0],[1,8202],[2,10194],[3,12553]");
+  has(send(usb,"sim events"),"\"phases\":[[0,0],[1,8400],[2,10226],[3,12553]");
   has(send(usb,"hil begin 0 200 logged_body"),"\"active\":true");
   has(send(usb,"sim begin"),"BUSY"); has(send(usb,"sim status"),"\"samples\":6600"); send(usb,"sim stop");
   assert(hil.active()); send(usb,"hil stop");
   assert(recorder.initializeBlank());
   assert(!sim.begin(true)); const auto recordOrigin = nowUs;
   for (uint32_t t = 0; t <= source.durationMs(); ++t) { nowUs = recordOrigin+t*1000; sim.poll(); }
-  // PAD until BOOST at 8202 ms (about 1641 samples) becomes the pre-launch history:
+  // PAD until BOOST at 8400 ms (about 1680 samples) becomes the pre-launch history:
   // 0.5 s at full rate (101) plus 10 Hz before (77). LANDED from 30225 ms to the end
   // (555 samples) is kept at 10 Hz (28). Everything in between is kept at full rate.
   const auto saved = sim.status().savedSamples;
-  assert(saved == 4603 && sim.status().droppedSamples == 0); // Deterministic dataset: about 6600 - 1641 + 178 - 555 + 28.
+  assert(saved == 4565 && sim.status().droppedSamples == 0); // Deterministic dataset: about 6600 - 1680 + 180 - 555 + 28.
   assert(recorder.current()->status == storage::FlightStatus::Completed);
   assert(!config.setStateMachine(recovery::StateMachineSettings{}));
   storage::RecordingInfo info; assert(recorder.inspect(1,info));
@@ -327,7 +327,7 @@ void bistage() {
 
   // A physical ABORT cancels future starts but lets an already-high pulse complete.
   auto plan=fixture(); plan.rules[0].conditions[0].kind=recovery::ConditionKind::Phase;
-  plan.rules[0].conditions[0].phases=recovery::BoostMask; plan.rules[0].delayMs=960;
+  plan.rules[0].conditions[0].phases=recovery::BoostMask; plan.rules[0].delayMs=760; // Still high at the ABORT (BOOST is confirmed 200 ms after ignition).
   plan.rules[1].conditions[0].kind=recovery::ConditionKind::Phase; plan.rules[1].conditions[0].phases=recovery::CoastMask;
   assert(store.save(plan,limits,true)); config.boot(true); machine.minimumCoastVelocity=1000; assert(!config.setStateMachine(machine));
   Device flash; storage::FlightRecorder recorder(flash); assert(recorder.initializeBlank());
@@ -403,7 +403,7 @@ void stress() {
     assert(unsigned(sim.phases()[i].phase)==i);
     std::cout << "480 Hz phase " << i << ": " << sim.phases()[i].timeMs << " ms\n";
   }
-  assert(sim.phases()[1].timeMs>20100 && sim.phases()[1].timeMs<20300); // BOOST 12 s later than the log.
+  assert(sim.phases()[1].timeMs>20300 && sim.phases()[1].timeMs<20500); // BOOST 12 s later than the log, confirmed 200 ms after ignition.
   assert(sim.phases()[4].timeMs>50000);                                   // LANDED after the slowed descent.
   const auto status=sim.status(); std::cout << "480 Hz recording: " << status.savedSamples << " saved, "
       << recorder.growths() << " growth(s), " << recorder.current()->allocatedBytes/storage::FlashLayout::BlockBytes << " blocks\n";

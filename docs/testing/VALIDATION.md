@@ -650,9 +650,32 @@ later and DESCENT 189 ms after BOOST (velocity -0.54 m/s at 0.22 m), which fired
 at 15.8 s and the run closed after the 15 s landing window (flight 41: 2995 samples, Completed).
 The detector confirms BOOST after 3 consecutive frames above 3 g and COAST after 3 frames of
 non-positive BODY X acceleration; at 476 Hz that is about 6 ms each, and DESCENT needs only
--0.5 m/s. **A knock of a few ms on an armed rocket can therefore deploy the recovery on the pad.**
-Not yet addressed. Run maximum loop 5.1 ms at 230.6 s, in LANDED without USB input (the run
+-0.5 m/s. **A knock of a few ms on an armed rocket could therefore deploy the recovery on the pad.**
+Fixed the same day: launch now needs a sample above 3 g and then 1.5 g held for 200 ms, and burnout 30 ms (see [State machines](../technical/STATE_MACHINES.md#normal-flight-machine)). Run maximum loop 5.1 ms at 230.6 s, in LANDED without USB input (the run
 closing); the 16.3 ms of the full-ring run did not recur without growths.
+
+## Initial alignment and tilt on the bench - 20 November 2026
+
+Test firmware (identity IMU calibration), physical arming in normal mode, board held by hand and
+set against a goniometer; `tools/replay/bench_tilt_usb.py` read the `attitude` field of `status`
+for 3 s per position (about 30 readings) while the board stayed in PAD.
+
+| Position (goniometer) | Tilt read | Spread | `up_body` |
+|---|---|---|---|
+| Upright, at arming | 5.9° | 5.5-6.2° | [0.995, 0.019, 0.100] |
+| 20° | 22.7° | 22.2-23.1° | [0.923, -0.077, 0.378] |
+| 40° | 39.4° | 39.1-39.9° | [0.772, -0.018, 0.635] |
+| 90° | 89.2° | 89.1-89.3° | [0.014, 0.012, 1.000] |
+| 90°, turned about 20° around the rocket axis | 89.9° | 89.8-90.0° | [0.003, 0.345, 0.939] |
+| Upright again | 1.0° | 0.6-1.5° | [1.000, 0.009, 0.014] |
+
+BODY +X is the rocket axis, the gravity alignment at arming is correct and the tilt agrees with the
+goniometer within about 3° over 0-90° (hand-held; the 5.9° at arming is most likely the hand, since
+the same position read 1.0° later). A turn around the rocket axis keeps the tilt and moves only the
+direction in `up_body`. A 30 s hold at about 40° moved 41.4 → 43.7°: in PAD the accelerometer keeps
+correcting the attitude (gain 0.3), so this reflects the hand, not gyroscope drift. **Not covered:**
+the gyroscope-only attitude of BOOST and COAST, where the correction gate (|a| within 0.2 m/s² of
+1 g) is closed; that is where the bistage 40° check applies.
 
 ## Remaining work and limits
 
@@ -663,8 +686,8 @@ flight log v4 or the explicit orientation requirement. Current implementation is
 | Area | Current qualification limit |
 |---|---|
 | Real sensors | Idle IMU cadence/pairing measured (476.2 Hz over 30 s, no gaps; see [Hardware](../HARDWARE.md#sensors)); gyroscope collection during a physical arming works on the board after the barometer timestamp fix, and a hand-driven bench flight reached DESCENT and LANDED with the real barometer (19 November 2026); a real flight profile is not yet measured |
-| Calibration and attitude | Per-arming gyro/reference collector, persistent mounting and six-face accelerometer calibration (persistence and UI) exist. The board still uses identity calibration values; initial-attitude/tilt qualification remains open |
-| Physical outputs | Shared execution, preparation/release and physical simulation are implemented and host-tested; pyro firing with real igniters works on the board. Servo mechanical behavior, interruption and load margins still need bench acceptance |
+| Calibration and attitude | Per-arming gyro/reference collector, persistent mounting and six-face accelerometer calibration (persistence and UI) exist. The board still uses identity calibration values. Gravity alignment and tilt reading agree with a goniometer within about 3° in PAD (20 November 2026, above); the gyroscope-only attitude of BOOST/COAST is not yet measured |
+| Physical outputs | Shared execution, preparation/release and physical simulation are implemented and host-tested; pyro firing with real igniters works on the board and does not reset the MCU. Servo mechanical behavior, interruption and load margins still need bench acceptance |
 | Driver timeout | Timeout disables driver readiness; recorder recovery cannot reinitialize it. Restart/reinitialization remains the current route |
 | Interrupted/old headers | Unsupported versions fail without migration; current layout v2 (device journal v1, directory v2, flight ring), recording header v8, sample blocks v4, configuration codec v3. A board with the previous layout needs `flights format` and its rules, settings and calibration saved again |
 | Scheduler and storage | Worker close is asynchronous, but a stalled worker retains ownership; idle preparation/settings/scans stay synchronous. The pre-launch history write at boost measured 64-75 ms on the Hoppino replay; growth erases with real sensors measured on the bench (up to 31 growths filling the ring, 476 Hz, no gaps; one 16 ms core 0 stall not yet located); worst-case timing in a real flight, watchdog and physical brownout coverage are not established. Ring growth/wrap-around/overwrite, 480 Hz load and stack depth measured on the bench on 19 November 2026 (see above): core 0 stack reduced to 5056 of 8192 bytes with a MSPLIM guard; USB traffic delays processing but loses no real IMU frames; one unexplained reboot |

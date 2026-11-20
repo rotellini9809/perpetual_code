@@ -49,9 +49,9 @@ void run() {
   for (unsigned i = 0; i < 1000; ++i) assert(attitude.step(a, gyro, 0.005f, Phase::Pad));
   float norm = 0; for (float q : attitude.quaternion()) norm += q*q; near(norm, 1);
   FlightDetector detector; detector.reset();
-  for (unsigned i=0;i<3;++i) detector.update(0.01f, 35, 35, 0, 0, 0);
+  for (unsigned i=0;i<21;++i) detector.update(0.01f, 35, 35, 0, 0, 0);
   assert(detector.phase() == Phase::Boost);
-  for (unsigned i=0;i<3;++i) detector.update(0.01f, 1, -1, 0, 1, 10);
+  for (unsigned i=0;i<4;++i) detector.update(0.01f, 1, -1, 0, 1, 10);
   assert(detector.phase() == Phase::Coast);
   detector.update(0.01f, 1, -1, 0, 1, -0.5f); assert(detector.phase() == Phase::Descent);
   for (unsigned i = 0; i < 220; ++i) detector.update(0.01f, 9.81f, 9.81f, 0, 0, 0);
@@ -290,13 +290,18 @@ void test_bistage_detector() {
   using namespace navigation;
   recovery::StateMachineSettings machine; machine.bistage=true; machine.minimumCoastVelocity=20;
   FlightDetector detector;
-  auto coast=[&]() { detector.reset(machine); for (unsigned i=0;i<3;++i) detector.update(.01f,40,40,0,0,0,0); assert(detector.phase()==Phase::Boost); for (unsigned i=0;i<3;++i) detector.update(.01f,0,0,0,0,25,0); assert(detector.phase()==Phase::Coast && !detector.startsAllowed()); };
+  auto coast=[&]() { detector.reset(machine); for (unsigned i=0;i<21;++i) detector.update(.01f,40,40,0,0,0,0); assert(detector.phase()==Phase::Boost); for (unsigned i=0;i<4;++i) detector.update(.01f,0,0,0,0,25,0); assert(detector.phase()==Phase::Coast && !detector.startsAllowed()); };
   coast(); detector.confirmCoastVelocity(std::numeric_limits<float>::quiet_NaN());
   const float values[]={-100,24,25,26,27,28,29,1000};
   for (unsigned i=0;i<8;++i) { detector.confirmCoastVelocity(values[i]); assert(detector.startsAllowed()==(i==7)); }
   assert(detector.velocityMedian()==26.5f); detector.confirmCoastVelocity(-1000); assert(detector.phase()==Phase::Coast);
-  detector.update(.01f,40,40,100,0,25,0); assert(detector.phase()==Phase::Boost2); // No angular-rate abort.
-  for (unsigned i=0;i<3;++i) detector.update(.01f,0,0,0,0,25,0);
+  // BOOST 2 uses the launch rule: a 3 g sample, then 1.5 g held for 200 ms (navigation runs it as BOOST 2 meanwhile).
+  for (unsigned i=0;i<20;++i) detector.update(.01f,40,40,100,0,25,0);
+  assert(detector.phase()==Phase::Coast && detector.navigationPhase()==Phase::Boost2);
+  detector.update(.01f,9.81f,0,0,0,25,0); assert(detector.phase()==Phase::Coast && detector.navigationPhase()==Phase::Coast); // A jolt is rejected.
+  detector.update(.01f,4*9.81f,40,100,0,25,0); for (unsigned i=0;i<20;++i) detector.update(.01f,2*9.81f,40,100,0,25,0);
+  assert(detector.phase()==Phase::Boost2); // No angular-rate abort.
+  for (unsigned i=0;i<4;++i) detector.update(.01f,0,0,0,0,25,0);
   assert(detector.phase()==Phase::Coast2);
   detector.update(.01f,0,0,0,0,-1,0); assert(detector.phase()==Phase::Descent);
   coast(); for (unsigned i=0;i<8;++i) detector.confirmCoastVelocity(20);
@@ -313,8 +318,8 @@ void test_bistage_detector() {
     return nav.step(frame);
   };
   auto state=step(9.80665f,0,0,10000); assert(state.valid && state.tiltRadians<.001f);
-  for (unsigned i=0;i<10;++i) state=step(40,0,0,10000);
-  for (unsigned i=0;i<10;++i) state=step(0,20,0,10000);
+  for (unsigned i=0;i<21;++i) state=step(40,0,0,10000);
+  for (unsigned i=0;i<11;++i) state=step(0,20,0,10000); // COAST after 30 ms, then 8 velocity samples.
   assert(state.phase==Phase::Coast && state.startsAllowed && state.tiltRadians<.001f); // Axial spin alone is allowed.
   state=step(0,0,20,50000);
   assert(state.phase==Phase::Abort && state.abortReason==recovery::AbortReason::Tilt && !state.startsAllowed);
@@ -327,24 +332,49 @@ void testBoostConfirmation() {
   FlightDetector d;
   auto high=[&] { d.update(.01f,40,40,0,0,0); };
   auto low=[&] { d.update(.01f,9.81f,9.81f,0,0,0); };
-  d.reset(); high(); high(); assert(d.phase()==Phase::Pad);
-  low(); high(); high(); assert(d.phase()==Phase::Pad); high(); assert(d.phase()==Phase::Boost);
-  d.reset(); high(); high(); d.update(.2f,40,40,0,0,0);
-  high(); high(); assert(d.phase()==Phase::Pad); high(); assert(d.phase()==Phase::Boost);
+  // BOOST: a sample above 3 g, then above 1.5 g for 200 ms: 21 samples at 100 Hz, restarted by a low or invalid one.
+  auto highs=[&](unsigned n) { for (unsigned i=0;i<n;++i) high(); };
+  d.reset(); assert(!d.launchPending()); highs(20); assert(d.phase()==Phase::Pad && d.launchPending());
+  low(); assert(!d.launchPending()); highs(20); assert(d.phase()==Phase::Pad); high(); assert(d.phase()==Phase::Boost);
+  d.reset(); highs(5); d.update(.2f,40,40,0,0,0);
+  highs(20); assert(d.phase()==Phase::Pad); high(); assert(d.phase()==Phase::Boost);
+  // 2 g alone never starts it; a 3 g peak followed by a 2 g burn does (the Hoppino flight shape).
+  d.reset(); for (unsigned i=0;i<100;++i) d.update(.01f,2*9.81f,2*9.81f,0,0,0);
+  assert(d.phase()==Phase::Pad && !d.launchPending());
+  d.update(.01f,4*9.81f,4*9.81f,0,0,0); for (unsigned i=0;i<19;++i) d.update(.01f,2*9.81f,2*9.81f,0,0,0);
+  assert(d.phase()==Phase::Pad); d.update(.01f,2*9.81f,2*9.81f,0,0,0); assert(d.phase()==Phase::Boost);
+  // Bench shakes at 476 Hz: 90 ms above 1.5 g after a 6 g peak, then a drop to 1 g, never leave PAD.
+  d.reset();
+  for (unsigned shake=0;shake<5;++shake) {
+    for (unsigned i=0;i<43;++i) d.update(.0021f,i<20 ? 60 : 20,0,0,0,0);
+    d.update(.0021f,9.81f,9.81f,0,0,0);
+  }
+  assert(d.phase()==Phase::Pad && !d.launchPending());
+  for (unsigned i=0;i<96;++i) d.update(.0021f,60,60,0,0,0);
+  assert(d.phase()==Phase::Pad); d.update(.0021f,60,60,0,0,0); assert(d.phase()==Phase::Boost); // 201.6 ms.
+  { // The confirmation delay loses no velocity; a rejected knock leaves it pinned at zero.
+    Navigation n; assert(n.begin(0,100,{{1,0,0,0}})); SensorFrame f; f.imuValid=true;
+    auto step=[&](float up) { f.timeUs+=10000; ++f.imuSequence; f.accel[2]=up; return n.step(f); }; // Identity attitude: Z is up.
+    step(9.80665f); for (unsigned i=0;i<5;++i) step(40);
+    auto s=step(9.80665f); assert(s.phase==Phase::Pad && s.verticalVelocity==0);
+    for (unsigned i=0;i<20;++i) s=step(40);
+    assert(s.phase==Phase::Pad && s.verticalVelocity>5.5f);
+    s=step(40); assert(s.phase==Phase::Boost && s.verticalVelocity>5.8f);
+  }
   for (unsigned scenario=0;scenario<5;++scenario) {
     Navigation n; assert(n.begin(0,100));
     uint64_t time=0, sequence=0;
     auto frame=[&] { SensorFrame f; f.timeUs=(time+=10000); f.imuSequence=++sequence;
       f.imuValid=true; f.accel[0]=40; return f; };
     n.step(frame()); assert(n.step(frame()).phase==Phase::Pad);
-    auto bad=frame();
+    auto bad=frame(); // Third high sample.
     if (scenario==0) bad.imuValid=false;
     if (scenario==1) bad.accel[0]=std::numeric_limits<float>::quiet_NaN();
     if (scenario==2) { time+=200000; bad.timeUs=time; }
     if (scenario==3) { bad.imuSequence=2; bad.timeUs=20000; }
     if (scenario==4) { bad.imuSequence=++sequence; } // Missing sequence restarts at this good sample.
     n.step(bad);
-    assert(n.step(frame()).phase==Phase::Pad);
+    for (unsigned i=0;i<19;++i) assert(n.step(frame()).phase==Phase::Pad);
     if (scenario!=4) assert(n.step(frame()).phase==Phase::Pad);
     assert(n.step(frame()).phase==Phase::Boost);
   }
@@ -353,21 +383,21 @@ void testBoostConfirmation() {
     FlightDetector detector; detector.reset(settings);
     auto high=[&] { detector.update(.01f,40,40,0,0,25); };
     auto low=[&] { detector.update(.01f,0,0,0,0,25); };
-    high(); high(); high();
+    for (unsigned i=0;i<21;++i) high();
     if (secondStage) {
-      low(); low(); low();
+      low(); low(); low(); low();
       for (unsigned i=0;i<8;++i) detector.confirmCoastVelocity(25);
-      high();
+      for (unsigned i=0;i<21;++i) high();
     }
     const auto boost=secondStage ? Phase::Boost2 : Phase::Boost;
     const auto coast=secondStage ? Phase::Coast2 : Phase::Coast;
     low(); low(); assert(detector.phase()==boost);
     high(); low(); low(); assert(detector.phase()==boost);
     detector.update(.2f,0,0,0,0,25); // Invalid timing breaks the sequence.
-    low(); low(); assert(detector.phase()==boost);
+    low(); low(); low(); assert(detector.phase()==boost); // 20 ms since the first low sample.
     low(); assert(detector.phase()==coast);
   }
-  puts("BOOST confirmation passed: three fresh samples, low/invalid/gap/duplicate/missing-sequence reset.");
+  puts("BOOST confirmation passed: 3 g then 1.5 g for 200 ms, knock rejected, no velocity lost, low/invalid/gap/duplicate/missing-sequence reset.");
 }
 
 int main() {

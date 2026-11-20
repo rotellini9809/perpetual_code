@@ -20,9 +20,10 @@ tracked in [Validation](../testing/VALIDATION.md#remaining-work-and-limits).
 - `θ` (tilt): angle between the rocket's longitudinal axis and the upward vertical.
 - A **valid sample** is fresh, distinct from the previous one and finite. Reading the same sample
   twice never counts twice.
-- **Consecutive confirmation**: some transitions need three consecutive valid IMU samples. The
-  count restarts when the condition fails, a frame is invalid or duplicated, the IMU sequence
-  is interrupted, or the interval exceeds twice the nominal period.
+- **Timed confirmation**: launch and burnout must hold for a time measured from the first valid
+  sample that meets them, the same at any IMU rate. The timer restarts when the condition fails,
+  a frame is invalid or duplicated, the IMU sequence is interrupted, or the interval exceeds
+  twice the nominal period.
 
 A frame with non-finite inputs or `dt` outside `(0, 0.1 s]` never changes the phase.
 
@@ -31,16 +32,16 @@ A frame with non-finite inputs or `dt` outside `(0, 0.1 s]` never changes the ph
 ```mermaid
 stateDiagram-v2
     [*] --> PAD
-    PAD --> BOOST: a > 3 g for 3 samples
-    BOOST --> COAST: aX ≤ 0 for 3 samples
+    PAD --> BOOST: a > 3 g, then a > 1.5 g for 200 ms
+    BOOST --> COAST: aX ≤ 0 for 30 ms
     COAST --> DESCENT: vz ≤ -0.5 m/s
     DESCENT --> LANDED: stable for 2 s
 ```
 
 | From | Condition | To |
 |---|---|---|
-| PAD | `a > 3 × 9.81 m/s²` for 3 consecutive samples | BOOST |
-| BOOST | `aX ≤ 0` for 3 consecutive samples | COAST |
+| PAD | A sample with `a > 3 × 9.81 m/s²`, then `a > 1.5 × 9.81 m/s²` held for 200 ms | BOOST |
+| BOOST | `aX ≤ 0` held for 30 ms | COAST |
 | COAST | `vz ≤ -0.5 m/s` | DESCENT |
 | DESCENT | Landing confirmed (below) | LANDED |
 | LANDED | Any input | LANDED |
@@ -54,6 +55,14 @@ stateDiagram-v2
 Any failed check restarts the window. Cycles without a new barometer sample let an open window
 age, but only a fresh barometer sample can confirm LANDED.
 
+**Why launch is timed.** A knock on an armed rocket can exceed 3 g: hand shakes on the bench stayed
+above 3 g for 34-57 ms and above 1.5 g for at most 90 ms, and with a 3-sample count (6 ms at
+476 Hz) one ran BOOST, COAST and DESCENT and fired the recovery. A motor holds its thrust: the
+Hoppino flight log peaks above 3 g for only 92 ms but stays near 2 g for its whole burn. BOOST is
+therefore reported 200 ms after ignition; navigation integrates those 200 ms as BOOST, so the
+estimate loses nothing (Hoppino apogee 52.12 m instead of 52.17 m), and a rejected knock leaves
+velocity pinned at zero. BOOST 2 uses the same rule. A motor burning for less than 0.2 s would not be detected.
+
 Phases PAD and LANDED never trigger rules; see [Configuration](CONFIGURATION.md).
 
 ## Bistage flight machine
@@ -63,7 +72,7 @@ stateDiagram-v2
     [*] --> PAD
     PAD --> BOOST_1: launch
     BOOST_1 --> COAST_1: first burnout
-    COAST_1 --> BOOST_2: median passed and a > 3 g
+    COAST_1 --> BOOST_2: median passed, a > 3 g then a > 1.5 g for 200 ms
     COAST_1 --> DESCENT: vz ≤ -0.5 m/s
     BOOST_2 --> COAST_2: second burnout
     COAST_2 --> DESCENT: vz ≤ -0.5 m/s
@@ -95,7 +104,8 @@ bistage mode the attitude is initialized from the first valid PAD sample close t
 
 1. tilt `≥ 40°` → ABORT;
 2. `vz ≤ -0.5 m/s` → DESCENT (no second ignition: not an abort);
-3. median passed and `a > 3 × 9.81 m/s²` → BOOST 2;
+3. median passed and the launch rule (a sample with `a > 3 × 9.81 m/s²`, then `a > 1.5 × 9.81 m/s²`
+   held for 200 ms) → BOOST 2. Navigation already runs those 200 ms as BOOST 2;
 4. otherwise stay in COAST 1; after the velocity update, add the sample to the window and, at the
    eighth, decide pass or ABORT.
 

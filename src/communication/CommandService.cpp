@@ -164,6 +164,12 @@ __attribute__((noinline)) bool CommandService::localReply(const char *command, c
   const char *phaseNames[] = {"PAD","BOOST","COAST","DESCENT","LANDED","BOOST 2","COAST 2","ABORT"};
   const bool validPhase = s.phase >= 0 && s.phase <= 7;
   if (validPhase) std::snprintf(phase,sizeof(phase),"%d",s.phase);
+  char attitude[96] = "null", tiltText[24] = "";
+  if (s.attitudeValid) {
+    std::snprintf(attitude,sizeof(attitude),"{\"tilt_deg\":%.1f,\"up_body\":[%.3f,%.3f,%.3f]}",
+        double(s.tiltDeg),double(s.upBody[0]),double(s.upBody[1]),double(s.upBody[2]));
+    std::snprintf(tiltText,sizeof(tiltText)," | Tilt: %.1f deg",double(s.tiltDeg));
+  }
   const bool gyroSkipped = !std::strcmp(s.flightMode,"simulation");
   char battery[24]="null";
   if (s.batteryMv!=UINT16_MAX) std::snprintf(battery,sizeof(battery),"%.3f",double(s.batteryMv)/1000.0);
@@ -182,13 +188,13 @@ __attribute__((noinline)) bool CommandService::localReply(const char *command, c
         pressure, temperature, s.baroSampleValid ? "yes" : "no", static_cast<unsigned long>(s.baroSampleAgeMs),
         acceleration,angularRate,imuValid ? "yes" : "no",static_cast<unsigned long>(s.imuSampleAgeMs));
     else std::snprintf(out, cap,
-        "%s | Flight mode: %s | Phase: %s\n"
+        "%s | Flight mode: %s | Phase: %s%s\n"
         "Configuration: %s (%s) | Readiness: use preflight\n"
         "IMU: %s | Barometer: %s | Recording storage: %s\n"
         "%s\n"
         "Flash JEDEC: 0x%06lX (%s; identification only)\n"
         "Outputs: %s (%s) | Replay: %s | Power: %s (%s) | Battery: %s V | Uptime: %lu ms\n",
-        state, s.flightMode, validPhase ? phaseNames[s.phase] : "unavailable",
+        state, s.flightMode, validPhase ? phaseNames[s.phase] : "unavailable", tiltText,
         s.configValid ? "valid" : "not loaded", s.configError, imuState, baroState, s.recordingReady ? "ready for HIL" : "not initialized",
         gyroProgress,
         static_cast<unsigned long>(s.flashJedec), s.flashIdentified ? "match" : "mismatch",
@@ -214,11 +220,11 @@ __attribute__((noinline)) bool CommandService::localReply(const char *command, c
         static_cast<unsigned long>(s.idleDtMinUs),static_cast<unsigned long>(s.idleDtMaxUs),static_cast<unsigned long>(s.idleSequenceGaps),
         static_cast<unsigned long>(s.imuFifoOverruns),static_cast<unsigned long>(s.imuFifoErrors));
     else std::snprintf(payload, sizeof(payload),
-        "\"mode\":\"%s\",\"arming_state\":\"%s\",\"flight_mode\":\"%s\",\"phase\":%s,\"gyro_calibration_skipped\":%s,\"gyro_samples\":%lu,\"gyro_target\":%lu,\"config_valid\":%s,\"config_error\":\"%s\","
+        "\"mode\":\"%s\",\"arming_state\":\"%s\",\"flight_mode\":\"%s\",\"phase\":%s,\"attitude\":%s,\"gyro_calibration_skipped\":%s,\"gyro_samples\":%lu,\"gyro_target\":%lu,\"config_valid\":%s,\"config_error\":\"%s\","
         "\"imu_ready\":%s,\"baro_ready\":%s,"
         "\"estimate_replay_active\":%s,\"sensor_hil_active\":%s,\"simulation_active\":%s,\"flash_driver_ready\":%s,"
         "\"hil_recording_ready\":%s,\"outputs_active\":%s,\"output_mode\":\"%s\",\"flash_jedec\":%lu,\"flash_identified\":%s,\"power_mode\":\"%s\",\"power_error\":\"%s\",\"battery_v\":%s,\"uptime_ms\":%lu",
-        s.armingState, s.armingState, s.flightMode, phase, gyroSkipped ? "true" : "false", static_cast<unsigned long>(s.gyroSamples), static_cast<unsigned long>(s.gyroTarget),
+        s.armingState, s.armingState, s.flightMode, phase, attitude, gyroSkipped ? "true" : "false", static_cast<unsigned long>(s.gyroSamples), static_cast<unsigned long>(s.gyroTarget),
         s.configValid ? "true" : "false", s.configError,
         s.imuReady ? "true" : "false", s.baroReady ? "true" : "false",
         s.estimateReplayActive ? "true" : "false", s.sensorHilActive ? "true" : "false", s.simulationActive ? "true" : "false", s.flashReady ? "true" : "false", s.recordingReady ? "true" : "false", s.outputsActive ? "true" : "false", s.outputMode, static_cast<unsigned long>(s.flashJedec), s.flashIdentified ? "true" : "false",

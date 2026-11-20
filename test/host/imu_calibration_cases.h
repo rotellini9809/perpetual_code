@@ -183,7 +183,7 @@ void run() {
   assert(recorder.metadata()->calibration.accelCalibrationRevision==2);
   assert(std::fabs(recorder.metadata()->calibration.accelScale[0]-truth.scale[0])<.00001f);
   const auto calibrationWrites=flash.writes;
-  for (unsigned n=0;n<4;++n) {
+  for (unsigned n=0;n<22;++n) { // BOOST: 200 ms after a 3 g sample.
     nowUs+=10000; auto &r=source.reading; r.timeUs=nowUs; ++r.imuSequence; r.baroTimeUs=nowUs; ++r.baroSequence;
     r.accelMps2[0]=truth.bias[0]+40/truth.scale[0]; source.pending=true; controller.poll(result);
   }

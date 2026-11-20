@@ -212,7 +212,7 @@ its physical address.
   invalidating those flights, oldest first, whatever their status (including Corrupt), before
   any erase. A flight is invalidated whole even if only part of it is needed.
 - **Full.** The current flight stops with StoppedFull only when its next block would be its own
-  first block, after the whole ring is used (about 16 minutes at 476 Hz).
+  first block, after the whole ring is used (about 16 minutes at 476 Hz, see [recording time](#size-and-recording-time)).
 
 ### Logging rate by phase
 
@@ -441,14 +441,35 @@ buffer (about 11 KB) takes about 40 ms of core 1 while live frames wait in the 1
 history samples and, with LANDED at 10 Hz, 4603 of 6600 overall (82 blocks); the boost-time
 write is the longest worker job (about 75 ms, queue peak 17 of 128).
 
-### Size
+### Size and recording time
 
 At 476 Hz with valid estimates: FRAME 28 B x 476 + BARO 8 B x 100 = 14.1 KB/s of records; with
-84 % payload efficiency (1724 of 2048 bytes) about 16.8 KB/s of flash. The 512 KiB base holds about
-30 s after the pre-launch history and each growth step another 30 s; the whole ring about
-16 minutes (v3 held about 19 s per MiB). Measured on the
-board: about 55 frames per block and 7.8 ms of worker time per block (write + read-back), i.e.
-about 7 % of core 1 at 476 Hz (v3: about 33 %).
+84 % payload efficiency (1724 of 2048 bytes) about 16.8 KB/s of flash. Measured on the board:
+about 55 frames per block and 7.8 ms of worker time per block (write + read-back), i.e. about 7 %
+of core 1 at 476 Hz (v3: about 33 %; v3 held about 19 s per MiB).
+
+**Recording time per flight: about 16 minutes at the full IMU rate**, counted from launch. This
+was measured on the board on 20 November 2026: flight 40 filled the whole ring with 464015
+full-rate samples (974 s at 476.2 Hz), 31 growths and 16.58 MB
+([Validation](../testing/VALIDATION.md#physical-arming-on-the-bench---19-november-2026)).
+
+| Space | Size | Full-rate time at 476 Hz |
+|---|---|---|
+| Base reserved at arming (8 blocks) | 512 KiB | about 30 s |
+| Each growth (8 blocks) | 512 KiB | about 30 s more |
+| Growth threshold (erased space left ahead) | 128 KiB | about 7.5 s |
+| RAM ring while an erase runs (16 x 2 KiB) | 28 KiB of payload | about 2 s |
+| Whole flight ring (253 blocks) | 15.81 MiB | about 16 minutes |
+
+The time does not depend on how many flights are stored: a new flight overwrites the oldest ones
+when it needs their blocks, so every flight can use the whole ring (and a 16-minute flight leaves
+no older flight behind). PAD costs almost nothing: only the pre-launch history (about 11 KB) is
+written. LANDED at 10 Hz for the 15 s landing window costs about 150 samples.
+
+When the ring is full, later samples are dropped and counted (`StorageFull`). The flight itself
+carries on without storage: phases, rules and outputs still run, output starts are still recorded
+in their own reserved space, and the flight closes as StoppedFull at the end of the run. Flight 40
+went on for another 208 s after the ring filled, and its DESCENT servo start was recorded.
 
 ### Transfer
 

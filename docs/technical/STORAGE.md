@@ -57,7 +57,10 @@ ahead: it commits ownership of 8 more blocks in the directory (invalidating over
 flights first), then erases them one at a time asynchronously. During an erase no other flash
 access is made; sealed blocks wait in a 16-block RAM ring and are written when it completes. If
 the RAM ring is full the append waits for the erase. Growth stops only when the next block would
-be the flight's own first block; the flight then closes as StoppedFull. In LANDED the recorder
+be the flight's own first block, after about 16 minutes at 476 Hz ([recording
+time](STORAGE_FORMAT.md#size-and-recording-time)); later samples are dropped and counted while the
+flight continues, output starts are still recorded, and the flight closes as StoppedFull at run
+end. In LANDED the recorder
 keeps one sample every 100 ms (with the newest barometer reading) and records the skipped ones as
 deliberate GAPs.
 

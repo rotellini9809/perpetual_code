@@ -44,6 +44,8 @@ public:
     uint32_t idleDtMinUs = 0, idleDtMaxUs = 0, idleSequenceGaps = 0, imuFifoOverruns = 0, imuFifoErrors = 0;
     const char *armingState = "disarmed", *flightMode = "none";
     int phase = -1;
+    // Estimated attitude of the active run (tilt from BODY +X, upward vertical in BODY axes).
+    bool attitudeValid = false; float tiltDeg = 0; float upBody[3] = {};
     uint32_t gyroSamples = 0, gyroTarget = 0;
     const char *configError = "NotLoaded";
     uint32_t bluetoothBaud = 9600, bluetoothRxOverflows = 0;

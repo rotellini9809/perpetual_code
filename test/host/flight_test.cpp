@@ -139,7 +139,7 @@ void run() {
     nowUs = n * 5000;
     sensors::Reading expected;
     expected.timeUs = nowUs; expected.imuSequence = n + 1; expected.imuValid = true;
-    expected.accelMps2[0] = n < 20 ? 9.75f : n < 60 ? 35.0f : -.25f;
+    expected.accelMps2[0] = n < 20 ? 9.75f : n < 65 ? 35.0f : -.25f; // BOOST confirmed 200 ms after n = 20.
     expected.accelMps2[1] = .25f; expected.accelMps2[2] = -.125f;
     expected.gyroRadps[0] = .03125f; expected.gyroRadps[1] = -.015625f; expected.gyroRadps[2] = .0078125f;
     expected.baroValid = true; expected.baroSequence = n / 4 + 1; expected.baroTimeUs = (n / 4) * 20000;
@@ -512,9 +512,9 @@ void run() {
   // Worker stays paused: BOOST is computed on a sample rejected by a full queue.
   const auto launched=begin(SensorMode::Hardware);
   for (unsigned i=0;i<QueuedRecorder::SampleCapacity;++i) sample(i,9.80665f);
-  sample(QueuedRecorder::SampleCapacity,40); sample(QueuedRecorder::SampleCapacity+1,40);
-  assert(sample(QueuedRecorder::SampleCapacity+2,40).navigation.phase==recovery::FlightPhase::Boost);
-  assert(runtime.status().boostReached && runtime.status().droppedSamples==3 && runtime.active());
+  for (unsigned i=0;i<40;++i) sample(QueuedRecorder::SampleCapacity+i,40); // BOOST: 200 ms at 200 Hz.
+  assert(sample(QueuedRecorder::SampleCapacity+40,40).navigation.phase==recovery::FlightPhase::Boost);
+  assert(runtime.status().boostReached && runtime.status().droppedSamples==41 && runtime.active());
   runtime.stop(); drain();
   // The queued samples were all PAD: they form the pre-launch history (last 0.5 s at
   // full rate + 10 Hz before), written at close and truncated by the 2-block budget.

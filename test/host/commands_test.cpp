@@ -163,6 +163,11 @@ void run() {
     status.gyroTarget = 500; status.uptimeMs = UINT32_MAX; status.configError = "UnsupportedVersion";
     for (char c : std::string("@4294967295 status\n"))
       if (service.feed(c, status, output, sizeof(output))) result = output;
+    assert(result.find("\"attitude\":null") != std::string::npos);
+    status.attitudeValid = true; status.tiltDeg = 34.56f; status.upBody[0] = 0.8236f; status.upBody[1] = -0.5672f; status.upBody[2] = 0;
+    for (char c : std::string("@4294967295 status\n"))
+      if (service.feed(c, status, output, sizeof(output))) result = output;
+    assert(result.find("\"attitude\":{\"tilt_deg\":34.6,\"up_body\":[0.824,-0.567,0.000]}") != std::string::npos);
     assert(result.find("\"mode\":\"armed\"") != std::string::npos && result.find("\"phase\":1") != std::string::npos);
     assert(result.find("\"flight_mode\":\"simulation\"") != std::string::npos);
     assert(result.find("\"gyro_calibration_skipped\":true") != std::string::npos);
@@ -475,8 +480,8 @@ void run() {
   }
   assert(store.save(all, limits, true)); config.boot(true);
   send(usb, "hil begin 0 200 logged_body");
-  send(usb, "hil sample 4294967285 35 0 0 0 0 0 nan");
-  send(usb, "hil sample 4294967290 35 0 0 0 0 0 nan");
+  for (uint32_t t = 4294967095u; t < 4294967295u; t += 5) // BOOST: 200 ms after a 3 g sample.
+    send(usb, "hil sample " + std::to_string(t) + " 35 0 0 0 0 0 nan");
   const auto burst = send(usb, "hil sample 4294967295 35 0 0 0 0 0 nan");
   has(burst, "[4294967295,\"pyro\",1,4294967295]");
   has(burst, "[4294967288,\"servo\",4,4294967295]");

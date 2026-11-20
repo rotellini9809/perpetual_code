@@ -66,8 +66,9 @@
   validated on the board before they are applied.
 - **Airbrakes**: a continuous servo control interface where you plug in your own control law.
 - **Flight recording**: sensor data, estimates and events are logged to the onboard 16 MB flash
-  from the second core, so recording never blocks the flight loop. Flights survive power loss
-  and are never deleted automatically.
+  from the second core, so recording never blocks the flight loop. Each flight can record **about
+  16 minutes** from launch at the full IMU rate (476 Hz). Flights survive power loss; when a new
+  flight needs space, the oldest ones are overwritten.
 - **USB and Bluetooth**: the same command protocol runs over USB serial and over the JDY-34
   Bluetooth module, and both links can be used at the same time.
 - **Simulation and hardware-in-the-loop**: replay a recorded flight on the real board, either

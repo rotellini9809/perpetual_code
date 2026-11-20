@@ -29,6 +29,7 @@ struct NavigationOutput {
   bool startsAllowed = true;
   recovery::AbortReason abortReason = recovery::AbortReason::None;
   float coastVelocityMedian = 0, tiltRadians = 0;
+  std::array<float, 3> upBody{}; // Estimated upward vertical in BODY axes (unit vector).
   std::array<float, 3> eulerRadians{};
   recovery::FlightSnapshot ruleSnapshot() const;
 };

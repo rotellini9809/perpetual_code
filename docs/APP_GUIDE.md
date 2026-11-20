@@ -293,7 +293,9 @@ The board's RGB LED shows the flight phase, so you can check it without the app:
 4. Keep the CSV and JSON files: they are the complete record of the flight. **Open local CSV**
    opens them again later, even without the board.
 
-Flights stay on the board until you format the memory, and the board never deletes them by itself.
+Flights stay on the board until the memory is formatted or a newer flight needs their space: the
+board keeps up to 32 flights and overwrites the oldest first. Download a flight soon after it
+flies.
 
 ## Other tools
 
@@ -320,6 +322,9 @@ Download any flight you want to keep **before** formatting.
 
 - **Nothing is saved automatically.** Rules are saved by **Apply**, settings by their **Save**
   buttons. If you close the app with an unapplied draft, it asks for confirmation.
+- **Recording time.** Each flight records about **16 minutes** from launch at full rate. A longer
+  flight still runs its phases and rules to the end, but the data after those 16 minutes is not
+  saved. A flight that long uses the whole memory and overwrites all older flights.
 - **Power saving.** After five minutes without activity the board puts its sensors and memory to
   sleep, even while connected; the Dashboard shows **POWER SAVE ACTIVE**. Any operation wakes it up.
 - **One controller at a time.** If the board is connected over USB and Bluetooth at the same time,
