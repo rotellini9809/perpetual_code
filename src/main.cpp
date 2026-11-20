@@ -161,7 +161,8 @@ const char *bluetoothQuery = nullptr;
 std::size_t bluetoothQueryOffset = 0;
 uint32_t lastHardwarePollUs = 0, lastBaroMs = 0, lastImuMs = 0;
 BoardDiagnostics diagnostics;
-uint32_t lastLoopUs = 0, runFifoBase = 0, runFifoEnd = 0;
+uint32_t lastLoopUs = 0, runFifoBase = 0, runFifoEnd = 0, runStartMs = 0;
+bool loopUsbInput = false; // The previous loop read USB command input.
 bool runWasActive = false;
 const flight::ArmingController *lastRun = nullptr; // Physical, simulation or HIL owner of the last run.
 uint64_t lastBaroSequence = 0, lastImuSequence = 0;
@@ -341,10 +342,15 @@ void loop() {
   // Loop evidence belongs to the run: it stops at run end, so commands after landing
   // (flight list, download) never show up as flight stalls. Before any run it covers idle.
   if (lastLoopUs && (runWasActive || !lastRun)) {
-    const uint32_t period = loopUs - lastLoopUs; diagnostics.loop.add(period);
+    const uint32_t period = loopUs - lastLoopUs;
+    if (period > diagnostics.loop.maxUs) { // Phase and input are still those of the loop that just ended.
+      diagnostics.loopMaxRunMs = millis() - runStartMs; diagnostics.loopMaxPhase = commandStatus.phase;
+      diagnostics.loopMaxUsbInput = loopUsbInput;
+    }
+    diagnostics.loop.add(period);
     if (period > diagnostics.loopPeriodUs) ++diagnostics.loopOverPeriod;
   }
-  lastLoopUs = loopUs;
+  lastLoopUs = loopUs; loopUsbInput = false;
   if (!power.sleeping()) battery.poll(millis(),readBatteryAdc); // Real board voltage, also during simulation/HIL.
   standaloneSimulation.poll(); // Due sensor work runs before USB, even disconnected.
   if (!power.sleeping()) physicalFlight.maintainImuApproval();
@@ -405,7 +411,8 @@ void loop() {
   else if (standaloneSimulation.active() || standaloneSimulation.controller().state() == flight::ArmingState::Closing) owner = &standaloneSimulation.controller();
   else if (hil.active() || hilSession.controller().state() == flight::ArmingState::Closing) owner = &hilSession.controller();
   if (owner && !runWasActive) { // A run begins: loop and run evidence restart for it.
-    diagnostics.loop = {}; diagnostics.loopOverPeriod = 0; runFifoBase = sensorDevice.imuFifoOverruns(); lastRun = owner;
+    diagnostics.loop = {}; diagnostics.loopOverPeriod = 0; diagnostics.loopMaxRunMs = 0; diagnostics.loopMaxPhase = -1;
+    diagnostics.loopMaxUsbInput = false; runStartMs = millis(); runFifoBase = sensorDevice.imuFifoOverruns(); lastRun = owner;
     diagnostics.run = owner == &physicalFlight ? "physical" : owner == &standaloneSimulation.controller() ? "simulation" : "hil";
   }
   if (owner == &physicalFlight) {
@@ -435,7 +442,7 @@ void loop() {
   // USB remains normally active even while the radio is absent or backpressured.
   if (connected) {
     sendPending(Serial, usbEndpoint);
-    for (unsigned budget = 0; budget < 64 && !usbEndpoint.pending() && Serial.available() > 0; ++budget)
+    for (unsigned budget = 0; budget < 64 && !usbEndpoint.pending() && Serial.available() > 0; ++budget, loopUsbInput = true)
       usbEndpoint.feed(static_cast<char>(Serial.read()), commandStatus);
   }
   router.pollPower(); // Five minutes idle; no sleep during flight, writes, previews or active transfers.

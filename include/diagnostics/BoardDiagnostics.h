@@ -14,6 +14,9 @@ struct BoardDiagnostics {
   StackUse stack[2]; // Core 0 (main loop, navigation, commands), core 1 (recording worker).
   timing::Statistics loop; // Core 0 loop() period, entry to entry.
   uint32_t loopPeriodUs = 0, loopOverPeriod = 0; // Loop periods longer than one IMU period.
+  // Where the longest loop happened: ms since the run began, flight phase then (-1 none) and
+  // whether that loop read USB command input.
+  uint32_t loopMaxRunMs = 0; int loopMaxPhase = -1; bool loopMaxUsbInput = false;
   const char *run = "none"; // Last run: physical, simulation, hil or none.
   bool runActive = false;
   timing::Statistics step, compute, storage;

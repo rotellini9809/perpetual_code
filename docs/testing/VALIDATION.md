@@ -644,6 +644,16 @@ maximum 1.52 ms, core 0 stack 3800 bytes. The core 0 loop maximum, now inside th
 absorbed it). The altitude estimate drifted between +0.2 and +1.7 m over 16 minutes still
 (barometric drift).
 
+**Hand shake detected as a whole flight.** Next run, with `loop_max_at`: Part A loop maxima
+3.5-4.3 ms, all in PAD while reading USB input. The shake gave BOOST at 10.535 s, COAST 26 ms
+later and DESCENT 189 ms after BOOST (velocity -0.54 m/s at 0.22 m), which fired servo 1; LANDED
+at 15.8 s and the run closed after the 15 s landing window (flight 41: 2995 samples, Completed).
+The detector confirms BOOST after 3 consecutive frames above 3 g and COAST after 3 frames of
+non-positive BODY X acceleration; at 476 Hz that is about 6 ms each, and DESCENT needs only
+-0.5 m/s. **A knock of a few ms on an armed rocket can therefore deploy the recovery on the pad.**
+Not yet addressed. Run maximum loop 5.1 ms at 230.6 s, in LANDED without USB input (the run
+closing); the 16.3 ms of the full-ring run did not recur without growths.
+
 ## Remaining work and limits
 
 Dated observations above retain the firmware/format used at the time. In particular, older

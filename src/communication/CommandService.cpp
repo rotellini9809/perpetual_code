@@ -104,6 +104,8 @@ __attribute__((noinline)) bool CommandService::localReply(const char *command, c
       protocol::appendTiming(data,"loop",d.loop);
       data.add(",\"loop_period_us\":%lu,\"loop_over_period\":%lu,\"run\":\"%s\",\"run_active\":%s",
                static_cast<unsigned long>(d.loopPeriodUs), static_cast<unsigned long>(d.loopOverPeriod), d.run, d.runActive ? "true" : "false");
+      data.add(",\"loop_max_at\":{\"run_ms\":%lu,\"phase\":%d,\"usb_input\":%s}",
+               static_cast<unsigned long>(d.loopMaxRunMs), d.loopMaxPhase, d.loopMaxUsbInput ? "true" : "false");
       protocol::appendTiming(data,"step",d.step); protocol::appendTiming(data,"compute",d.compute); protocol::appendTiming(data,"storage",d.storage);
       data.add(",\"over_budget\":%lu,\"frame_dt_us\":[%lu,%lu],\"sequence_gaps\":%lu,\"fifo_overruns\":%lu",
                static_cast<unsigned long>(d.overBudget), static_cast<unsigned long>(d.frameDtMinUs), static_cast<unsigned long>(d.frameDtMaxUs),
@@ -119,11 +121,12 @@ __attribute__((noinline)) bool CommandService::localReply(const char *command, c
       const auto &d = *s.diagnostics;
       std::snprintf(out, cap,
           "Stack core 0: %lu/%lu bytes%s | core 1: %lu/%lu bytes%s\n"
-          "Loop: %lu periods, max %lu us, %lu over %lu us | Run: %s%s\n"
+          "Loop: %lu periods, max %lu us at %lu ms (phase %d%s), %lu over %lu us | Run: %s%s\n"
           "Step max %lu us, compute max %lu us, storage max %lu us, over budget %lu | Frame dt %lu..%lu us, gaps %lu, FIFO overruns %lu\n",
           static_cast<unsigned long>(d.stack[0].usedBytes), static_cast<unsigned long>(d.stack[0].capacityBytes), d.stack[0].exhausted ? " EXHAUSTED" : "",
           static_cast<unsigned long>(d.stack[1].usedBytes), static_cast<unsigned long>(d.stack[1].capacityBytes), d.stack[1].exhausted ? " EXHAUSTED" : "",
-          static_cast<unsigned long>(d.loop.count), static_cast<unsigned long>(d.loop.maxUs), static_cast<unsigned long>(d.loopOverPeriod),
+          static_cast<unsigned long>(d.loop.count), static_cast<unsigned long>(d.loop.maxUs), static_cast<unsigned long>(d.loopMaxRunMs),
+          d.loopMaxPhase, d.loopMaxUsbInput ? ", USB input" : "", static_cast<unsigned long>(d.loopOverPeriod),
           static_cast<unsigned long>(d.loopPeriodUs), d.run, d.runActive ? " (active)" : "",
           static_cast<unsigned long>(d.step.maxUs), static_cast<unsigned long>(d.compute.maxUs), static_cast<unsigned long>(d.storage.maxUs),
           static_cast<unsigned long>(d.overBudget), static_cast<unsigned long>(d.frameDtMinUs), static_cast<unsigned long>(d.frameDtMaxUs),

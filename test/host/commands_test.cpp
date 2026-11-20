@@ -68,12 +68,14 @@ void run() {
     auto ask = [&](const char *line) { bool ready=false; for (char c : std::string(line)) ready=custom.feed(c,status,reply,sizeof(reply)); assert(ready); return std::string(reply); };
     assert(ask("@1 diag\n").find("UNAVAILABLE") != std::string::npos);
     status.diagnostics=&diagnostics; diagnostics.loopPeriodUs=2083; diagnostics.run="simulation";
-    diagnostics.refresh=[](BoardDiagnostics &d) { d.stack[0]={4096,1500,false}; d.stack[1]={8192,8192,true}; d.loop.add(900); d.loop.add(2500); d.loopOverPeriod=1; d.frameDtMinUs=2083; d.frameDtMaxUs=2084; };
+    diagnostics.refresh=[](BoardDiagnostics &d) { d.stack[0]={4096,1500,false}; d.stack[1]={8192,8192,true}; d.loop.add(900); d.loop.add(2500); d.loopOverPeriod=1; d.loopMaxRunMs=1234; d.loopMaxPhase=2; d.loopMaxUsbInput=true; d.frameDtMinUs=2083; d.frameDtMaxUs=2084; };
     const auto json=ask("@2 diag\n");
     assert(json.find("\"stack_bytes\":[[1500,4096],[8192,8192]],\"stack_exhausted\":[false,true]") != std::string::npos);
     assert(json.find("\"loop\":[2,3400,2500],\"loop_period_us\":2083,\"loop_over_period\":1,\"run\":\"simulation\"") != std::string::npos);
     assert(json.find("\"frame_dt_us\":[2083,2084],\"sequence_gaps\":0,\"fifo_overruns\":0") != std::string::npos);
+    assert(json.find("\"loop_max_at\":{\"run_ms\":1234,\"phase\":2,\"usb_input\":true}") != std::string::npos);
     const auto text=ask("diag\n");
+    assert(text.find("max 2500 us at 1234 ms (phase 2, USB input)") != std::string::npos);
     assert(text.find("Stack core 0: 1500/4096 bytes | core 1: 8192/8192 bytes EXHAUSTED") != std::string::npos);
     assert(ask("@3 diag extra\n").find("INVALID_ARGUMENT") != std::string::npos);
   }

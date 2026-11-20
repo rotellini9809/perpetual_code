@@ -57,12 +57,18 @@ def summary(diag, before=None):
     fifo = diag['fifo_overruns'] - (before['fifo_overruns'] if before else 0)
     return dict(sequence_gaps=gaps, fifo_overruns=fifo, loop_max_us=diag['loop'][2], loop_over_period=diag['loop_over_period'],
                 step_max_us=diag['step'][2], compute_max_us=diag['compute'][2], frame_dt_us=diag['frame_dt_us'],
-                stack_core0=diag['stack_bytes'][0][0], frames=diag['step'][0])
+                stack_core0=diag['stack_bytes'][0][0], frames=diag['step'][0], loop_max_at=diag.get('loop_max_at'))
+
+
+def at(where):
+    if not where: return ''
+    phase = PHASES[where['phase']] if 0 <= where['phase'] < len(PHASES) else 'no phase'
+    return f' at {where["run_ms"]/1000:.1f} s in {phase}' + (', USB input' if where['usb_input'] else '')
 
 
 def show(name, s):
     print(f'  {name:6s}: {s["frames"]} frames, gaps +{s["sequence_gaps"]}, FIFO overruns +{s["fifo_overruns"]}, '
-          f'loop max {s["loop_max_us"]} us ({s["loop_over_period"]} over period), step max {s["step_max_us"]} us, '
+          f'loop max {s["loop_max_us"]} us{at(s["loop_max_at"])} ({s["loop_over_period"]} over period), step max {s["step_max_us"]} us, '
           f'frame dt {s["frame_dt_us"][0]}..{s["frame_dt_us"][1]} us, stack {s["stack_core0"]} B', flush=True)
 
 
