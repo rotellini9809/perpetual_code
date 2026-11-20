@@ -151,7 +151,8 @@ a physical run is armed in PAD: it copies the current attitude into a second est
 with no accelerometer correction. `status` then adds `attitude.gyro_only` (`tilt_deg`,
 `up_body`). The copy never feeds phases, rules or the recording, and ends with the run;
 `tools/replay/bench_tilt_usb.py --gyro` drives the check (drift while still, known rotations,
-fast motion).
+fast motion). Fix the board on the [bench stand](https://github.com/rotellini9809/perpetual_pcb/tree/main/mechanical/bench-stand) so it stays still during the 5 s
+arming collection: moving it there biases the gyroscope.
 
 ### Mounting
 

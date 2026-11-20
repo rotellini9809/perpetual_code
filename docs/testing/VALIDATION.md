@@ -698,7 +698,7 @@ BODY Y (the gyro-only vertical moves towards BODY +Z): a residual gyroscope bias
 beyond drift; fast motion added nothing), so gyroscope scale and axes are consistent. The bias
 is most likely the hand moving during the 5 s arming collection, whose stillness gate (0.5 rad/s)
 accepts a hand-held board: about 0.3° of hand rotation there gives this bias. Over 10-20 s of
-BOOST and COAST 1 it would amount to about 1°, against the 40° limit. **To repeat** on a stand,
+BOOST and COAST 1 it would amount to about 1°, against the 40° limit. **To repeat** on a stand ([bench stand](https://github.com/rotellini9809/perpetual_pcb/tree/main/mechanical/bench-stand)),
 still during arming and for a longer still phase, before deciding whether to tighten the gate.
 Vibration, high spin rates and acceleration effects on the gyroscope are not covered on the bench.
 
