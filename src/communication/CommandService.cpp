@@ -164,11 +164,16 @@ __attribute__((noinline)) bool CommandService::localReply(const char *command, c
   const char *phaseNames[] = {"PAD","BOOST","COAST","DESCENT","LANDED","BOOST 2","COAST 2","ABORT"};
   const bool validPhase = s.phase >= 0 && s.phase <= 7;
   if (validPhase) std::snprintf(phase,sizeof(phase),"%d",s.phase);
-  char attitude[96] = "null", tiltText[24] = "";
+  char attitude[176] = "null", tiltText[24] = "";
   if (s.attitudeValid) {
     std::snprintf(attitude,sizeof(attitude),"{\"tilt_deg\":%.1f,\"up_body\":[%.3f,%.3f,%.3f]}",
         double(s.tiltDeg),double(s.upBody[0]),double(s.upBody[1]),double(s.upBody[2]));
     std::snprintf(tiltText,sizeof(tiltText)," | Tilt: %.1f deg",double(s.tiltDeg));
+  }
+  if (s.attitudeValid && s.gyroOnlyValid) { // Test builds only (`nav gyro start`); absent otherwise.
+    const std::size_t used=std::strlen(attitude)-1; // Before the closing brace.
+    std::snprintf(attitude+used,sizeof(attitude)-used,",\"gyro_only\":{\"tilt_deg\":%.1f,\"up_body\":[%.3f,%.3f,%.3f]}}",
+        double(s.gyroOnlyTiltDeg),double(s.gyroOnlyUpBody[0]),double(s.gyroOnlyUpBody[1]),double(s.gyroOnlyUpBody[2]));
   }
   const bool gyroSkipped = !std::strcmp(s.flightMode,"simulation");
   char battery[24]="null";

@@ -49,7 +49,7 @@ ITALIAN = {
     'Verification required after a flight or a restart while armed.': 'Verifica richiesta dopo un volo o un riavvio durante l’armaggio.',
     'The saved coefficients must be verified.': 'I coefficienti salvati devono essere verificati.',
     'IMU calibration': 'Calibrazione IMU',
-    'The calibration measures bias and scale in six orientations. Verification requires two new captures, +X and +Y. The axes are those of the sensor on the board; they do not depend on the rocket orientation.': 'La calibrazione misura bias e scala sui sei orientamenti. La verifica richiede due nuove acquisizioni, +X e +Y. Gli assi sono quelli del sensore sulla scheda; sono indipendenti dall’orientamento del razzo.',
+    'The calibration measures bias and scale in six orientations: each face must point straight up (within about 2°; use a stand or a square block). Verification requires three new captures, +X, +Y and +Z; there each face only needs to point roughly up (within 10°). Keep the board still in both. The axes are those of the sensor on the board; they do not depend on the rocket orientation.': 'La calibrazione misura bias e scala sui sei orientamenti: ogni faccia deve essere rivolta esattamente verso l’alto (entro circa 2°; usa un supporto o un blocchetto squadrato). La verifica richiede tre nuove acquisizioni, +X, +Y e +Z; lì ogni faccia deve solo essere rivolta all’incirca verso l’alto (entro 10°). In entrambi i casi tieni la scheda ferma. Gli assi sono quelli del sensore sulla scheda; sono indipendenti dall’orientamento del razzo.',
     'Calibrate on six faces': 'Calibra sulle sei facce',
     'Starting IMU calibration': 'Avvio calibrazione IMU',
     'Verify calibration': 'Verifica calibrazione',

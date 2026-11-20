@@ -71,6 +71,13 @@ bool ArmingCommands::dispatch(const char *command, const char *arguments, bool h
     if (!error) data.add(",\"channel\":%lu,\"pwm\":%lu",static_cast<unsigned long>(channel),static_cast<unsigned long>(pwm));
     return protocol::finish(command,data,error,hasId,id,out,capacity,true);
   }
+#ifdef IMU_IDENTITY_TEST
+  if (!std::strcmp(command,"nav")) { // Test builds only: gyroscope-only attitude for bench checks.
+    error=t.valid && t.count==2 && t.is(0,"gyro") && t.is(1,"start") ? physical_.startGyroOnlyAttitudeForTesting() : "INVALID_ARGUMENT";
+    appendState(data,physical_);
+    return protocol::finish(command,data,error,hasId,id,out,capacity,true);
+  }
+#endif
   if (!arm && !preflight && !disarm && !prepare && !continuity) return false;
   const flight::ArmingController *owner = &physical_;
   if (!t.valid) error="INVALID_ARGUMENT";

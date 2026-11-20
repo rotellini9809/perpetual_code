@@ -46,6 +46,7 @@ public:
     int phase = -1;
     // Estimated attitude of the active run (tilt from BODY +X, upward vertical in BODY axes).
     bool attitudeValid = false; float tiltDeg = 0; float upBody[3] = {};
+    bool gyroOnlyValid = false; float gyroOnlyTiltDeg = 0; float gyroOnlyUpBody[3] = {}; // `nav gyro start` (test builds).
     uint32_t gyroSamples = 0, gyroTarget = 0;
     const char *configError = "NotLoaded";
     uint32_t bluetoothBaud = 9600, bluetoothRxOverflows = 0;

@@ -22,7 +22,7 @@ class ImuCalibrationPage(QWidget):
         frame,body=card(); box.addWidget(frame)
         body.addWidget(label(t('IMU calibration'),'cardTitle'))
         self.state_label=label(); self.state_label.setWordWrap(True); body.addWidget(self.state_label)
-        explanation=label(t('The calibration measures bias and scale in six orientations. Verification requires two new captures, +X and +Y. '
+        explanation=label(t('The calibration measures bias and scale in six orientations: each face must point straight up (within about 2°; use a stand or a square block). Verification requires three new captures, +X, +Y and +Z; there each face only needs to point roughly up (within 10°). Keep the board still in both. '
                             'The axes are those of the sensor on the board; they do not depend on the rocket orientation.'),'hint')
         explanation.setWordWrap(True); body.addWidget(explanation)
         self.begin_button=button(t('Calibrate on six faces'),lambda:controller.command('imu begin',t('Starting IMU calibration')))
@@ -55,7 +55,7 @@ class ImuCalibrationPage(QWidget):
         self.refresh_button.setEnabled(s.connected and not s.foreground)
         self.cancel_button.setEnabled(usable and active)
         self.capture_button.setEnabled(usable and active and not collecting)
-        faces=(0,2) if c.get('verification') else range(6)
+        faces=(0,2,4) if c.get('verification') else range(6)
         mask=c.get('face_mask',0); done=sum(bool(mask & (1<<f)) for f in faces)
         self.next_face=next((f for f in faces if not mask & (1<<f)),0)
         face=c.get('face',0) if collecting else self.next_face

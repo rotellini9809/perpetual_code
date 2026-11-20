@@ -327,6 +327,29 @@ void test_bistage_detector() {
 }
 
 
+void testGyroOnlyAttitude() {
+  using namespace navigation; using test_navigation::near;
+  Navigation n; assert(!n.startGyroOnly()); // Not begun.
+  const float up[3]={9.81f,0,0}; std::array<float,4> q{}; assert(AttitudeEstimator::fromGravity(up,q));
+  assert(n.begin(0,200,q));
+  uint64_t time=0, sequence=0;
+  auto frame=[&](float gyroY) { SensorFrame f; f.timeUs=(time+=5000); f.imuSequence=++sequence; f.imuValid=true;
+    f.accel[0]=9.81f; f.gyro[1]=gyroY; return f; };
+  for (unsigned i=0;i<10;++i) assert(!n.step(frame(0)).gyroOnly);
+  assert(n.startGyroOnly());
+  // Rotate 40 deg about BODY Y while the accelerometer still reads upright: only the
+  // gyro-only copy follows the whole rotation; the flight attitude is pulled back by gravity.
+  const float rate=0.5f; const unsigned steps=unsigned(40*0.017453292f/rate/0.005f+0.5f);
+  for (unsigned i=0;i<steps;++i) n.step(frame(rate));
+  auto out=n.step(frame(0));
+  assert(out.gyroOnly); near(out.gyroOnlyTiltRadians*57.29578f,40,0.5f);
+  near(out.gyroOnlyUpBody[0]*out.gyroOnlyUpBody[0]+out.gyroOnlyUpBody[1]*out.gyroOnlyUpBody[1]+out.gyroOnlyUpBody[2]*out.gyroOnlyUpBody[2],1,1e-3f);
+  assert(out.tiltRadians*57.29578f<35 && out.phase==Phase::Pad); // Flight logic unchanged.
+  for (unsigned i=0;i<200;++i) out=n.step(frame(0)); // Holding still: no correction, no drift.
+  near(out.gyroOnlyTiltRadians*57.29578f,40,0.5f);
+  assert(n.begin(0,200,q) && !n.step(frame(0)).gyroOnly); // A new run starts without it.
+}
+
 void testBoostConfirmation() {
   using namespace navigation;
   FlightDetector d;
@@ -402,6 +425,7 @@ void testBoostConfirmation() {
 
 int main() {
   testBoostConfirmation();
+  testGyroOnlyAttitude();
   test_bistage_detector();
   std::puts("  navigation"); std::fflush(stdout);
   test_navigation::run();

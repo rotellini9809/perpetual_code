@@ -30,6 +30,8 @@ struct NavigationOutput {
   recovery::AbortReason abortReason = recovery::AbortReason::None;
   float coastVelocityMedian = 0, tiltRadians = 0;
   std::array<float, 3> upBody{}; // Estimated upward vertical in BODY axes (unit vector).
+  // Bench test only: attitude integrated from the gyroscope alone since startGyroOnly().
+  bool gyroOnly = false; float gyroOnlyTiltRadians = 0; std::array<float, 3> gyroOnlyUpBody{};
   std::array<float, 3> eulerRadians{};
   recovery::FlightSnapshot ruleSnapshot() const;
 };
@@ -43,9 +45,14 @@ public:
   NavigationOutput step(const SensorFrame &frame);
   static float pressureAltitude(float pressurePa);
   const VerticalKalman &filter() const { return filter_; }
+  // Bench test only (`nav gyro start`): copy the current attitude into a second estimator that
+  // integrates the gyroscope with no accelerometer correction, as in BOOST/COAST. It never
+  // feeds the flight logic; it ends with the run.
+  bool startGyroOnly();
 private:
   NavigationOutput output(const SensorFrame &frame) const;
-  AttitudeEstimator attitude_;
+  AttitudeEstimator attitude_, gyroOnly_;
+  bool gyroOnlyActive_ = false;
   VerticalKalman filter_;
   FlightDetector detector_;
   float reference_ = 0, firstDt_ = 0, baseline_ = 0, padGate_ = 0;

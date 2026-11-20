@@ -247,6 +247,11 @@ const char *ArmingController::restoreImuIdentityForTesting() {
   boostConsumed_=approvalReserved_=false; imuError_="None";
   return nullptr;
 }
+const char *ArmingController::startGyroOnlyAttitudeForTesting() {
+  if (!armed() || mode_!=FlightMode::Physical) return "NOT_ARMED";
+  if (!navigation_.valid || navigation_.phase!=navigation::Phase::Pad) return "NOT_IN_PAD";
+  return runtime_.startGyroOnlyAttitude() ? nullptr : "ATTITUDE_UNAVAILABLE";
+}
 const char *ArmingController::beginImuCalibration(sensors::SensorSource &source,bool verify) {
   if (!imuStore_) return "IMU_CALIBRATION_UNAVAILABLE";
   if (!config_.storageReady()) return "STORAGE_NOT_READY";

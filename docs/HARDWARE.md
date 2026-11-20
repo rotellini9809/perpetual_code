@@ -5,6 +5,9 @@ Schematics, PCB layout, connectors and power design are in the
 [perpetual_pcb](https://github.com/rotellini9809/perpetual_pcb) repository. This page covers what the
 firmware needs to know about that hardware.
 
+The board measures 50 × 80 mm with four M2.5 mounting holes, one per corner, 3.5 mm from each
+edge; see the [mechanical drawing](https://github.com/rotellini9809/perpetual_pcb#mechanical).
+
 ## Pin map
 
 GPIO numbers are RP GPIO numbers, not package or header pin numbers. The authoritative map is
@@ -26,6 +29,20 @@ The flash is **128 Mbit / 16 MiB**; the driver accepts JEDEC IDs EF4018 and EF70
 [fixed region map](technical/STORAGE_FORMAT.md#memory-map-layout-v2) is the only supported layout.
 No magnetometer is fitted. A pin or communication failure alone does not prove a defective chip;
 see [diagnostics](testing/README.md).
+
+## Board circuits
+
+What the firmware relies on in the schematic. Reference designators are those of the
+[perpetual_pcb](https://github.com/rotellini9809/perpetual_pcb) project.
+
+| Circuit | Implementation | Firmware consequence |
+|---|---|---|
+| Pyro gating | A 74LVC08 AND gate (U6) combines each channel pin with the shared enable GP8; its outputs drive four AO3400A low-side MOSFETs (Q2..Q5). The igniter sits between `+BATT` and the MOSFET drain | A channel conducts only while **both** its pin and the enable are high, so one stuck pin cannot fire. `PyroController::drive` lowers the enable first and raises it last |
+| Continuity | A TPW4054 4:1 analog multiplexer (U5) routes the sense node of channel 1..4 to GP28; select GP11 (S0) / GP10 (S1), channel `n` is index `n-1` | One channel at a time, on request (see [Outputs](#outputs)) |
+| Battery input | XT30 → SMBJ15CA TVS (D3, 15 V stand-off) → P-MOSFET Q1 for reverse-polarity protection → `+BATT` | Battery sense GP29 reads `+BATT`, after the protection |
+| 5 V rail | TPS54302 buck (U4), 5 V / 3 A from `+BATT`. A B5817W Schottky (D1) feeds the module's VSYS from 5 V, so USB cannot back-feed the rail | On USB alone the sensors and MCU run, but servos and pyro have no battery supply |
+| Servo signals | A 74HCT126 buffer (U3) at 5 V shifts the 3.3 V PWM to 5 V logic | PWM pins are driven low at boot (see [Outputs](#outputs)) |
+| Servo supply | One three-pad solder bridge per channel (JP1..JP4) on the back selects 5 V or `+BATT` | Not visible to the firmware; check the bridges before connecting a servo |
 
 ## Sensors
 
@@ -64,11 +81,21 @@ the four channels at once through `PyroController::drive(enabled, mask)`. Each f
 shared enable, waits 10 ms for it to settle, then holds the channel for a fixed 1000 ms pulse.
 The outputs and enable stay inactive at boot and whenever the board is disarmed.
 
-**Continuity.** The mux selects one channel, settles, discards one ADC conversion, then averages
-16 readings. Raw 12-bit thresholds: below 1000 BatteryNotConnected, 1000..2499 Open, 2500 and above
-Connected; an invalid channel is Uncertain. These are software classifications, not an
-independent check of power or ignition, and the battery sense is not read by this measurement.
-Continuity is only measured on request, so it never delays a firing.
+**Continuity.** The mux selects one channel, waits 250 µs, discards one ADC conversion, then
+averages 16 readings 250 µs apart. It then reads the battery sense the same way (one discarded
+conversion, eight averaged). Classification, on raw 12-bit values
+([PyroController.cpp](../src/hardware/PyroController.cpp)):
+
+| Condition | Result |
+|---|---|
+| Invalid channel number | Uncertain |
+| Any battery reading saturated (4095) | Uncertain |
+| Battery average below 120 (about 0.5 V at the battery) | BatteryNotConnected |
+| Channel average 1000 or above | Connected |
+| Otherwise | Open |
+
+These are software classifications, not an independent check of power or ignition. Continuity is
+only measured on request, so it never delays a firing.
 
 **Servo.** `ServoController::begin()` only drives the four pins low: servo PWM stays detached at
 boot. Servos move only through an explicit preparation, a preview while disarmed, or a physical

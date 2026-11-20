@@ -26,6 +26,7 @@ public:
   bool process(const sensors::Reading &reading, NavigationOutput &output);
   void end() { source_ = nullptr; calibration_ = {}; }
   bool active() const { return source_ != nullptr; }
+  bool startGyroOnlyAttitude() { return active() && navigation_.startGyroOnly(); } // Bench test only.
 private:
   Navigation navigation_;
   sensors::SensorSource *source_ = nullptr;

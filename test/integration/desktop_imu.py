@@ -56,8 +56,11 @@ def check_imu(app,wait,native):
             imu.update(face_mask=1)
             controller.command('imu status'); wait(lambda:not s.foreground)
             assert page.capture_button.text()=='Acquisisci +Y'
+            imu.update(face_mask=5)
+            controller.command('imu status'); wait(lambda:not s.foreground)
+            assert page.capture_button.text()=='Acquisisci +Z'
             window.grab().save(str(Path(__file__).resolve().parents[2]/'.pio/tests/imu-calibration.png'))
-            imu.update(active=False,collecting=False,face_mask=5,imu_calibration_state='verified',imu_calibration_reason='None')
+            imu.update(active=False,collecting=False,face_mask=21,imu_calibration_state='verified',imu_calibration_reason='None')
             controller._last_imu=0; controller._last_status=time.monotonic(); controller._want_events=False; controller.tick()
             wait(lambda:not controller._jobs)
             assert s.preflight['imu_calibration_state']=='verified' and 'Verificata' in page.state_label.text()

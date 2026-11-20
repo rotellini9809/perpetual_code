@@ -6,13 +6,15 @@ namespace flight {
 class ImuCalibration {
 public:
   static constexpr unsigned TargetSamples=240;
+  static constexpr float VerificationTiltSin=0.17364818f; // sin(10 deg): verification face tolerance.
   void begin(bool verification, const storage::ImuCalibrationRecord &record);
   bool capture(unsigned face);
   void cancel() { active_=collecting_=false; }
   void add(const sensors::Reading &r);
   bool active() const { return active_; }
   bool collecting() const { return collecting_; }
-  bool complete() const { return verification_ ? (mask_ & 5)==5 : mask_==63; }
+  // Verification: one face per axis (+X, +Y, +Z), since a still reading tests mainly the upward axis.
+  bool complete() const { return verification_ ? (mask_ & 21)==21 : mask_==63; }
   bool verification() const { return verification_; }
   bool failed() const { return failed_; }
   unsigned mask() const { return mask_; }

@@ -66,6 +66,7 @@ public:
   RuntimeStatus status() const;
   void refreshRecordingStatus(RuntimeStatus &status) const;
   const RuntimeTiming &timing() const { return timing_; }
+  bool startGyroOnlyAttitude() { return active() && pipeline_.startGyroOnlyAttitude(); } // Bench test only.
   void setBattery(const BatteryMonitor &battery) { battery_=&battery; }
 private:
   const char *process(const sensors::Reading &input, FrameResult &result);

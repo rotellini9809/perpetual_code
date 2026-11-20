@@ -435,6 +435,11 @@ void loop() {
     const auto &n = owner->navigation(); commandStatus.tiltDeg = n.tiltRadians * 57.2957795f;
     for (unsigned i = 0; i < 3; ++i) commandStatus.upBody[i] = n.upBody[i];
   }
+  commandStatus.gyroOnlyValid = commandStatus.attitudeValid && owner->navigation().gyroOnly;
+  if (commandStatus.gyroOnlyValid) {
+    const auto &n = owner->navigation(); commandStatus.gyroOnlyTiltDeg = n.gyroOnlyTiltRadians * 57.2957795f;
+    for (unsigned i = 0; i < 3; ++i) commandStatus.gyroOnlyUpBody[i] = n.gyroOnlyUpBody[i];
+  }
   commandStatus.gyroSamples = owner ? owner->calibrationSamples() : 0;
   commandStatus.gyroTarget = flight::ArmingCalibration::TargetSamples;
   updateHardwareStatus();

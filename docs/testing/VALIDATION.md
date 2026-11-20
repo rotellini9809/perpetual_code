@@ -677,6 +677,31 @@ correcting the attitude (gain 0.3), so this reflects the hand, not gyroscope dri
 the gyroscope-only attitude of BOOST and COAST, where the correction gate (|a| within 0.2 m/s² of
 1 g) is closed; that is where the bistage 40° check applies.
 
+**Gyroscope-only attitude, hand-held.** Same day, test build with `nav gyro start`
+(`bench_tilt_usb.py --gyro`): after arming, the attitude was copied into a second estimator with
+no accelerometer correction, and its vertical compared with the normal (gravity-corrected) one.
+The board was held by hand, **also during the arming gyro collection**.
+
+| Elapsed | Motion | Angle between the two verticals |
+|---|---|---|
+| 0 s | upright, start | 0.3° |
+| 57 s | held still | 3.5° |
+| 113 s | to 40° (after 53 s more) | 8.3° |
+| 123 s | to 90° | 9.5° |
+| 132 s | back upright | 9.5° |
+| 173 s | upright | 12.7° |
+| 190 s | after 5 s of fast twists and swings | 13.6° |
+
+The divergence grows steadily at 3.4-3.7°/min whatever the motion, always as a rotation about
+BODY Y (the gyro-only vertical moves towards BODY +Z): a residual gyroscope bias of about
+0.06°/s (1 mrad/s). Rotations themselves add at most about 1-2° (90° and back added nothing
+beyond drift; fast motion added nothing), so gyroscope scale and axes are consistent. The bias
+is most likely the hand moving during the 5 s arming collection, whose stillness gate (0.5 rad/s)
+accepts a hand-held board: about 0.3° of hand rotation there gives this bias. Over 10-20 s of
+BOOST and COAST 1 it would amount to about 1°, against the 40° limit. **To repeat** on a stand,
+still during arming and for a longer still phase, before deciding whether to tighten the gate.
+Vibration, high spin rates and acceleration effects on the gyroscope are not covered on the bench.
+
 ## Remaining work and limits
 
 Dated observations above retain the firmware/format used at the time. In particular, older
@@ -686,7 +711,7 @@ flight log v4 or the explicit orientation requirement. Current implementation is
 | Area | Current qualification limit |
 |---|---|
 | Real sensors | Idle IMU cadence/pairing measured (476.2 Hz over 30 s, no gaps; see [Hardware](../HARDWARE.md#sensors)); gyroscope collection during a physical arming works on the board after the barometer timestamp fix, and a hand-driven bench flight reached DESCENT and LANDED with the real barometer (19 November 2026); a real flight profile is not yet measured |
-| Calibration and attitude | Per-arming gyro/reference collector, persistent mounting and six-face accelerometer calibration (persistence and UI) exist. The board still uses identity calibration values. Gravity alignment and tilt reading agree with a goniometer within about 3° in PAD (20 November 2026, above); the gyroscope-only attitude of BOOST/COAST is not yet measured |
+| Calibration and attitude | Per-arming gyro/reference collector, persistent mounting and six-face accelerometer calibration (persistence and UI) exist. The board still uses identity calibration values. Gravity alignment and tilt reading agree with a goniometer within about 3° in PAD (20 November 2026, above); gyroscope-only attitude (BOOST/COAST) tracks rotations within about 1-2°, with 3.5°/min drift after a hand-held arming; to repeat on a stand |
 | Physical outputs | Shared execution, preparation/release and physical simulation are implemented and host-tested; pyro firing with real igniters works on the board and does not reset the MCU. Servo mechanical behavior, interruption and load margins still need bench acceptance |
 | Driver timeout | Timeout disables driver readiness; recorder recovery cannot reinitialize it. Restart/reinitialization remains the current route |
 | Interrupted/old headers | Unsupported versions fail without migration; current layout v2 (device journal v1, directory v2, flight ring), recording header v8, sample blocks v4, configuration codec v3. A board with the previous layout needs `flights format` and its rules, settings and calibration saved again |

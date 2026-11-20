@@ -68,6 +68,8 @@ public:
   const char *captureImuFace(unsigned face);
   void cancelImuCalibration();
   const char *restoreImuIdentityForTesting(); // `imu identity`, IMU_IDENTITY_TEST builds only.
+  // `nav gyro start`, IMU_IDENTITY_TEST builds only: armed physical run in PAD.
+  const char *startGyroOnlyAttitudeForTesting();
   const ImuCalibration &imuCalibration() const { return imuCalibration_; }
   const storage::ImuCalibrationStore *imuStore() const { return imuStore_; }
   void maintainImuApproval() { settleImuApproval(); }

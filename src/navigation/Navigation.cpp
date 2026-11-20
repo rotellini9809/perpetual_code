@@ -10,7 +10,7 @@ float Navigation::pressureAltitude(float pressurePa) {
 bool Navigation::begin(float reference, float hz, const std::array<float, 4> &q, const recovery::StateMachineSettings &settings) {
   initialized_ = false;
   if (!std::isfinite(reference) || !std::isfinite(hz) || hz < 10 || !std::isfinite(settings.minimumCoastVelocity) || settings.minimumCoastVelocity<0 || !attitude_.reset(q)) return false;
-  filter_.reset(); detector_.reset(settings); attitudeAligned_=!settings.bistage; reference_ = reference; firstDt_ = 1.0f / hz;
+  filter_.reset(); detector_.reset(settings); attitudeAligned_=!settings.bistage; gyroOnlyActive_=false; reference_ = reference; firstDt_ = 1.0f / hz;
   baseline_ = padGate_ = 0; haveImu_ = haveBaro_ = false;
   lastTime_ = lastImuSequence_ = lastBaroSequence_ = 0;
   initialized_ = true; return true;
@@ -21,10 +21,18 @@ NavigationOutput Navigation::output(const SensorFrame &f) const {
   out.startsAllowed=detector_.startsAllowed(); out.abortReason=detector_.abortReason(); out.coastVelocityMedian=detector_.velocityMedian();
   out.upBody=attitude_.verticalInBody();
   out.tiltRadians=std::acos(std::fmax(-1.0f,std::fmin(1.0f,out.upBody[0])));
+  if (gyroOnlyActive_) {
+    out.gyroOnly=true; out.gyroOnlyUpBody=gyroOnly_.verticalInBody();
+    out.gyroOnlyTiltRadians=std::acos(std::fmax(-1.0f,std::fmin(1.0f,out.gyroOnlyUpBody[0])));
+  }
   for (unsigned i=0;i<3;++i) for (unsigned j=0;j<3;++j) out.covariance[i][j]=filter_.covariance(i,j);
   out.altitude = filter_.altitude(); out.verticalVelocity = filter_.velocity();
   out.accelerationBias = filter_.bias(); out.eulerRadians = attitude_.eulerRadians(); out.padBaseline = baseline_;
   return out;
+}
+bool Navigation::startGyroOnly() {
+  if (!initialized_ || !attitudeAligned_ || !gyroOnly_.reset(attitude_.quaternion())) return false;
+  gyroOnlyActive_=true; return true;
 }
 NavigationOutput Navigation::step(const SensorFrame &f) {
   auto out = output(f);
@@ -51,6 +59,7 @@ NavigationOutput Navigation::step(const SensorFrame &f) {
     attitudeAligned_=true;
   }
   if (!attitude_.step(f.accel, f.gyro, dt, detector_.navigationPhase())) { detector_.interruptConfirmation(); return out; }
+  if (gyroOnlyActive_) { const float none[3]={0,0,0}; gyroOnly_.step(none, f.gyro, dt, Phase::Coast); } // Zero force: gate closed.
   const auto vertical = attitude_.verticalInBody();
   const float force = vertical[0]*f.accel[0] + vertical[1]*f.accel[1] + vertical[2]*f.accel[2];
   float baro = std::numeric_limits<float>::quiet_NaN();

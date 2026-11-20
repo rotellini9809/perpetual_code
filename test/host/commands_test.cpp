@@ -168,6 +168,13 @@ void run() {
     for (char c : std::string("@4294967295 status\n"))
       if (service.feed(c, status, output, sizeof(output))) result = output;
     assert(result.find("\"attitude\":{\"tilt_deg\":34.6,\"up_body\":[0.824,-0.567,0.000]}") != std::string::npos);
+    status.gyroOnlyValid = true; status.gyroOnlyTiltDeg = 41.04f; status.gyroOnlyUpBody[0] = 0.7543f; status.gyroOnlyUpBody[2] = 0.6568f;
+    for (char c : std::string("@4294967295 status\n"))
+      if (service.feed(c, status, output, sizeof(output))) result = output;
+    assert(result.find("\"attitude\":{\"tilt_deg\":34.6,\"up_body\":[0.824,-0.567,0.000],"
+                       "\"gyro_only\":{\"tilt_deg\":41.0,\"up_body\":[0.754,0.000,0.657]}}") != std::string::npos);
+    assert(result.size() < CommandService::MaxReply);
+    status.gyroOnlyValid = false;
     assert(result.find("\"mode\":\"armed\"") != std::string::npos && result.find("\"phase\":1") != std::string::npos);
     assert(result.find("\"flight_mode\":\"simulation\"") != std::string::npos);
     assert(result.find("\"gyro_calibration_skipped\":true") != std::string::npos);

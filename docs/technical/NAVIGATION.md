@@ -85,7 +85,7 @@ in the device journal ([format](STORAGE_FORMAT.md#device-journal-v1-block-0)).
 | `imu status` | Passive: procedure progress, completed faces, errors, bias, scale, revision and approval |
 | `imu begin` | Start a six-face calibration |
 | `imu capture <axis>` | Capture one face, `+X` … `-Z`: that sensor axis must point up |
-| `imu verify` | Start a verification: new `+X` and `+Y` captures with the saved coefficients |
+| `imu verify` | Start a verification: new `+X`, `+Y` and `+Z` captures with the saved coefficients |
 | `imu cancel` | Abandon the procedure |
 | `imu identity` | **Bench test builds only** (`-D IMU_IDENTITY_TEST` in `platformio.ini`, off by default; `imu status` then reports `identity_test_build`): disarmed, forgets the calibration and a revoked identity, as delivered. Never fly a test build |
 
@@ -97,11 +97,22 @@ Acceptance limits:
 | Check | Limit |
 |---|---|
 | Raw magnitude during calibration | Within 2 m/s² of gravity |
-| Corrected magnitude during verification | Within 0.35 m/s² of gravity |
 | Gyroscope norm | Below 0.1 rad/s |
-| Expected axis / transverse axes | Above 0.94 g / below 0.15 g |
+| Calibration capture gate | Expected axis above 0.94 g, each transverse axis below 0.15 g |
+| Calibration result | Bias within ±2 m/s², scale 0.8 to 1.2, and every corrected component of every face within 0.4 m/s² of the ideal (±g, 0, 0): each face aligned within about 2.3° |
+| Verification capture gate | Face tilted at most 10° in any direction (transverse magnitude ≤ sin 10° of \|a\|) |
+| Verification result | Each corrected face (`+X`, `+Y`, `+Z`) measures \|a\| within 0.35 m/s² of gravity |
 | Per-axis standard deviation | At most 0.12 m/s² |
-| Fit residual, bias, scale | ≤ 0.4 m/s², within ±2 m/s², 0.8 to 1.2 |
+
+Calibration is deliberately strict (a stand or square block is expected): a face tilt θ costs a
+scale error of 1 − cos θ in the fit (0.08 % at 2.3°), and the residual check rejects faces more
+than about 2.3° off. Verification is meant to be quick and can be done by leaning the board on
+something: it uses only the magnitude of the corrected acceleration, which does not depend on how
+well the face is aligned (a per-component check would measure the misalignment, not the sensor).
+On a still face the upward axis carries almost all of gravity, so the magnitude tests that axis'
+bias and scale to first order (above about 0.35 m/s² of bias or 3.5 % of scale fails); hence
+verification needs one face per axis. Coefficients from a face disturbed between captures fail
+there.
 
 A procedure takes the configuration lock and link ownership, blocks sleep and runs, and never
 enables outputs. It survives a disconnect and times out 180 s after the last capture request.
@@ -132,6 +143,15 @@ attitude is aligned again from the first valid PAD sample close to 1 g.
 
 There is no pre-launch check that the attitude has converged; such a check would have to tolerate
 a rocket moving in the wind on its rail.
+
+**Gyroscope-only bench check.** In BOOST and COAST the specific force is far from 1 g, so the
+correction gate is closed and the attitude (and the bistage tilt) comes from the gyroscope alone.
+To measure that on the bench, a test build (`-D IMU_IDENTITY_TEST`) accepts `nav gyro start` while
+a physical run is armed in PAD: it copies the current attitude into a second estimator stepped
+with no accelerometer correction. `status` then adds `attitude.gyro_only` (`tilt_deg`,
+`up_body`). The copy never feeds phases, rules or the recording, and ends with the run;
+`tools/replay/bench_tilt_usb.py --gyro` drives the check (drift while still, known rotations,
+fast motion).
 
 ### Mounting
 

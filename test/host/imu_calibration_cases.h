@@ -33,6 +33,54 @@ void feed(flight::ImuCalibration &c,unsigned face,const storage::ImuCalibrationR
     c.add(r);
   }
 }
+// The face's axis tilted by `degrees` towards the next sensor axis, the one after it, or both.
+enum class Lean { Next, Other, Diagonal };
+void feedTilted(flight::ImuCalibration &c,unsigned face,const storage::ImuCalibrationRecord &truth,float degrees,Lean lean=Lean::Next) {
+  static uint64_t sequence=1000000;
+  const unsigned axis=face/2, next=(axis+1)%3, other=(axis+2)%3; const float angle=degrees*0.017453292f;
+  float up[3]={0,0,0}; up[axis]=(face%2 ? -G:G)*std::cos(angle);
+  if (lean==Lean::Diagonal) up[next]=up[other]=G*std::sin(angle)*0.70710678f;
+  else up[lean==Lean::Next ? next:other]=G*std::sin(angle);
+  for (unsigned n=0;n<260;++n) {
+    sensors::Reading r; r.imuValid=true; r.imuSequence=++sequence; r.timeUs=10000u*sequence;
+    for (unsigned i=0;i<3;++i) r.accelMps2[i]=truth.bias[i]+up[i]/truth.scale[i];
+    c.add(r);
+  }
+}
+void testMisalignedFaces(const storage::ImuCalibrationRecord &truth) {
+  // Calibration is strict: faces about 2 degrees off are accepted, 4 degrees off are rejected
+  // (sin 4 deg x g = 0.68 m/s^2 on a transverse axis, above 0.4).
+  flight::ImuCalibration c; c.begin(false,{});
+  for (unsigned f=0;f<6;++f) { assert(c.capture(f)); feedTilted(c,f,truth,4,f%2 ? Lean::Other:Lean::Next); assert(c.mask()&(1u<<f)); }
+  storage::ImuCalibrationRecord fitted; fitted.revision=1; assert(!c.result(fitted));
+  c.begin(false,{});
+  for (unsigned f=0;f<6;++f) { assert(c.capture(f)); feedTilted(c,f,truth,2,f%2 ? Lean::Other:Lean::Next); assert(c.mask()&(1u<<f)); }
+  assert(c.result(fitted));
+  for (unsigned i=0;i<3;++i) { assert(std::fabs(fitted.bias[i]-truth.bias[i])<.01f); assert(std::fabs(fitted.scale[i]/truth.scale[i]-1)<.001f); }
+  // Verification only judges |a|: faces up to 10 degrees off in any direction are accepted.
+  c.begin(true,fitted);
+  assert(c.capture(0)); feedTilted(c,0,truth,9.5f,Lean::Diagonal); assert(!c.failed() && !c.collecting());
+  assert(c.capture(2)); feedTilted(c,2,truth,11); assert(c.collecting() && !c.failed() && !c.samples()); // Beyond 10 deg: retries.
+  feedTilted(c,2,truth,9.5f,Lean::Other); assert(!c.collecting() && !c.failed());
+  assert(c.capture(4)); feedTilted(c,4,truth,9.5f); assert(!c.failed());
+  storage::ImuCalibrationRecord verified; assert(c.complete() && c.result(verified) && verified.approval==storage::ImuApproval::Verified);
+  // Wrong coefficients fail on the face whose axis points up, whatever the alignment.
+  auto wrongScale=fitted; wrongScale.scale[0]*=1.05f;
+  c.begin(true,wrongScale); assert(c.capture(0)); feedTilted(c,0,truth,3); assert(c.failed());
+  auto wrongBias=fitted; wrongBias.bias[2]+=.5f;
+  c.begin(true,wrongBias); assert(c.capture(0)); feedTilted(c,0,truth,3); assert(!c.failed());
+  assert(c.capture(2)); feedTilted(c,2,truth,3); assert(!c.failed() && !c.complete()); // Z is transverse: unseen.
+  assert(c.capture(4)); feedTilted(c,4,truth,3); assert(c.failed() && !c.complete());
+  // A face read with a different bias than its pair (the board disturbed between captures) gives
+  // coefficients that verification rejects: Y biased +0.5 m/s^2 only on +Y.
+  c.begin(false,{});
+  for (unsigned f=0;f<6;++f) { assert(c.capture(f)); auto t=truth; if (f==2) t.bias[1]+=.5f; feedTilted(c,f,t,0); }
+  // (Its transverse residuals stay below 0.4 m/s^2, so the calibration itself is accepted.)
+  storage::ImuCalibrationRecord disturbed; disturbed.revision=1; assert(c.result(disturbed));
+  // Half of it lands in the Y bias and half in the Y scale; on +Y both shift |a| the same way.
+  c.begin(true,disturbed); assert(c.capture(0)); feedTilted(c,0,truth,4); assert(!c.failed());
+  assert(c.capture(2)); feedTilted(c,2,truth,4); assert(c.failed() && !c.complete());
+}
 void run() {
   storage::ImuCalibrationRecord truth; truth.revision=1;
   truth.bias[0]=.25f; truth.bias[1]=-.18f; truth.bias[2]=.09f;
@@ -46,8 +94,10 @@ void run() {
   collector.begin(true,measured); assert(collector.capture(0));
   feed(collector,2,truth); assert(!collector.samples() && collector.collecting()); // Wrong face.
   feed(collector,0,truth); assert(!collector.complete());
-  assert(collector.capture(2)); feed(collector,2,truth);
+  assert(collector.capture(2)); feed(collector,2,truth); assert(!collector.complete()); // +Z still missing.
+  assert(collector.capture(4)); feed(collector,4,truth);
   assert(collector.complete() && collector.result(measured) && measured.approval==storage::ImuApproval::Verified);
+  testMisalignedFaces(truth);
   collector.begin(false,{}); assert(collector.capture(0));
   feed(collector,0,truth,20); assert(collector.samples()==20);
   sensors::Reading bad; bad.imuValid=true; bad.imuSequence=100000; bad.timeUs=1000000000;
@@ -170,7 +220,7 @@ void run() {
   for (unsigned face=0;face<6;++face) acquireFace(face);
   assert(!controller.imuCalibration().active() && store.present() && !store.verified() && store.record().revision==2);
   assert(controller.preflight(flight::FlightMode::Physical,true,&checks).has(flight::ArmBlocker::ImuVerificationRequired));
-  assert(!controller.beginImuCalibration(source,true)); acquireFace(0); acquireFace(2);
+  assert(!controller.beginImuCalibration(source,true)); acquireFace(0); acquireFace(2); acquireFace(4);
   assert(!controller.imuCalibration().active() && store.verified() && !strcmp(controller.imuCalibrationState(),"verified"));
   assert(!controller.arm(source,flight::FlightMode::Physical,0,120,{},4096,&checks));
   for (unsigned n=0;n<500;++n) {
@@ -204,7 +254,7 @@ void run() {
   assert(!controller.beginImuCalibration(source,false));
   for (unsigned face=0;face<6;++face) acquireFace(face);
   assert(!store.needsCalibration() && !store.verified() && !store.identityAllowed());
-  assert(!controller.beginImuCalibration(source,true)); acquireFace(0); acquireFace(2);
+  assert(!controller.beginImuCalibration(source,true)); acquireFace(0); acquireFace(2); acquireFace(4);
   assert(store.verified() && !store.identityAllowed());
   // Simulations, including physical outputs, must leave calibration approval untouched.
   const auto beforeSimulation=flash.writes;
