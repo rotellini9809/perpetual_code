@@ -236,9 +236,17 @@ The plots show the flight phases as coloured bands and each output as a dashed l
   <img src="images/app/flight-motion.png" alt="Vertical speed and acceleration plot" width="800">
 </p>
 
-Further down you find the angular rates, the orientation, the battery voltage and a **Flight data**
-table: flight type (real or simulated), calibration used, rules saved with the flight and how many
-of them fired.
+Further down you find the angular rates, the orientation and the battery voltage:
+
+<table>
+  <tr>
+    <td><img src="images/app/flight-rates.png" alt="Angular rate plot" width="400"></td>
+    <td><img src="images/app/flight-orientation.png" alt="Euler orientation plot" width="400"></td>
+  </tr>
+</table>
+
+At the bottom, the **Flight data** table lists the flight type (real or simulated), the calibration
+used, the rules saved with the flight and how many of them fired.
 
 <p align="center">
   <img src="images/app/flight-details.png" alt="Flight data table" width="800">

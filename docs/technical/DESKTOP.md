@@ -22,7 +22,7 @@ From the repository root:
 
 ```powershell
 .\.venv\Scripts\python.exe perpetual_app/main.py                 # normal start
-.\.venv\Scripts\python.exe perpetual_app/main.py --port COM9     # connect to one port only
+.\.venv\Scripts\python.exe perpetual_app/main.py --port COMx     # connect to one port only
 .\.venv\Scripts\python.exe perpetual_app/main.py --arm-preview   # ARM/DISARM hold animation, no board
 ```
 

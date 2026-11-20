@@ -271,13 +271,15 @@ The build is unsigned, so Windows SmartScreen may warn the first time it runs
 
 ## Tools
 
+Replace `COMx` with the board's port: USB, or the outgoing Bluetooth SPP port.
+
 | Command | What it does |
 |---|---|
-| `python tools/device_client.py --port COM9 --watch` | Connect and watch the board's replies (Ctrl+C to quit) |
-| `python tools/device_client.py --port COM9 --command "config show"` | Send a single command |
-| `python tools/replay/replay_sensors_usb.py --port COM9` | Stream a recorded flight's sensor data to the board (hardware-in-the-loop) |
-| `python tools/replay/run_simulation_usb.py --port COM9` | Run the built-in simulated flight on the board |
-| `python tools/measure_live_sensors.py --port COM9 --output rates.json` | Measure the live sensor sample rates |
+| `python tools/device_client.py --port COMx --watch` | Connect and watch the board's replies (Ctrl+C to quit) |
+| `python tools/device_client.py --port COMx --command "config show"` | Send a single command |
+| `python tools/replay/replay_sensors_usb.py --port COMx` | Stream a recorded flight's sensor data to the board (hardware-in-the-loop) |
+| `python tools/replay/run_simulation_usb.py --port COMx` | Run the built-in simulated flight on the board |
+| `python tools/measure_live_sensors.py --port COMx --output rates.json` | Measure the live sensor sample rates |
 
 Replay and simulation use virtual outputs by default. Add `--record` to also save the run to
 flash. The reference flight used by

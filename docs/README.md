@@ -51,14 +51,6 @@ Do not rewrite a dated result to look as if it tested a later firmware revision.
 ## Remaining work
 
 The main paths are implemented and documented above: configuration, transport, navigation,
-arming, outputs, recording/recovery, desktop and testing. These are the open items:
-
-| Area | What still needs to be specified, implemented or verified | Owner |
-|---|---|---|
-| Bistage qualification | Normal/bistage selection, second-ignition detection (3 g, then 1.5 g held for 200 ms, as at launch), median/tilt ABORT and completion of active outputs are implemented. Qualify thresholds and initial attitude on hardware; invalid-data windows inhibit new starts without inventing a timeout | [State machines](technical/STATE_MACHINES.md#bistage-flight-machine) |
-| Attitude and calibration | IMU cadence is measured (476.2 Hz, no gaps; see [Hardware](HARDWARE.md#sensors)) and the six-face accelerometer calibration is implemented. The gyroscope collection works during a physical arming. Still open: run that calibration on the board (it currently uses identity values) and repeat the gyroscope-only drift check on a stand (hand-held: rotations within about 1-2°, 3.5°/min drift, likely from moving during the arming collection; gravity alignment and the PAD tilt agree with a goniometer within about 3°) | [Navigation](technical/NAVIGATION.md#calibration-and-mounting), [Validation](testing/VALIDATION.md#remaining-work-and-limits) |
-| Airbrake controller/application | Firmware contract and logging are implemented with a zero-output placeholder law. Implement/qualify the chosen law and verify end points on hardware; graphical controls and log plots are present | [Airbrakes](technical/AIRBRAKES.md) |
-| Physical outputs | Pyro firing with real igniters works on the board and does not reset the MCU. Still open: servo PWM/mechanical end points and measured firing current margins | [Hardware](HARDWARE.md), [Validation](testing/VALIDATION.md#remaining-work-and-limits) |
-| Failure policy | No MCU watchdog yet. Sensor outage/degraded estimates, stalled worker limits, storage-driver timeout reinitialization (currently needs a restart) and failed-arming reservation cleanup | [Navigation](technical/NAVIGATION.md#estimator), [Storage](technical/STORAGE.md#failure-diagnostics-and-limits) |
-| Future transport features | Direct channel tests, telemetry/monitor subscription and receiver-negotiated binary export; frame/handshake/resume rules are not implemented | [USB/Bluetooth](technical/USB.md#command-reference) |
-| Release evidence | Reproducible physical flight acceptance, versioned board/firmware qualification and portable-app checks on a separate Windows machine; firmware updates from the app are not provided | [Test guide](testing/README.md), [Desktop](technical/DESKTOP.md) |
+arming, outputs, recording/recovery, desktop and testing. What is still open, from bistage
+qualification to the airbrake law, the watchdog and flight acceptance, is listed in one place:
+[Validation → Remaining work and limits](testing/VALIDATION.md#remaining-work-and-limits).

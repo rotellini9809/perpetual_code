@@ -34,13 +34,13 @@ Euler roll/yaw remain ill-conditioned near pitch -90 degrees; these are not abso
 Recorded navigation/phase columns are references; sensor replay recomputes them onboard or on PC.
 USB tools need pyserial (`python -m pip install pyserial` if absent). Upload
 MAIN, use a valid applied plan with no active draft, and close Serial Monitor before opening
-COM9. Change `--port` for another device. Outputs are uniquely created under `.pio`; `--output`
+the board's port (`COMx` below). Outputs are uniquely created under `.pio`; `--output`
 must not overwrite a file. Fixtures are test settings, not flight recommendations.
 
-The same commands/runners also work over the outgoing Bluetooth SPP port (`--port COM11` on
-this PC). The JDY-34 UART is currently 9600 baud: full recorded HIL/download is much slower
-there, so USB is preferred for bulk traffic. Onboard simulation sends only control/status,
-making it a useful Bluetooth test. See [shared transport ownership](../technical/USB.md#ownership).
+The same commands/runners also work over the outgoing Bluetooth SPP port. The JDY-34 link
+(230400 baud UART) is slower than USB: full recorded HIL/download takes longer there, so USB is
+preferred for bulk traffic. Onboard simulation sends only control/status, making it a useful
+Bluetooth test. See [shared transport ownership](../technical/USB.md#ownership).
 
 ## PC references
 
@@ -60,7 +60,7 @@ for the distinct estimate/sensor reference times.
 ## USB sensor HIL
 
 ```powershell
-python tools/replay/replay_sensors_usb.py --port COM9
+python tools/replay/replay_sensors_usb.py --port COMx
 ```
 
 Options include `--input`, `--pressure-unit hpa|pa`, `--output`, `--record`,
@@ -95,9 +95,9 @@ SensorAxes from a future provider.
 ## Autonomous onboard profile
 
 ```powershell
-python tools/replay/run_simulation_usb.py --port COM9
-python tools/replay/run_simulation_usb.py --port COM9 --record
-python tools/replay/run_simulation_usb.py --port COM9 --record --rate480
+python tools/replay/run_simulation_usb.py --port COMx
+python tools/replay/run_simulation_usb.py --port COMx --record
+python tools/replay/run_simulation_usb.py --port COMx --record --rate480
 ```
 
 ```text
@@ -160,7 +160,7 @@ when validation fails.
 ## USB estimate replay
 
 ```powershell
-python tools/replay/replay_hoppino_usb.py --port COM9
+python tools/replay/replay_hoppino_usb.py --port COMx
 ```
 
 ```text
@@ -196,7 +196,7 @@ erase of an asynchronously prepared recording), and `diag` gives stack and loop 
 Ring wrap-around and overwrite on the board:
 
 ```powershell
-python tools/replay/ring_overwrite_usb.py --port COM11 --allow-overwrite --delete-after
+python tools/replay/ring_overwrite_usb.py --port COMx --allow-overwrite --delete-after
 ```
 
 It repeats the recorded 480 Hz profile (about 17 runs, 20 minutes) until the ring wraps, then two

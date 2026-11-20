@@ -109,8 +109,8 @@ links; recorded groups still exercise the shared protocol through the C++ firmwa
 To observe a real MAIN connection without applying settings:
 
 ```powershell
-python tools/device_client.py --port COM9 --watch 10
-python tools/device_client.py --port COM11 --watch 10
+python tools/device_client.py --port COMx --watch 10    # USB
+python tools/device_client.py --port COMy --watch 10    # outgoing Bluetooth SPP
 ```
 
 Close other programs using that port first. These explicit hardware checks show handshake,
@@ -260,162 +260,62 @@ For live usage rather than destructive diagnostics, follow [Simulation](SIMULATI
 and [Recording/download](RECORDING.md). Build/host checks do not qualify electrical
 brownouts, physical sensors/actuators or worst-case scheduling.
 
-## Bluetooth bring-up
+## Bluetooth diagnostics
 
-MAIN now exposes the common protocol over USB and the JDY-34, with USB active normally.
-With MAIN selected/uploaded and both terminals closed, verify the outgoing SPP port:
+In normal use the JDY-34 needs no procedure: MAIN configures a factory module at boot and the app
+renames it from **Settings** ([Bluetooth module](../technical/USB.md#bluetooth-module)). The
+commands below are for checking the radio link or recovering a module. In them, `COMx` is the
+board's USB port and `COMy` the **outgoing** Bluetooth SPP port that Windows created when you
+paired the board. Port numbers differ between computers; when in doubt, match the MAC reported
+by `at AT+LADDR` to the paired device.
 
-```powershell
-python tools/run_bluetooth_test.py --main --port COM9 --radio-port COM11
-python tools/replay/run_simulation_usb.py --port COM11
-```
-
-The first command checks protocol/IDs, a RAM-only draft, foreign-mutation rejection, USB
-observer disconnect, partial-command radio disconnect and reconnect. It never applies/saves
-settings; finish any existing edit/run before using it. The second starts the same virtual
-onboard simulation through Bluetooth. These are explicit hardware actions, separate from
-`run_tests.py`. `bluetooth status` and `control status` are available on either connection;
-see [the shared protocol](../technical/USB.md) for ownership and startup requirements.
-
-### Focused name test (currently selected)
-
-Select `build_flags = -D BLUETOOTH_NAME_TEST`, upload, then close Serial Monitor and run:
+**Radio link with MAIN.** With MAIN uploaded and both ports closed in other programs:
 
 ```powershell
-pio run -t upload --upload-port COM9
-python tools/run_bluetooth_name_test.py --port COM9
-python tools/run_bluetooth_name_test.py --port COM9 --name "Perpetual"
-python tools/run_bluetooth_name_test.py --port COM9 --reboot
+python tools/run_bluetooth_test.py --main --port COMx --radio-port COMy
+python tools/replay/run_simulation_usb.py --port COMy
 ```
 
-The first command probes AT/version/current SPP and BLE names without changing module settings.
-Only `--name` requests a rename. Success requires an AT ACK, then a setter ACK and exact readback
-for **both** profiles; `NAME_RESULT verified=1 step=complete` confirms that sequence. A transcript
-is saved under `.pio`. `--reboot` explicitly sends `AT+RESET`, waits for boot, and reads names
-again; it drops radio connections. Combined with `--name`, the requested names must also read
-back after reboot. It does not issue a factory reset. Power-cycle persistence and the host's
-cached display name are separate checks. The device owns the saved name; external flash is not involved.
+The first checks the protocol and IDs over both links, a RAM-only draft, rejection of a change
+from the other link, and disconnect/reconnect of each link; it never saves settings. The second
+runs the onboard simulation over Bluetooth. Both are manual hardware checks, separate from
+`run_tests.py`.
 
-This firmware bypasses the reusable name state machine, radio echo and flight runtime. It shows
-every transmitted/received byte in hex and escaped ASCII, including NULs, malformed responses,
-overflow and truncation. Transactions are synchronous and bounded to 1.2 seconds for this bench
-test only. PWRC stays at the selected level across commands, default low. The fitted V1.52 replies
-`+NAME:<name>` for SPP and `+NAMB=<name>` for BLE; the test accepts either separator with exact
-name matching. A missed initial AT receives one read-only retry; setters are never retried.
-
-Manual commands at USB 115200: `status`, `probe`, `at AT`, `at AT+VERSION`, `at AT+NAME`,
-`at AT+NAMB`, `name set "Perpetual"`. To diagnose a different UART state, use `baud 9600`
-(MCU only), `gate low|high`, `eol crlf|cr|lf|none`. `--scan` automates six local rates, both
-control levels and four endings using read-only AT commands, stopping at an exact ACK.
-MAIN now expects **230400, 8N1, CRLF, MCU TX GP4 / RX GP5**; diagnostics start at 9600 and require `baud 230400` for a migrated module. PWRC low selects AT mode. See the UART migration/recovery procedure in [USB](../technical/USB.md#bluetooth-module).
-
-`at AT+LADDR`, `at AT+STAT` and `at AT+BTMODE` identify the module, current channels and mode.
-Match the reported MAC to the paired device before testing a radio COM port. PWRC low enables
-AT access even while connected; the documented reboot mechanism is `AT+RESET`, exposed only
-as explicit `module reboot` here. PWRC is not a documented reset/power switch. After a name
-change/reboot, remove the host's old pairing and scan again if it still displays the old name.
-The test reads both names before reboot, allowing stored configuration to be distinguished
-from a stale name in a discovery/paired-device list.
-
-### General UART and wireless test
-
-Select `build_flags = -D BLUETOOTH_TEST` in the existing environment, then upload and run:
+**Module recovery (`-D BLUETOOTH_NAME_TEST`).** Use it when a module does not answer MAIN, for
+example after being left at another baud rate. MAIN expects **230400 baud, 8N1, CRLF**, MCU TX
+GP4 / RX GP5, PWRC GP17 low for AT mode. The diagnostic starts at 9600 baud:
 
 ```powershell
-pio run -t upload --upload-port COM9
-python tools/run_bluetooth_test.py --port COM9
+python tools/run_bluetooth_name_test.py --port COMx            # read-only probe
+python tools/run_bluetooth_name_test.py --port COMx --scan     # search rates, control levels, line endings
+python tools/run_bluetooth_name_test.py --port COMx --name "Perpetual"
+python tools/run_bluetooth_name_test.py --port COMx --reboot   # AT+RESET, then read the names again
 ```
 
-Close Serial Monitor before using the Python script. It verifies the selected firmware, probes
-9600/115200/19200/38400/57600/4800 baud using exact AT acknowledgments, stops at the first match,
-then queries version, SPP/BLE names, UART configuration, link status and mode. Rates are changed
-only on the MCU UART, never saved to the module. A failed scan restores local 9600 baud. The
-JSON report distinguishes module UART verification from a wireless test; neither proves the
-other. Unsupported query replies remain reported as unsuccessful queries, not fabricated data.
+Only `--name` changes the module; success requires an ACK and an exact read-back of both the SPP
+and BLE names (`NAME_RESULT verified=1`). Setters are never retried. Every byte sent and received
+is shown and a transcript is saved under `.pio`. From a serial terminal at 115200: `status`,
+`probe`, `baud 230400`, `at AT`, `at AT+VERSION`, `at AT+NAME`, `at AT+NAMB`, `at AT+LADDR`,
+`at AT+STAT`.
 
-For a manual USB terminal at 115200, use `help`, `status`, `baud 9600`, `at AT`,
-`at AT+VERSION`, `at AT+NAME`, `at AT+NAMB`, `at AT+BAUD`, `at AT+STAT`, `at AT+LADDR`,
-`at AT+BTMODE` or `send hello`. Raw setters, reset and disconnect commands are rejected. PWRC is
-low during each bounded AT transaction and high during transparent data transfer. `gate high`
-selects a temporary alternative level for AT probes if the PCB routes an EN input differently;
-`gate low` restores the default. The Python equivalent is `--at-gate high`. This is the
-JDY-34 test policy, not a production Bluetooth driver or session implementation.
-
-Confirmed routing is MCU RX GP5 (module TXD), TX GP4 (module RXD), PWRC GP17. Both diagnostics
-use hardware UART1 (`Serial2`). Earlier tests had MCU directions reversed and used PIO; that
-mapping has been corrected. No status GPIO is assigned:
-`AT+STAT` reports per-channel snapshots. `link_known_mask`, `link_connected_mask` and
-`link_age_ms` describe only the last query, not continuous connection detection/authentication.
-`rx_bytes`, `tx_bytes`, receive overflows, rejected lines and `radio_pings` help diagnose traffic.
-The fitted module is JDY-34, the only supported model. Advertisements alone do not identify
-this board; associate them with the actual powered device before claiming a wireless test.
-
-Connect a phone Bluetooth serial/BLE terminal to the module (inspect its existing advertising
-name; the probe/echo path does not rename it). Send ASCII `ping` followed by CR/LF: expect `PONG`.
-Send `echo hello`: expect `ECHO hello`. USB shows received lines with `BT_RX`; `send hello`
-from USB should arrive on the phone. Disconnect/reconnect and repeat. Ping/echo also works with
-the USB terminal closed. Only explicit end-to-end reception verifies the wireless route.
-For an already paired Windows SPP COM port, the script can automate ping/echo:
+**Raw UART and wireless echo (`-D BLUETOOTH_TEST`).** Probes the module at the usual rates with
+read-only AT commands, then echoes over the radio: from a phone Bluetooth terminal, `ping`
+answers `PONG` and `echo hello` answers `ECHO hello`; `send hello` from USB arrives on the phone.
 
 ```powershell
-python tools/run_bluetooth_test.py --port COM9 --radio-port COM12
+python tools/run_bluetooth_test.py --port COMx --radio-port COMy
 ```
 
-Replace COM12 with the actual Bluetooth port, distinct from USB. BLE connections do not
-necessarily expose a COM port. Pyros/enable and servo pins remain low, sensor/flash selects
-remain inactive; this firmware does not initialize sensors, storage or the flight runtime.
-Restore `MAIN` and upload it when finished.
+Neither diagnostic initializes sensors, storage or the flight runtime; pyro, enable and servo
+pins stay low. Select `MAIN` again and upload it when finished. Historical bring-up results are in
+[Validation](VALIDATION.md).
 
-On the tested Windows host, this module's outgoing Classic SPP port is **COM11** (MAC
-20:21:11:25:13:0A); **COM9** is board USB and COM12 is the incoming Bluetooth port. Opening
-COM11 established an actual radio connection despite a retry-later error in Windows Settings.
-Use the outgoing port from the serial application; AT channel status can confirm the live
-connection. Bidirectional raw data was verified on COM11 after the host refreshed the name to
-Perpetual. Port numbers are host-specific; check the MAC when Windows reassigns them.
-
-### Set the name using module memory
-
-In BLUETOOTH_TEST, use the correct local UART rate and enter:
-
-```text
-name set "Perpetual 01"
-name show
-```
-
-`NAME_BEGIN` means accepted; wait for `NAME_RESULT` JSON. Names are 1..18 printable ASCII bytes,
-with no leading/trailing spaces or control characters. The reusable
-`bluetooth::NameController::setName()` method in `include/hardware/BluetoothName.h` is independent
-of USB, Arduino and flash. A future UI calls it on Save, then the UART adapter services
-`nextCommand()`, `acceptReply()` and `finishCommand()` with bounded transaction deadlines.
-Call only while disarmed with exclusive module/UART ownership. MAIN now uses that UART for
-the command endpoint, but name changes remain available through the separate diagnostic;
-coordinating rename with an active MAIN connection is still future work.
-
-The controller first sends `AT`, then checks for a JDY-34 reply to `AT+VERSION` before issuing a setter.
-The initial read-only handshake allows two attempts: the fitted module was observed ignoring
-the first request after an MCU reboot. Other commands, including setters, are not retried. It always uses
-`AT+NAME<name>` plus `AT+NAMB<name>` for SPP and BLE.
-Each setter must return an acknowledgment, then its corresponding query must return the exact
-requested name. Unknown models are rejected without any setter. This follows the
-[JDY-34 manual](https://www.scribd.com/document/1049779477/Jdy-34%E5%B8%A6%E5%BA%95%E6%9D%BF-%E9%AB%98%E9%80%9F%E5%8F%8C%E6%A8%A1%E8%93%9D%E7%89%99%E6%89%8B%E5%86%8C-v1-52).
-The module owns the saved setting; there is no RP2350/external-flash copy, automatic boot rename,
-new flash layout or separate flash Save. Do not call the setter on every text-edit keystroke.
-
-`verified:true` means every required name read back correctly in this session. Persistence over
-an actual module power cycle is a separate hardware check. `NAME_STATUS` describes only this
-RAM transaction; after reboot use `at AT+NAME` and `at AT+NAMB` to read the module's
-stored names. No RAM default is presented as a stored module name.
-
-Failures report NO_RESPONSE, MODULE_REJECTED, UNSUPPORTED_MODULE or NAME_READBACK_MISMATCH.
-If a setter may already have reached the module, `may_have_changed:true` remains set even when
-an ACK is lost or the second profile fails. No automatic setter retry, rollback, reset or rename of
-unconfirmed modules occurs; do not display failure as a fully applied name change.
 ## Live sensor acquisition timing
 
 With MAIN loaded and the board awake and disarmed, run:
 
 ```powershell
-.venv/Scripts/python.exe tools/measure_live_sensors.py --port COM11 --seconds 30 --output .pio/cpu-live/result.json
+.venv/Scripts/python.exe tools/measure_live_sensors.py --port COMx --seconds 30 --output .pio/cpu-live/result.json
 ```
 
 This read-only measurement requires no arming or output commands. `sensors` exposes

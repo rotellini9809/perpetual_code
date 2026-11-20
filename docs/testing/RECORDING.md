@@ -4,7 +4,7 @@ MAIN records normal physical flight, sensor HIL and autonomous simulation on W25
 exporting sample CSV plus frozen metadata JSON. HIL is virtual; simulation defaults to virtual
 and explicitly supports physical outputs. Normal HIL without `--record` performs no
 flight-storage writes. Valid saved settings and no draft are required; close Serial Monitor
-before Python opens COM9.
+before Python opens the board's port (`COMx` below).
 
 ## Initialize and recover
 
@@ -36,8 +36,8 @@ This is a logical format, not secure erasure; see [storage behavior](../technica
 ## Record
 
 ```powershell
-python tools/replay/replay_sensors_usb.py --port COM9 --record
-python tools/replay/run_simulation_usb.py --port COM9 --record
+python tools/replay/replay_sensors_usb.py --port COMx --record
+python tools/replay/run_simulation_usb.py --port COMx --record
 ```
 
 Onboard Hoppino records like a physical flight: 512 KiB erased at preparation (about 1.5 s),
@@ -60,9 +60,9 @@ that wait on the PC. Successful enqueue/accepted close is not proof of completed
 ## List, download and explicit deletion
 
 ```powershell
-python tools/replay/download_flight.py --port COM9 --list
-python tools/replay/download_flight.py --port COM9 --sequence 1
-python tools/replay/download_flight.py --port COM9 --delete <sequence>
+python tools/replay/download_flight.py --port COMx --list
+python tools/replay/download_flight.py --port COMx --sequence 1
+python tools/replay/download_flight.py --port COMx --delete <sequence>
 ```
 
 Lists are newest first by persistent uint64 sequence: `flights list 0` is the newest retained
@@ -129,8 +129,8 @@ disarmed/inactive; status uses safe live snapshots.
 ## Timing
 
 ```powershell
-python tools/replay/replay_sensors_usb.py --port COM9 --record --timing
-python tools/replay/replay_sensors_usb.py --port COM9 --record --realtime
+python tools/replay/replay_sensors_usb.py --port COMx --record --timing
+python tools/replay/replay_sensors_usb.py --port COMx --record --realtime
 ```
 
 The client resets flash counters after mounting/settings inspection, records, waits for close

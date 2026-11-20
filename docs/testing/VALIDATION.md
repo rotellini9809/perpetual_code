@@ -1,311 +1,64 @@
 # Validation evidence and remaining work
 
-This is the single dated evidence record, consolidated from the implementation reviews, flash
-audit and per-component bring-up notes. Observations below are from **18 October 2026** unless
-stated otherwise. They are not fresh measurements performed during documentation cleanup. Local
-`.pio` artifacts are ignored and may not exist in a clean checkout; their paths preserve
-provenance.
+This is the single dated evidence record: what was measured or verified, when, and its limits.
+Each section carries its date. Local `.pio` artifacts are ignored by git and may not exist in a
+clean checkout; their paths record where a result came from. The open work is listed at the end,
+in [Remaining work and limits](#remaining-work-and-limits).
 
 ## Software verification
 
-On **21 October 2026**, Qt Connect gained USB-first discovery with outgoing paired-SPP fallback,
-read-only transport/COM labels, disabled Connect while searching, hidden manual port selection,
-and automatic failure/loss cleanup. The Qt suite checks discovery filtering, delayed close before
-fallback, retry without manual disconnect, USB priority after Bluetooth use, late-handshake
-isolation and ambiguous-device selection. An actual automatic GUI connection reached **Bluetooth
-COM11** and completed configuration synchronization with no error. Evidence is in
-`.pio/tests/logs/automatic_connection.json` and `.png`; firmware was not uploaded or changed.
+The current host suites, what they cover and how to run them are in the [test guide](README.md);
+the git history records how they evolved. This section keeps only results that still qualify
+behavior. Counts below were true on their date; artifact paths under `.pio` are local and may be
+missing in a clean checkout.
 
-On **20 October 2026**, the first Qt Windows desktop prototype was added with Dashboard,
-Configuration, Test/Simulation, Recorded Flights and Console. The shared connection worker
-remains the serial owner; a GUI operation executor and queued Qt signals keep waits off the
-UI thread. Local configuration and the applied baseline are separate. RAM staging compares
-the current/frozen baseline, preserves foreign drafts, orders dependency removal and creates
-IDs before conditions. Save success requires firmware persistence/verification and readback.
-Unsupported servo preparation/physical tests/physical-output simulation stay unavailable.
+### Host-only verification - 19 October 2026
 
-All **15 groups** passed with `python tools/run_tests.py --full --desktop`. The opt-in Qt area
-tests actual C++ configuration/recording/download formats, invalid/stale/foreign drafts,
-uint32 ID editors, responsive pending operations without optimistic Armed state, full local
-edit/validate/apply/readback, local changes retained on source loss and old-session result
-isolation. The default/full firmware/client areas remain 12/14 groups without a Qt dependency.
-Desktop tests never open COM ports.
+These areas were verified on the PC (C++ suites with fake devices, Python integrations, MAIN
+build), with no board upload and no electrical fault injection:
 
-Real GUI tests synchronized on **COM9 USB** and **COM11 SPP**. Via Bluetooth the GUI started
-and observed the onboard virtual profile: **5001 samples, zero rejected navigation frames**,
-computed PAD/BOOST/COAST/DESCENT/LANDED and rule-10 virtual pyro at 13175 ms; 18 observed status
-points formed the preview. It also mounted/listed **seven retained flights**, downloaded
-**sequence 9, 5001 samples** via USB, read the configuration/output-start JSON and plotted it.
-The CSV SHA256 matched the previous reference exactly:
-`5f2146e0f89ed2de3149309166174b4f3ff59cd4f6cc1aed073df996203a586f`.
-No real configuration save, new flash recording, erase, output movement or firmware upload was
-performed during these GUI checks; configuration saves were exercised on PC simulated NOR.
+| Area | Covered on the host | Not covered |
+|---|---|---|
+| Shared runtime | A fake acquisition device feeds raw IMU/pressure through `HardwareSensorSource` and the same `FlightRuntime` as HIL and simulation; navigation and rules match HIL; storage faults leave navigation running | Real acquisition cadence (measured later, see [Hardware](../HARDWARE.md#sensors)) |
+| Arming | Blocker masks, missing-IMU rejection without flash writes, RAM-only bias/reference collection, exclusion of edits and runs during arming, USB disconnect, cancellation, airborne disarm rejection | Physical arming (bench result below) |
+| Log retention | BOOST history kept independently of flash samples, PAD discard, preservation after cancellation, 513 byte cuts during discard | Real power loss |
+| Recording corruption and close | Damaged recordings marked Corrupt while healthy flights stay downloadable (513 interrupted commits, remount, compaction); queued close/abort return immediately; flash ownership held until acknowledgment | **Electrical power-cut qualification** |
+| Mounting and bias | All six signed-axis mountings against a dynamic BODY trajectory, bias subtraction and rejection, frozen per-run values | On-board calibration |
 
-The windowed PyInstaller x64 build and portable ZIP were produced with bundled Python/Qt,
-app source, version manifest and dependency notices. The packaged EXE opened/rendered all five
-views offline and synchronized/rendered through Bluetooth with Python/Qt environment overrides
-removed and PATH limited to Windows system directories. A separate Windows machine remains
-unverified. Artifacts: `.pio/desktop_build.log`, `.pio/desktop_full_tests.log`,
-`.pio/desktop_gui_bluetooth.json`, `.pio/desktop_gui_download.json`,
-`.pio/desktop_simulation_bluetooth.png`, `.pio/desktop_flight_usb.png`,
-`.pio/desktop_packaged_checks.json`, `.pio/desktop_dist/Perpetual/Perpetual.exe` and
-`.pio/desktop_dist/Perpetual-Windows.zip`. The desktop [guide](../technical/DESKTOP.md) is the
-canonical workflow/limits reference.
+### Dual USB and Bluetooth transport - 19 October 2026
 
-On **20 October 2026**, the PC protocol client moved from the estimate-replay script to
-`tools/device_client.py`. The four replay/simulation/download entry points share its serial
-opening, handshake and connection worker; the MAIN Bluetooth smoke test borrows its protocol
-client for raw retry/disconnect checks. Serial IO, a bounded 32-request FIFO and idle
-two-second heartbeats run on one PC worker. Async connect/submit/disconnect Futures and
-thread-safe snapshots are available for the next desktop UI; the current monitor is CLI.
+MAIN runs the same command protocol on USB and the JDY-34 at once. On the board: handshake,
+status, exact-ID retry, RAM-draft ownership, rejection of a change from the other link, closing
+the observing link, radio disconnect in the middle of a command, and reconnect all passed
+(`python tools/run_bluetooth_test.py --main`). A complete 25 s onboard simulation controlled over
+Bluetooth, while USB polled and attempted a rejected stop: **5001 samples, zero missed ticks**,
+max cycle **767 µs**, mean **256.9 µs**, max lateness **1366 µs**, phases and virtual pyro as
+expected. One run, not a radio endurance or worst-case timing test; BLE, radio loss during a
+recorded run and power cycling are not covered.
 
-All **14 PC groups passed** through the extracted client, including both 9433-sample recording
-paths. Added client regressions cover strict/malformed/late/extra replies, ID/command/schema
-checks, command-error details without dropping a healthy connection, ambiguous failure without
-retry or session reuse, queue ordering/cancellation/capacity/shutdown, heartbeat versus long
-commands, callback deadlock rejection, explicit reconnect, failed identity/version/opening and
-cancellation during port open. Fault cases use fake byte links; no physical unplug/fault-injection
-qualification is implied.
+### JDY-34 bring-up - 19 October 2026
 
-Real **COM9 USB and COM11 SPP** connections passed info/control handshake, status and idle
-heartbeat observation. The migrated simulation runner also completed via Bluetooth:
-**5001 samples, zero missed ticks**, max cycle **743 us**, mean **263.0 us**, max lateness
-**1520 us**, with the same computed phases and virtual rule-10 pyro start. No firmware upload,
-module setting change, flash erase or configuration save was performed. Artifacts:
-`.pio/client_connection_usb.jsonl`, `.pio/client_connection_bluetooth.jsonl`,
-`.pio/client_connection_simulation.log`, `.pio/simulation_b2c890f0591b4243ab367750c6195f3e.json`,
-and the current `.pio/tests/logs`. This is a normal-profile run, not an endurance or timing bound.
+* The MCU UART directions were reversed on the first attempt; the correct routing is module TXD
+  → GP5 (MCU RX) and module RXD ← GP4 (MCU TX), on hardware UART1.
+* The factory module (`+JDY-34-SPP-BLE-V1.52`) answered at **9600 8N1, CRLF** with PWRC low, and
+  ignored the first AT command after an MCU reboot: the startup now tries the initial AT twice.
+  MAIN has since moved the module to 230400 baud ([USB](../technical/USB.md#bluetooth-module)).
+* Renaming to **Perpetual** was verified by exact read-back of both the SPP and BLE names, and the
+  names survived a soft reset (`AT+RESET`).
+* Classic SPP carried data byte for byte in both directions on a Windows PC, through the
+  **outgoing** SPP port. Windows may keep showing an old cached name until the pairing is
+  removed. BLE GATT, sustained throughput and persistence over a module power cycle were not
+  tested.
 
-On **19 October 2026**, MAIN gained simultaneous USB and JDY-34 command endpoints. The shared
-`CommandService` replaced the USB-specific name; each endpoint has independent framing,
-numbered-request cache and bounded pending reply. Router tests cover owner-only mutation,
-observer disconnect, autonomous-run survival/takeover, independent IDs and response
-backpressure. JDY-34 tests cover nonblocking read-only startup, single-link mode, notification
-requirements, complete AT status snapshot, timer rollover, reconnect/reset, UART overflow and
-notifications appended to unfinished/oversized input. All **14 PC groups passed** after the
-shared-protocol changes and again after the notification/device-test additions and final
-overflow cleanup. MAIN built successfully (about 62 KiB static RAM, 181 KiB program).
+### Desktop app - 20 and 21 October 2026
 
-MAIN was uploaded and verified on **COM9**, with the existing outgoing SPP port **COM11**.
-Actual UART startup, JSON info/status/control requests, radio connected/disconnected flags,
-exact-ID retry, RAM-draft ownership, rejection of a foreign USB mutation, observer USB closure,
-partial-command radio disconnect, draft discard and reconnect/ID reset passed. No configuration
-was applied, recording erased or module setting changed. These checks are available through
-`python tools/run_bluetooth_test.py --main --port COM9 --radio-port COM11`.
-
-A complete **25-second onboard simulation controlled through Bluetooth** passed while USB
-made 60 reads, attempted a rejected foreign stop and then closed. Result: **5001 samples,
-zero missed ticks**, max cycle **767 us**, mean **256.9 us**, max lateness **1366 us**. Computed
-phases and virtual rule-10 pyro start matched the existing profile. This single run demonstrates
-the shared runtime with both transports; it is not a radio endurance or worst-case timing
-qualification. Final shared-endpoint smoke test also passed after upload. Reports:
-`.pio/main_dual_transport_final.json` and
-`.pio/main_bluetooth_simulation.json`; upload/build logs: `.pio/main_dual_transport_upload.log`,
-`.pio/main_dual_transport_build.log`. USB remains enabled normally; name changes remain in the
-isolated diagnostic. BLE, radio loss during a recorded run and hardware power-cycle behavior
-remain unverified by this integration test.
-
-On **19 October 2026**, the PC test layout was consolidated from **30 C++ files to ten area
-suites**, and **nine Python scripts to four groups**. All original C++ scenarios remain;
-shared USB feeding and process transport helpers were deduplicated. Three hidden stdin modes
-became one `test/fixtures/command_device.cpp`. The old manually wired HIL-to-recorder replay
-was removed; its raw IMU/pressure/temperature, navigation and degree/radian checks were moved
-to synchronous **and** queued production USB recording/download integration.
-
-The runner now shares incremental g++ objects and dependency files, links selected areas,
-compiles with up to four processes, and keeps per-group logs. Navigation replay uses the same
-builder instead of recompiling on each replay. Cache regression checks exercise unchanged
-builds, changed headers and flags, filenames/root paths with spaces and recovery from compiler
-errors. Default runs all ten C++ suites plus synthetic replay/client checks; `--full` adds both
-Hoppino groups. Explicit area selection, detailed output and forced rebuild are available.
-
-Measured on this Windows host, sequential invocations with no competing test build:
-
-| Run | Elapsed |
-|---|---:|
-| Original runner, all 30 C++ + nine Python scripts | 81.58 s |
-| Consolidated full run, forced compile (45 objects, 13 executables) | 17.95 s |
-| Consolidated full run, warm cache (14 groups, including Hoppino) | 12.42 s |
-| Consolidated default run, warm cache (12 groups, no flight CSV) | 2.24 s |
-| Consolidated C++ only, warm cache (ten suites) | 1.17 s |
-| PlatformIO native prototype, C++ only, cold | 17.70 s |
-| PlatformIO native prototype, C++ only, warm | 10.43 s |
-
-These are individual observed runs, not statistical benchmarks. All measured real suites
-passed. The isolated `.pio/pio_compact_eval` prototype used the same ten C++ suite sources,
-a native environment and custom runner with assertions enabled. Its intentional nonzero-exit
-probe failed correctly and was removed afterward; JUnit output was generated. Python
-integrations were **not** included in the PlatformIO timings. Keeping the existing entry point
-avoids a second orchestration path/custom adapter for those clients. No device upload or
-hardware test was performed during this cleanup; firmware build flags were unchanged.
-
-Artifacts: `.pio/tests_before_cleanup.log`, `.pio/tests_cleanup_cold.log`,
-`.pio/tests_cleanup_warm.log`, `.pio/tests_cleanup_quick.log`, `.pio/tests_cleanup_cpp_warm.log`,
-`.pio/pio_compact_cold.log`, `.pio/pio_compact_warm.log`, `.pio/pio_compact_failure.log`, and
-`.pio/pio_compact_cold.xml` / `.pio/pio_compact_warm.xml`. Current area logs are in
-`.pio/tests/logs`. Historical counts and artifacts below describe their earlier revisions.
-
-On **19 October 2026**, after the user removed the old pairing, Windows displayed **Perpetual**.
-Despite its Settings UI reporting a retry-later connection error, opening the matched outgoing
-SPP port **COM11** succeeded; AT status on USB COM9 confirmed an active channel (`+STAT=1,1`).
-A second connection verified actual wireless data in both directions using the existing raw
-name-test firmware with PWRC high: MCU UART `AT\r\n` arrived byte-for-byte on COM11, and a
-unique 38-byte PC radio marker arrived byte-for-byte in the MCU UART buffer. PWRC was restored
-low and both ports closed afterward. This verifies Classic SPP on this Windows host, not BLE
-GATT or sustained throughput. Logs: `.pio/bluetooth_pairing_status.log`,
-`.pio/bluetooth_pairing_open_port.log`, `.pio/bluetooth_spp_bidirectional.log`.
-
-On **19 October 2026**, the focused test added explicit `module reboot` / client `--reboot`
-using documented `AT+RESET`, plus read-only MAC/channel/mode queries. COM9 retesting without
-any name setters read **Perpetual** for both profiles before and after a successful soft reset
-(`+OK`, subsequent `+START=OK`, AT and version replies). MAC **20:21:11:25:13:0A** matched the
-Windows device still named **JDY-34** and its outgoing SPP port COM11. This supports a cached
-host display-name explanation; a fresh scan is still needed to verify its current advertised
-name. All eight queried channels were disconnected during the measurement, so this was not
-a connected end-to-end radio test. Mode was 1. A physical module power cycle remains untested.
-PWRC is used for AT access, not as a reset/power switch; reboot is an explicit separate action
-and never a factory reset or an automatic post-save step. Build/upload and device retest passed:
-`.pio/bluetooth_reboot_upload.log`, `.pio/bluetooth_connected_names_before_reset.log`,
-`.pio/bluetooth_names_soft_reboot.log`.
-
-On **19 October 2026**, isolated JDY-34 name testing resolved the reversed MCU UART
-directions: the user confirmed **module TXD -> GP5**, hence MCU RX=GP5/TX=GP4. Both Bluetooth
-diagnostics now use hardware UART1 (`Serial2`); sensors still use hardware SPI1 and flash SPI0.
-The actual module answered at **9600 8N1 / CRLF**, PWRC low, with
-`+JDY-34-SPP-BLE-V1.52`. Its responses use `OK` for NAME writes, `+NAME:` for SPP readback,
-`+OK` for NAMB writes and `+NAMB=` for BLE readback. Initial factory readbacks contained
-embedded NUL bytes, preserved in the raw diagnostic transcript rather than normalized.
-
-Both the independent `BLUETOOTH_NAME_TEST` sequence and the reusable `NameController` on
-COM9 successfully set and read back **Perpetual** for SPP and BLE. A first command after MCU
-reboot was repeatedly unanswered; a second read-only AT succeeded. The controller now permits
-two initial AT attempts, then identifies the module and runs each setter/readback once.
-A direct rename as the first operation after reboot succeeded through that handshake.
-No setter retry or external-flash copy was introduced. Power-cycle persistence of the module
-and actual over-radio reception remain untested.
-
-The focused test is selected in `platformio.ini`, uploaded on COM9, and has a dedicated client
-`tools/run_bluetooth_name_test.py` with raw hex/ASCII transcripts. Host name tests include
-the actual V1.52 trace and bounded handshake/failure paths; diagnostic/client checks and
-MAIN/general/focused firmware builds passed. Artifacts: `.pio/bluetooth_name_focus_upload.log`,
-`.pio/bluetooth_name_focus_verified.log`, `.pio/bluetooth_uart1_controller_upload.log`,
-`.pio/bluetooth_uart1_controller_device.log`, `.pio/bluetooth_uart1_MAIN_build.log`.
-
-The subsequent JDY-34-only cleanup removed alternative-module selection and the single-profile
-rename path. Both SPP and BLE names must now be verified on every successful rename. Focused
-name/diagnostic C++ suites, the Bluetooth-client Python integration and BLUETOOTH_TEST build
-passed. Build log: `.pio/bluetooth_jdy34_only_build.log`.
-
-On **19 October 2026**, the Bluetooth name method passed 30 C++ suites and nine Python
-integrations. Focused name/diagnostic suites also passed after matching JDY-34's documented
-direct version reply (`+JDY-34-V1.2`) alongside its `+VERSION=` form. Coverage includes
-validation, serialized commands, model rejection before setters, JDY-34 SPP/BLE exact readback,
-lost ACKs, module rejection, conflicting replies and partial changes
-without automatic retry. No external-flash setting/format or configuration change was added.
-
-The updated BLUETOOTH_TEST firmware was uploaded on COM9. Device tests verified invalid names
-and raw setters are rejected; a valid request stopped at version discovery with NO_RESPONSE,
-`verified:false` and `may_have_changed:false`, with no setter issued. This verifies the failure
-path, not an actual hardware rename, module identity or power-cycle persistence. Normal-mode
-Bluetooth integration was still pending at that point; the USB entry was `name set`/`name show` in the
-diagnostic. Logs: `.pio/bluetooth_name_tests.log`, `.pio/bluetooth_name_upload.log`,
-`.pio/bluetooth_name_device.log`. MAIN and the selected diagnostic also passed final builds:
-`.pio/bluetooth_name_MAIN.log`, `.pio/bluetooth_name_final_build.log`.
-
-On **19 October 2026**, Bluetooth bring-up added `BLUETOOTH_TEST` in the existing firmware
-environment. All 29 C++ suites and the existing eight Python integrations passed; the new
-Bluetooth-client integration also passed separately, covering fragmented replies, rate discovery,
-failed-scan restoration and distinct wireless echo verification. MAIN and BLUETOOTH_TEST built;
-the diagnostic was uploaded on COM9. On-device guards rejected setters, reset, invalid baud and
-oversized input without UART writes. GPIO startup uses Pico SDK initialization/preload/direction
-ordering because Arduino-Pico `pinMode(OUTPUT)` clears a previously set output level.
-
-Hardware probes received zero UART bytes at 9600, 115200, 19200, 38400, 57600 and 4800 baud,
-with both tested AT control levels. PIO reported initialized, RX idle high, and PWRC returned
-high after each transaction; these observations do not prove module identity, wiring or RF
-operation. The user confirmed that the fitted module is JDY-34; phone advertisements have not
-been associated with this board and are not hardware identification evidence. UART/module and
-wireless tests were unsuccessful/unverified at that stage. UART/name communication was
-subsequently resolved as recorded above; wireless verification remains pending. Artifacts: `.pio/bluetooth_host_tests.log`,
-`.pio/bluetooth_MAIN_check.log`, `.pio/bluetooth_final_upload.log`,
-`.pio/bluetooth_device_guards.log`, `.pio/bluetooth_hardware_low.json`,
-`.pio/bluetooth_hardware_high.json`. Continue with the
-[Bluetooth procedure](README.md#bluetooth-bring-up) and identify the board's advertisement.
-
-On **19 October 2026**, orderly hardware-mode log retention passed 28 C++ suites, eight Python
-integrations and MAIN. The shared runtime records actual BOOST history independently of flash
-samples; normal PAD close submits an asynchronous discard, while simulation/HIL retain their
-diagnostic logs. Coverage includes BOOST rejected by a full producer queue, full PAD sample
-storage, durable discard acknowledgment, preservation after cancellation, 513 byte cuts during
-discard, unchanged healthy history and reuse only after committed invalidation. Physical
-activation remains disabled; hardware-mode tests inject sensor data on PC with virtual outputs.
-Logs: `.pio/retention_tests.log`, `.pio/retention_MAIN.log`. No board upload or new hardware
-measurement was performed. Final targeted storage/runtime/arming/HIL/simulation checks and
-MAIN also passed after the follow-up review: `.pio/retention_final_checks.log`,
-`.pio/retention_MAIN_final.log`.
-
-On **19 October 2026**, shared arming verification passed 27 C++ suites and eight Python
-integrations, plus MAIN. Focused follow-up checks passed after adding acquisition-gap reset and
-ordinary-disarm ownership checks. Coverage includes missing-IMU rejection without flash writes
-or a retained flight, complete channel blocker masks, immediate simulation with zero calibration
-samples, RAM-only physical bias/reference collection, edit/storage/run exclusion during arming,
-USB disconnect, cancellation, late readiness failure, flight epoch reset and airborne disarm
-rejection. The positive physical transitions use PC fake readiness and exclusively virtual
-starts; MAIN still blocks physical activation. Logs: `.pio/arming_tests.log`,
-`.pio/arming_targeted.log`, `.pio/arming_final_usb.log`, `.pio/arming_MAIN.log`. Final USB checks
-also cover repeated disarm while the worker retains Closing ownership and explicit
-simulation-calibration bypass in status. No arming-controller firmware upload was
-performed in this step.
-
-Earlier shared runtime/sensor-source verification passed 25 C++ suites, eight Python integrations and
-the MAIN build. A PC fake acquisition device feeds raw IMU/pressure through HardwareSensorSource
-and the same FlightRuntime used by HIL and autonomous simulation; computed navigation/rules
-match HIL, hardware/virtual/raw provenance is passed to recording, and storage faults leave
-navigation running. Separate checks cover missing IMU with healthy barometer, independent
-freshness, timer rollover, invalid input and USB stale/absent sample rendering. The real driver
-now checks data-ready status; acquisition cadence/pairing and IMU operation still need board
-verification. The subsequent barometer check is recorded below. No upload was performed during
-that software-verification step. Logs:
-`.pio/shared_runtime_tests.log`, `.pio/shared_runtime_targeted.log`, `.pio/shared_runtime_MAIN.log`.
-
-The preceding storage verification also built FLASH_TEST, FLASH_DIRECTORY_TEST and
-CONFIG_STORE_TEST in the same PlatformIO environment. Host USB corruption and sticky
-no-revival/no-resize checks passed after that full suite. [The test guide](README.md) defines
-current coverage; case counts there supersede older counts from before the one-sector settings
-cut.
-
-After the calibration/mounting update, all 23 C++ suites and eight Python integrations passed
-again, along with the MAIN build. Tests compare a dynamic BODY trajectory with raw input under
-all six signed-axis mountings, including default +X, sensor-axis bias subtraction, invalid bias
-rejection, frozen per-run values, new-session isolation and calibrated-BODY bypass. The Hoppino
-reference and recording round-trip still pass. This is host/build verification; no board upload
-or calibration-sector writes were performed. Logs: `.pio/calibration_mounting_tests.log` and
-`.pio/calibration_mounting_MAIN.log`.
-
-The normal v2 whole-image FNV64 remains `0x6cff49998aaf6eea` after CRC/page-helper, current-only
-format and settings-erase simplifications. Header v1 support, optional summary/Legacy states,
-periodic checkpoint API and wrapped metadata support were removed. Current-format bytes,
-explicit extent ownership and commit ordering remain.
-
-The audit's global recovery obstruction was fixed: confirmed damaged recordings receive
-persistent directory status Corrupt, retaining their full extent while healthy flights remain
-downloadable. A dedicated host test covers 513 interrupted flag commits, remount/compaction,
-explicit release, and separation from incomplete tails/I/O/unsupported headers/directory damage.
-Real client/USB-over-pipes coverage rejects the damaged export and preserves all 9433 rows of
-another healthy export.
-
-Queued close/abort now return immediately even with a paused worker. Native flash ownership is
-retained until acknowledgment; config/new runs/downloads remain BUSY. Tests cover late failures
-after accepted close and final simulation status after another HIL recording begins. Terminal
-counters are read after acquire acknowledgment.
-
-Asynchronous-close/corruption scenarios have **software/build verification, not electrical
-power-cut qualification**. The subsequent sensor-only board log does not qualify those scenarios.
-Evidence includes
-`.pio/flight_corrupt_tests.log`, `.pio/flight_corrupt_usb_final.log`,
-`.pio/flight_corrupt_MAIN.log` and the diagnostic-mode build logs;
-`.pio/flash_async_tests_final.log`, `.pio/flash_async_handoff_checks.log`,
-`.pio/flash_async_usb_final.log` and `.pio/flash_async_MAIN_final.log` cover the prior step.
+The Qt app connected automatically (USB first, then paired Bluetooth), ran and displayed the
+onboard simulation over Bluetooth (5001 samples, no rejected frames), and downloaded and plotted
+a 5001-sample flight over USB whose CSV matched the reference byte for byte. No configuration was
+saved to the board during these checks: saves were tested against simulated flash on the PC. The
+packaged portable build ran offline on the development PC with Python and Qt removed from the
+environment; a separate Windows machine is not yet verified. Workflow and limits:
+[Desktop](../technical/DESKTOP.md).
 
 ## Sensor bring-up - 19 October 2026
 
@@ -322,7 +75,7 @@ workaround was added.
 
 ## Navigation reference
 
-The independent PC sensor replay and onboard HIL agree over 9433 original Hoppino frames
+*Observed on 18 October 2026.* The independent PC sensor replay and onboard HIL agree over 9433 original Hoppino frames
 (integration tolerances 1e-5 for z/vz/bias/acceleration, identical phases/ validity/baro
 updates). Changing recorded estimates/phases or converting hPa/Pa does not change computed
 results. There were 1603 fresh barometric corrections.
@@ -435,7 +188,7 @@ retained sequences 1 through 4.
 
 ## Autonomous profile and storage lifecycle on hardware
 
-The 25-second profile computes phases PAD=0, BOOST=5000, COAST=7000, DESCENT=13175 and
+*Observed on 18 October 2026.* The 25-second profile computes phases PAD=0, BOOST=5000, COAST=7000, DESCENT=13175 and
 LANDED=22180 ms; the saved one-rule plan starts virtual Pyro 1 at 13175 ms. All 5001 sample
 timestamps are spaced by 5 ms in a complete run.
 
@@ -704,21 +457,24 @@ Vibration, high spin rates and acceleration effects on the gyroscope are not cov
 
 ## Remaining work and limits
 
-Dated observations above retain the firmware/format used at the time. In particular, older
-v2/v3 log and default-mounting observations do not describe the current recording header v8,
-flight log v4 or the explicit orientation requirement. Current implementation is documented in [technical references](../README.md).
+This is the single list of open work: what is implemented but not yet qualified, and what is not
+implemented. Dated observations above retain the firmware/format used at the time; in
+particular, older v2/v3 log and default-mounting observations do not describe the current
+recording header v8, flight log v4 or the explicit orientation requirement. The current
+implementation is described in the [technical references](../README.md).
 
-| Area | Current qualification limit |
+| Area | Status and what is still open |
 |---|---|
-| Real sensors | Idle IMU cadence/pairing measured (476.2 Hz over 30 s, no gaps; see [Hardware](../HARDWARE.md#sensors)); gyroscope collection during a physical arming works on the board after the barometer timestamp fix, and a hand-driven bench flight reached DESCENT and LANDED with the real barometer (19 November 2026); a real flight profile is not yet measured |
-| Calibration and attitude | Per-arming gyro/reference collector, persistent mounting and six-face accelerometer calibration (persistence and UI) exist. The board still uses identity calibration values. Gravity alignment and tilt reading agree with a goniometer within about 3° in PAD (20 November 2026, above); gyroscope-only attitude (BOOST/COAST) tracks rotations within about 1-2°, with 3.5°/min drift after a hand-held arming; to repeat on a stand |
-| Physical outputs | Shared execution, preparation/release and physical simulation are implemented and host-tested; pyro firing with real igniters works on the board and does not reset the MCU. Servo mechanical behavior, interruption and load margins still need bench acceptance |
-| Driver timeout | Timeout disables driver readiness; recorder recovery cannot reinitialize it. Restart/reinitialization remains the current route |
+| Real sensors | Idle IMU cadence/pairing measured (476.2 Hz over 30 s, no gaps; see [Hardware](../HARDWARE.md#sensors)); gyroscope collection during a physical arming works on the board after the barometer timestamp fix, and a hand-driven bench flight reached DESCENT and LANDED with the real barometer (19 November 2026). A real flight profile is not yet measured |
+| Calibration and attitude | Per-arming gyro/reference collector, persistent mounting and six-face accelerometer calibration (persistence and UI) exist. The board still uses identity calibration values: run the calibration on the board. Gravity alignment and tilt reading agree with a goniometer within about 3° in PAD (20 November 2026, above); gyroscope-only attitude (BOOST/COAST) tracks rotations within about 1-2°, with 3.5°/min drift after a hand-held arming; to repeat on the bench stand. See [Navigation](../technical/NAVIGATION.md#calibration-and-mounting) |
+| Bistage flights | Normal/bistage selection, second-ignition detection (3 g, then 1.5 g held for 200 ms, as at launch), median/tilt ABORT and completion of active outputs are implemented. Thresholds and initial attitude still need qualification on hardware; invalid-data windows inhibit new starts without inventing a timeout. See [State machines](../technical/STATE_MACHINES.md#bistage-flight-machine) |
+| Physical outputs | Shared execution, preparation/release and physical simulation are implemented and host-tested; pyro firing with real igniters works on the board and does not reset the MCU. Servo PWM and mechanical end points, interruption, load and firing-current margins still need bench acceptance |
+| Airbrakes | Firmware contract, logging, graphical controls and log plots are implemented with a zero-output placeholder law. The chosen law must be implemented and qualified, and end points verified on hardware. See [Airbrakes](../technical/AIRBRAKES.md) |
+| Failure handling | No MCU watchdog yet. A driver timeout disables driver readiness and the recorder cannot reinitialize it: a restart is needed. Sensor outage and degraded estimates, stalled-worker limits and cleanup of a failed arming's reservation are not specified. See [Storage](../technical/STORAGE.md#failure-diagnostics-and-limits) |
 | Interrupted/old headers | Unsupported versions fail without migration; current layout v2 (device journal v1, directory v2, flight ring), recording header v8, sample blocks v4, configuration codec v3. A board with the previous layout needs `flights format` and its rules, settings and calibration saved again |
-| Scheduler and storage | Worker close is asynchronous, but a stalled worker retains ownership; idle preparation/settings/scans stay synchronous. The pre-launch history write at boost measured 64-75 ms on the Hoppino replay; growth erases with real sensors measured on the bench (up to 31 growths filling the ring, 476 Hz, no gaps; one 16 ms core 0 stall not yet located); worst-case timing in a real flight, watchdog and physical brownout coverage are not established. Ring growth/wrap-around/overwrite, 480 Hz load and stack depth measured on the bench on 19 November 2026 (see above): core 0 stack reduced to 5056 of 8192 bytes with a MSPLIM guard; USB traffic delays processing but loses no real IMU frames; one unexplained reboot |
-| Desktop and transports | Six-view USB/SPP app, IMU calibration, orientation, reset/format and power management exist. Separate-Windows qualification, BLE and negotiated binary export remain open |
+| Scheduler and storage | Worker close is asynchronous, but a stalled worker retains ownership; idle preparation/settings/scans stay synchronous. The pre-launch history write at boost measured 64-75 ms on the Hoppino replay; growth erases with real sensors measured on the bench (up to 31 growths filling the ring, 476 Hz, no gaps; one 16 ms core 0 stall not yet located); worst-case timing in a real flight and physical brownout coverage are not established. Ring growth/wrap-around/overwrite, 480 Hz load and stack depth measured on the bench on 19 November 2026 (see above): core 0 stack reduced to 5056 of 8192 bytes with a MSPLIM guard; USB traffic delays processing but loses no real IMU frames; one unexplained reboot |
+| Desktop and transports | Six-view USB/SPP app, IMU calibration, orientation, reset/format and power management exist. Not implemented: BLE, direct channel tests, telemetry/monitor subscription and receiver-negotiated binary export (frame, handshake and resume rules). See [USB/Bluetooth](../technical/USB.md#command-reference) |
+| Release | Reproducible physical flight acceptance, versioned board/firmware qualification and checks of the portable app on a separate Windows machine. Firmware updates from the app are not provided |
 
-The [documentation map](../README.md#remaining-work) owns the consolidated
-implementation/design backlog. These rows describe evidence limits, not another requirements list.
 Host NOR byte cuts model persistence protocols; a restart after a completed recording is not a
 physical interruption during program/erase. Normal-profile maxima are not worst-case guarantees.

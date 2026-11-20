@@ -84,8 +84,8 @@ Scripts use `with DeviceConnection(port) as device:` and blocking `device.reques
 desktop app uses the asynchronous API so serial IO never runs on the UI thread. From a terminal:
 
 ```powershell
-python tools/device_client.py --port COM9 --watch          # watch the link until Ctrl+C
-python tools/device_client.py --port COM9 --command "config show"
+python tools/device_client.py --port COMx --watch          # watch the link until Ctrl+C
+python tools/device_client.py --port COMx --command "config show"
 ```
 
 ## Command reference
