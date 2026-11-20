@@ -127,7 +127,8 @@ def part_b(client, record_seconds, folder):
     newest = client.request('flights list 0')
     result = dict(flash=flash, diag=diag, flight=newest)
     print(f'Recording: flight {newest.get("sequence")}, {flash.get("growths")} growth(s); longest erase {flash["erase"][2]/1000:.1f} ms, '
-          f'longest worker job {flash["worker"][2]/1000:.1f} ms, queue peak {flash["queue_peak"]}/{flash["queue_capacity"]}', flush=True)
+          f'longest worker job {flash["worker"][2]/1000:.1f} ms (preparation at arming {flash.get("prepare_us", 0)/1000:.0f} ms), '
+          f'queue peak {flash["queue_peak"]}/{flash["queue_capacity"]}', flush=True)
     show('flight', summary(diag))
     if newest.get('available'):
         metadata = download_flight.download(client, newest['sequence'], folder / f'flight_{newest["sequence"]}.csv')

@@ -23,6 +23,9 @@ public:
   bool invalidate();
   // A custom calibration that fails before any use: drop only it; identity returns if still allowed.
   bool discard();
+  // Testing only (`imu identity`, IMU_IDENTITY_TEST builds): forget the calibration and the identity
+  // revocation, as delivered; the next physical ARM stores the identity again.
+  bool restoreIdentityForTesting();
   bool identityAllowed() const { return identityAllowed_; }
   bool needsCalibration() const { return present_ && (record_.approval==ImuApproval::Invalid || (record_.identity && !identityAllowed_)); }
   bool present() const { return present_; }

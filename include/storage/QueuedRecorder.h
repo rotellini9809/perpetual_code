@@ -41,7 +41,8 @@ public:
   uint32_t backgroundDroppedSamples() const override { return dropped_.load(std::memory_order_relaxed); }
   uint32_t peakSamples() const { return peak_; } // Producer-owned.
   std::size_t directoryCount() const { return directoryCount_; } // Frozen while busy.
-  const timing::Statistics &workerTiming() const { return workerTiming_; } // Idle/acknowledged only.
+  const timing::Statistics &workerTiming() const { return workerTiming_; } // Idle/acknowledged only; recording jobs, not preparation.
+  uint32_t preparationUs() const { return preparationUs_; } // Asynchronous preparation (initial erase) of the last recording.
 private:
   enum class State : uint8_t { Idle, Preparing, Prepared, Running, Closing, Aborting, Closed, Fault };
   recovery::Configuration preparationConfig_;
@@ -74,6 +75,7 @@ private:
   uint32_t peak_ = 0;
   std::size_t directoryCount_ = 0;
   timing::Statistics workerTiming_;
+  uint32_t preparationUs_ = 0;
   RecordingSummary closingSummary_;
   RecordingRetention closingRetention_ = RecordingRetention::Keep;
 };

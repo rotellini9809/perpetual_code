@@ -32,7 +32,7 @@ bool QueuedRecorder::begin(const recovery::Configuration &config, const recovery
   if (!online()) return fail(RecorderError::NotInitialized);
   workerError_.store(RecorderError::None);
   if (!writer_.begin(config, limits, bytes, sensorMode, outputMode, frame, calibration)) return fail(writer_.error());
-  samples_.reset(); starts_.reset(); peak_ = 0; dropped_.store(0); workerTiming_ = {};
+  samples_.reset(); starts_.reset(); peak_ = 0; dropped_.store(0); workerTiming_ = {}; preparationUs_ = 0;
   current_ = *writer_.current(); directoryCount_ = writer_.directory().count();
   assignments_ = writer_.metadata()->starts; assignmentCount_ = writer_.metadata()->layout.slotCount;
   frontError_ = RecorderError::None; publish();
@@ -48,7 +48,7 @@ bool QueuedRecorder::beginAsync(const recovery::Configuration &config, const rec
   preparationConfig_=config; preparationLimits_=limits; preparationBytes_=bytes;
   preparationSensor_=sensorMode; preparationOutput_=outputMode; preparationFrame_=frame; preparationCalibration_=calibration;
   samples_.reset(); starts_.reset(); peak_=0; dropped_.store(0); saved_.store(0); full_.store(false);
-  current_={}; assignmentCount_=0; directoryCount_=writer_.directory().count(); workerTiming_={};
+  current_={}; assignmentCount_=0; directoryCount_=writer_.directory().count(); workerTiming_={}; preparationUs_=0;
   ready_.store(true); workerError_.store(RecorderError::None); frontError_=RecorderError::None;
   preparationOnly_=true;
   state_.store(State::Preparing,std::memory_order_release);
@@ -134,7 +134,8 @@ bool QueuedRecorder::poll() {
     const auto start=now();
     const bool ok=writer_.begin(preparationConfig_,preparationLimits_,preparationBytes_,preparationSensor_,preparationOutput_,preparationFrame_,preparationCalibration_);
     if (!ok) { fault(writer_.error(),start); return true; }
-    publish(); workerTiming_.add(uint32_t(now()-start));
+    // Kept apart from recording jobs: the initial erase runs before any sample exists.
+    publish(); preparationUs_=uint32_t(now()-start);
     State expected=State::Preparing;
     if (state_.compare_exchange_strong(expected,State::Prepared,std::memory_order_acq_rel)) return true;
     state=expected; // Cancellation arrived during erase: finish on this core.

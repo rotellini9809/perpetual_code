@@ -626,6 +626,24 @@ Three maxima looked alarming and are not flight data:
   be placed inside the flight. A stall that short is absorbed by the IMU FIFO either way (step
   maximum 1.52 ms).
 
+`diag` and `flights timing` were then changed so these figures describe only the run: loop and
+overrun figures stop at run end, overruns count from the first processed frame, and the initial
+erase is reported as `prepare_us`, outside `worker`.
+
+**Full ring with real sensors - 20 November 2026.** Same procedure with that firmware, but the
+board stayed on the bench in COAST for about 20 minutes before being lowered, so the recording
+filled the whole flight ring: flight 40, 31 growths, 254 block erases (longest 175 ms), the one
+older retained flight overwritten, 16.58 MB allocated. 464015 full-rate samples at **476.20 Hz
+with no gaps** and longest frame spacing 2165 us, then StorageFull at 985 s: the 108825 later
+samples were dropped as designed, and the flight continued without storage. DESCENT, detected when
+the board was finally lowered (1193 s), still fired servo 1 and its output start was recorded; the
+run closed by itself. Over the whole run (Part A included): 0 sequence gaps, **0 FIFO overruns**,
+worker maximum 172 ms (preparation at arming 1516 ms, separate), queue peak 81 of 128, step
+maximum 1.52 ms, core 0 stack 3800 bytes. The core 0 loop maximum, now inside the run only, was
+16.3 ms: a real stall whose source is not yet located (not a processing step; the IMU FIFO
+absorbed it). The altitude estimate drifted between +0.2 and +1.7 m over 16 minutes still
+(barometric drift).
+
 ## Remaining work and limits
 
 Dated observations above retain the firmware/format used at the time. In particular, older
@@ -639,7 +657,7 @@ flight log v4 or the explicit orientation requirement. Current implementation is
 | Physical outputs | Shared execution, preparation/release and physical simulation are implemented and host-tested; pyro firing with real igniters works on the board. Servo mechanical behavior, interruption and load margins still need bench acceptance |
 | Driver timeout | Timeout disables driver readiness; recorder recovery cannot reinitialize it. Restart/reinitialization remains the current route |
 | Interrupted/old headers | Unsupported versions fail without migration; current layout v2 (device journal v1, directory v2, flight ring), recording header v8, sample blocks v4, configuration codec v3. A board with the previous layout needs `flights format` and its rules, settings and calibration saved again |
-| Scheduler and storage | Worker close is asynchronous, but a stalled worker retains ownership; idle preparation/settings/scans stay synchronous. The pre-launch history write at boost measured 64-75 ms on the Hoppino replay; growth erases with real sensors measured on the bench (6 growths, 476 Hz, no gaps or drops); worst-case timing in a real flight, watchdog and physical brownout coverage are not established. Ring growth/wrap-around/overwrite, 480 Hz load and stack depth measured on the bench on 19 November 2026 (see above): core 0 stack reduced to 5056 of 8192 bytes with a MSPLIM guard; USB traffic delays processing but loses no real IMU frames; one unexplained reboot |
+| Scheduler and storage | Worker close is asynchronous, but a stalled worker retains ownership; idle preparation/settings/scans stay synchronous. The pre-launch history write at boost measured 64-75 ms on the Hoppino replay; growth erases with real sensors measured on the bench (up to 31 growths filling the ring, 476 Hz, no gaps; one 16 ms core 0 stall not yet located); worst-case timing in a real flight, watchdog and physical brownout coverage are not established. Ring growth/wrap-around/overwrite, 480 Hz load and stack depth measured on the bench on 19 November 2026 (see above): core 0 stack reduced to 5056 of 8192 bytes with a MSPLIM guard; USB traffic delays processing but loses no real IMU frames; one unexplained reboot |
 | Desktop and transports | Six-view USB/SPP app, IMU calibration, orientation, reset/format and power management exist. Separate-Windows qualification, BLE and negotiated binary export remain open |
 
 The [documentation map](../README.md#remaining-work) owns the consolidated

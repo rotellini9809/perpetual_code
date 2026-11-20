@@ -3,8 +3,8 @@
 #include <cstdint>
 
 // Board timing/stack evidence for `diag`. MAIN fills it; host tests may fill it by hand.
-// Loop and run figures restart at each run begin (arming, simulation or HIL), so after a
-// run they describe that run; stack high-water marks are since boot.
+// Loop and run figures restart at each run begin (arming, simulation or HIL) and stop when it
+// ends, so after a run they describe only that run; stack high-water marks are since boot.
 struct StackUse {
   uint32_t capacityBytes = 0, usedBytes = 0;
   bool exhausted = false; // The lowest painted word was overwritten: usage reached the limit.
@@ -18,7 +18,7 @@ struct BoardDiagnostics {
   bool runActive = false;
   timing::Statistics step, compute, storage;
   uint32_t overBudget = 0, frameDtMinUs = 0, frameDtMaxUs = 0, sequenceGaps = 0;
-  uint32_t fifoOverruns = 0; // IMU FIFO overruns since the run began.
+  uint32_t fifoOverruns = 0; // IMU FIFO overruns from the run's first processed frame to its end.
   const char *resetReason = "unknown"; // Cause of the last chip reset, read at boot.
   uint32_t resetChipBits = 0, resetWatchdogBits = 0; // Raw POWMAN CHIP_RESET and WATCHDOG REASON.
   // A fault before the last reset (stack limit or any HardFault), kept across the reboot it caused.

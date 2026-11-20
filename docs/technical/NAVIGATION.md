@@ -87,6 +87,7 @@ in the device journal ([format](STORAGE_FORMAT.md#device-journal-v1-block-0)).
 | `imu capture <axis>` | Capture one face, `+X` … `-Z`: that sensor axis must point up |
 | `imu verify` | Start a verification: new `+X` and `+Y` captures with the saved coefficients |
 | `imu cancel` | Abandon the procedure |
+| `imu identity` | **Bench test builds only** (`-D IMU_IDENTITY_TEST` in `platformio.ini`, off by default; `imu status` then reports `identity_test_build`): disarmed, forgets the calibration and a revoked identity, as delivered. Never fly a test build |
 
 Six accepted faces save a new revision that **requires verification**; a successful verification
 approves it. A failed attempt saves nothing. Each capture needs at least 240 fresh samples over two

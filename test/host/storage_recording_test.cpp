@@ -345,6 +345,7 @@ void testAsyncPreparation() {
   runner.paused.store(false); while(q.preparing()) std::this_thread::yield(); runner.pause();
   assert(q.busy() && !q.active() && !q.current() && q.activatePrepared() && q.active());
   assert(q.current()->sequence==1);
+  assert(q.workerTiming().count==0); // The initial erase is preparation (preparationUs), not a recording job.
   assert(q.finish(true,RecordingSummary{},RecordingRetention::Discard)); drain();
   // Cancellation before the worker runs never starts flash preparation.
   const auto cancelledBefore=flash.operations.load(); assert(begin()); q.abort(); drain();

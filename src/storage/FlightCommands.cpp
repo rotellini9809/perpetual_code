@@ -65,7 +65,8 @@ bool FlightCommands::dispatch(const char *command, const char *arguments, bool h
              static_cast<unsigned long>(recorder_.overwrittenFlights()));
     if (worker_) {
       protocol::appendTiming(data, "worker", worker_->workerTiming());
-      data.add(",\"queue_peak\":%lu,\"queue_capacity\":%lu", static_cast<unsigned long>(worker_->peakSamples()), static_cast<unsigned long>(worker_->sampleQueueCapacity()));
+      data.add(",\"prepare_us\":%lu,\"queue_peak\":%lu,\"queue_capacity\":%lu", static_cast<unsigned long>(worker_->preparationUs()),
+               static_cast<unsigned long>(worker_->peakSamples()), static_cast<unsigned long>(worker_->sampleQueueCapacity()));
     }
     return finish();
   }

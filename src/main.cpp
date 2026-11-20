@@ -161,7 +161,7 @@ const char *bluetoothQuery = nullptr;
 std::size_t bluetoothQueryOffset = 0;
 uint32_t lastHardwarePollUs = 0, lastBaroMs = 0, lastImuMs = 0;
 BoardDiagnostics diagnostics;
-uint32_t lastLoopUs = 0, runFifoBase = 0;
+uint32_t lastLoopUs = 0, runFifoBase = 0, runFifoEnd = 0;
 bool runWasActive = false;
 const flight::ArmingController *lastRun = nullptr; // Physical, simulation or HIL owner of the last run.
 uint64_t lastBaroSequence = 0, lastImuSequence = 0;
@@ -281,7 +281,7 @@ void refreshDiagnostics(BoardDiagnostics &d) {
   d.step = t.step; d.compute = t.compute; d.storage = t.storage; d.overBudget = t.overBudget;
   d.frameDtMinUs = t.frameDtMinUs; d.frameDtMaxUs = t.frameDtMaxUs; d.sequenceGaps = t.sequenceGaps;
   // Simulation and HIL do not read the IMU, so its FIFO overruns only mean something for a physical run.
-  d.fifoOverruns = lastRun == &physicalFlight ? sensorDevice.imuFifoOverruns() - runFifoBase : 0;
+  d.fifoOverruns = lastRun == &physicalFlight ? (runWasActive ? sensorDevice.imuFifoOverruns() : runFifoEnd) - runFifoBase : 0;
 }
 
 void setup() {
@@ -338,7 +338,9 @@ void setup() {
 
 void loop() {
   const uint32_t loopUs = micros();
-  if (lastLoopUs) {
+  // Loop evidence belongs to the run: it stops at run end, so commands after landing
+  // (flight list, download) never show up as flight stalls. Before any run it covers idle.
+  if (lastLoopUs && (runWasActive || !lastRun)) {
     const uint32_t period = loopUs - lastLoopUs; diagnostics.loop.add(period);
     if (period > diagnostics.loopPeriodUs) ++diagnostics.loopOverPeriod;
   }
@@ -406,6 +408,15 @@ void loop() {
     diagnostics.loop = {}; diagnostics.loopOverPeriod = 0; runFifoBase = sensorDevice.imuFifoOverruns(); lastRun = owner;
     diagnostics.run = owner == &physicalFlight ? "physical" : owner == &standaloneSimulation.controller() ? "simulation" : "hil";
   }
+  if (owner == &physicalFlight) {
+    // The IMU is not read while the recording is prepared (initial erase on core 1), and the
+    // overrun this leaves is detected by the first read after it. Count from the first processed
+    // frame, the one that re-anchors the timing; later overruns are real losses.
+    const auto state = physicalFlight.state();
+    if (state == flight::ArmingState::Preparing || (state == flight::ArmingState::Armed && physicalFlight.runtime().timing().step.count <= 1))
+      runFifoBase = sensorDevice.imuFifoOverruns();
+  }
+  if (!owner && runWasActive) runFifoEnd = sensorDevice.imuFifoOverruns(); // The run ends: freeze its count.
   runWasActive = owner != nullptr;
   commandStatus.armingState = owner ? flight::armingStateName(owner->state()) : "disarmed";
   commandStatus.flightMode = owner ? flight::flightModeName(owner->mode()) : "none";

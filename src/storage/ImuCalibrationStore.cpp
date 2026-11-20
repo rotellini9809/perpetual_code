@@ -84,6 +84,13 @@ bool ImuCalibrationStore::discard() {
   identity.revision=record_.revision==UINT32_MAX ? record_.revision : record_.revision+1;
   return save(identity);
 }
+bool ImuCalibrationStore::restoreIdentityForTesting() {
+  // A journal compaction that drops only the calibration and the revocation: settings and rules stay.
+  const uint8_t keep=uint8_t(0xFEu & ~(1u<<DeviceJournal::ImuCalibration) & ~(1u<<DeviceJournal::IdentityRevoked));
+  if (!journal_.reset(keep)) return false;
+  load();
+  return policyReadable_ && identityAllowed_ && !present_;
+}
 bool ImuCalibrationStore::invalidate() {
   const bool saved=approve(ImuApproval::Invalid);
   if (present_) record_.approval=ImuApproval::Invalid;

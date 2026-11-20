@@ -35,12 +35,18 @@ bool ArmingCommands::dispatch(const char *command, const char *arguments, bool h
       for (unsigned i=0;i<6;++i) if (t.is(1,faces[i])) face=i;
       error=physical_.captureImuFace(face);
     } else if (t.is(0,"cancel") && t.count==1) physical_.cancelImuCalibration();
+#ifdef IMU_IDENTITY_TEST
+    else if (t.is(0,"identity") && t.count==1) error=physical_.restoreImuIdentityForTesting(); // Test builds only.
+#endif
     else error="INVALID_ARGUMENT";
     const auto &c=physical_.imuCalibration(); const auto *store=physical_.imuStore();
     data.add(R"(,"imu_calibration_state":"%s","imu_calibration_reason":"%s","active":%s,"collecting":%s,"verification":%s,"face":%u,"face_mask":%u,"samples":%u,"target":%u,"last_error":"%s","window_error":"%s","norm_mps2":%.6g,"noise_mps2":%.6g,"revision":%lu)",
       physical_.imuCalibrationState(),physical_.imuCalibrationReason(),c.active()?"true":"false",c.collecting()?"true":"false",
       c.verification()?"true":"false",c.face(),c.mask(),c.samples(),flight::ImuCalibration::TargetSamples,physical_.imuError(),c.error(),
       double(c.norm()),double(c.noise()),static_cast<unsigned long>(store && store->present()?store->record().revision:0));
+#ifdef IMU_IDENTITY_TEST
+    data.add(R"(,"identity_test_build":true)"); // This firmware can bypass the identity revocation.
+#endif
     data.add(R"(,"identity_allowed":%s,"identity_active":%s)",
         store && store->identityAllowed() ? "true" : "false",
         store && (store->present() ? store->record().identity : store->identityAllowed()) ? "true" : "false");

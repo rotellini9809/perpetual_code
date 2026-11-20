@@ -190,7 +190,8 @@ host, BOOST is detected at 20.19 s and LANDED at 56.36 s, and a recording saves 
 (`PROFILE_REQUIRES_NORMAL_MACHINE` otherwise). The half-speed descent is a slower descent,
 not a measured flight: use it for load, storage growth and timing, not for navigation accuracy.
 After the run `sim timing` adds `frame_dt_us` and `sequence_gaps`, `flights timing` reports
-`growths` and `overwritten_flights`, and `diag` gives stack and loop maxima.
+`growths`, `overwritten_flights`, `worker` (recording jobs only) and `prepare_us` (the initial
+erase of an asynchronously prepared recording), and `diag` gives stack and loop maxima.
 
 Ring wrap-around and overwrite on the board:
 

@@ -237,6 +237,16 @@ const char *ArmingController::imuCalibrationReason() const {
   if (imuStore_->record().approval==storage::ImuApproval::InUse && !approvalReserved_) return "FLIGHT_OR_RESET";
   return !std::strcmp(imuCalibrationState(),"verified") ? "None" : "NOT_VERIFIED";
 }
+const char *ArmingController::restoreImuIdentityForTesting() {
+  if (!imuStore_) return "IMU_CALIBRATION_UNAVAILABLE";
+  if (!config_.storageReady()) return "STORAGE_NOT_READY";
+  if (active() || state()!=ArmingState::Disarmed || config_.runLocked() || runtime_.blockedByOtherRun() ||
+      (recorder_ && recorder_->busy()) || (outputs_ && (outputs_->owner() || outputs_->hasPreview()))) return "BUSY";
+  if (!config_.disarmed()) return "ARMED";
+  if (!imuStore_->restoreIdentityForTesting()) return "IMU_CALIBRATION_IO";
+  boostConsumed_=approvalReserved_=false; imuError_="None";
+  return nullptr;
+}
 const char *ArmingController::beginImuCalibration(sensors::SensorSource &source,bool verify) {
   if (!imuStore_) return "IMU_CALIBRATION_UNAVAILABLE";
   if (!config_.storageReady()) return "STORAGE_NOT_READY";

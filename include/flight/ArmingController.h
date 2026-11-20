@@ -67,6 +67,7 @@ public:
   const char *beginImuCalibration(sensors::SensorSource &source, bool verify);
   const char *captureImuFace(unsigned face);
   void cancelImuCalibration();
+  const char *restoreImuIdentityForTesting(); // `imu identity`, IMU_IDENTITY_TEST builds only.
   const ImuCalibration &imuCalibration() const { return imuCalibration_; }
   const storage::ImuCalibrationStore *imuStore() const { return imuStore_; }
   void maintainImuApproval() { settleImuApproval(); }

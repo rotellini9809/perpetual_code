@@ -193,6 +193,11 @@ void run() {
   assert(!store.load(out, limits) && store.error() == ConfigError::Missing && !store.loadOrientation(axis));
   assert(store.loadAirbrakes(enabled) && !enabled && store.loadStateMachine(loaded) && !loaded.bistage);
   ImuCalibrationStore afterReset(flash); assert(afterReset.load() && afterReset.record().revision == 3 && !afterReset.identityAllowed());
+  // Test-only identity restore: calibration and revocation go, settings stay.
+  assert(store.saveOrientation(2, true) && afterReset.restoreIdentityForTesting());
+  assert(!afterReset.present() && afterReset.identityAllowed() && !afterReset.needsCalibration());
+  ImuCalibrationStore restored(flash); assert(!restored.load() && restored.identityAllowed() && !restored.present());
+  assert(store.loadOrientation(axis) && axis == 2);
   neighbors(flash);
   // Maximum current structural payload fits one journal record.
   Configuration maximum;
