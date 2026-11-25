@@ -10,13 +10,13 @@ uint8_t OutputExecutor::connectedPyros(uint8_t mask) {
   return connected;
 }
 uint8_t OutputExecutor::preparedServos(const recovery::Configuration &config) const {
-  uint8_t valid=0;
+  uint8_t matching=0;
   for (unsigned i=0;i<recovery::ChannelCount;++i) {
-    const auto &s=config.servos[i];
-    if (((preparedMask_ & ~previewMask_) & (1u<<i)) && s.calibrated && s.initialUs==preparedInitial_[i] && s.finalUs==preparedFinal_[i])
-      valid |= uint8_t(1u<<i);
+    const auto &servo=config.servos[i];
+    if (((preparedMask_ & ~previewMask_) & (1u<<i)) && servo.calibrated && servo.initialUs==preparedInitial_[i] && servo.finalUs==preparedFinal_[i])
+      matching |= uint8_t(1u<<i);
   }
-  return valid;
+  return matching;
 }
 void OutputExecutor::releasePrepared() {
   for (uint8_t i=0;i<recovery::ChannelCount;++i) if (preparedMask_ & (1u<<i)) hardware_.releaseServo(i+1);
@@ -48,27 +48,27 @@ void OutputExecutor::reconcile(const recovery::Configuration *config) {
   if (config)
     for (std::size_t i=0;i<config->ruleCount;++i)
       for (std::size_t j=0;j<config->rules[i].assignmentCount;++j) {
-        const auto &a=config->rules[i].assignments[j];
-        if (a.kind==recovery::OutputKind::Servo) assigned |= uint8_t(1u<<(a.channel-1));
+        const auto &assignment=config->rules[i].assignments[j];
+        if (assignment.kind==recovery::OutputKind::Servo) assigned |= uint8_t(1u<<(assignment.channel-1));
       }
-  const uint8_t valid=uint8_t(previewMask_ | (config ? assigned & preparedServos(*config) : 0));
+  const uint8_t keep=uint8_t(previewMask_ | (config ? assigned & preparedServos(*config) : 0));
   for (uint8_t i=0;i<recovery::ChannelCount;++i)
-    if ((preparedMask_ & ~valid) & (1u<<i)) hardware_.releaseServo(i+1);
-  preparedMask_ &= valid;
+    if ((preparedMask_ & ~keep) & (1u<<i)) hardware_.releaseServo(i+1);
+  preparedMask_ &= keep;
 }
 const char *OutputExecutor::prepare(const recovery::Configuration &config, uint8_t mask) {
   if (owner_ || previewMask_) return "BUSY";
   if (!clock_) return "TIMING_UNAVAILABLE";
   for (unsigned i=0;i<recovery::ChannelCount;++i)
     if ((mask & (1u<<i)) && !config.servos[i].calibrated) return "SERVOS_NOT_CONFIGURED";
-  const auto original=preparedServos(config);
+  const auto alreadyPrepared=preparedServos(config);
   for (uint8_t i=0;i<recovery::ChannelCount;++i) {
     const uint8_t bit=uint8_t(1u<<i);
-    if (!(mask & bit) || (original & bit)) continue;
+    if (!(mask & bit) || (alreadyPrepared & bit)) continue;
     if (!hardware_.servo(i+1,config.servos[i].initialUs)) {
       for (uint8_t j=0;j<recovery::ChannelCount;++j)
-        if ((preparedMask_ & ~original) & (1u<<j)) hardware_.releaseServo(j+1);
-      hardware_.releaseServo(i+1); preparedMask_=original;
+        if ((preparedMask_ & ~alreadyPrepared) & (1u<<j)) hardware_.releaseServo(j+1);
+      hardware_.releaseServo(i+1); preparedMask_=alreadyPrepared;
       return "SERVO_PREPARATION_FAILED";
     }
     preparedInitial_[i]=config.servos[i].initialUs; preparedFinal_[i]=config.servos[i].finalUs;
@@ -81,39 +81,39 @@ const char *OutputExecutor::begin(const recovery::Configuration &config, uint64_
   if (!clock_) return "TIMING_UNAVAILABLE";
   if (!owner) return "INVALID_ARGUMENT";
   if (config.airbrakes.channelMask>15) return "INVALID_ARGUMENT";
-  const uint8_t airMask=enableAirbrakes ? config.airbrakes.channelMask : 0;
-  uint8_t servos=airMask, pyros=0;
+  const uint8_t airbrakeMask=enableAirbrakes ? config.airbrakes.channelMask : 0;
+  uint8_t servos=airbrakeMask, pyros=0;
   for (std::size_t i=0;i<config.ruleCount;++i)
     for (std::size_t j=0;j<config.rules[i].assignmentCount;++j) {
-      const auto &a=config.rules[i].assignments[j];
-      if (a.channel<1 || a.channel>recovery::ChannelCount ||
-          (a.kind!=recovery::OutputKind::Pyro && a.kind!=recovery::OutputKind::Servo)) return "INVALID_ARGUMENT";
-      if (a.kind==recovery::OutputKind::Servo && (config.airbrakes.channelMask & (1u<<(a.channel-1)))) return "INVALID_ARGUMENT";
-      (a.kind==recovery::OutputKind::Pyro ? pyros : servos) |= uint8_t(1u<<(a.channel-1));
+      const auto &assignment=config.rules[i].assignments[j];
+      if (assignment.channel<1 || assignment.channel>recovery::ChannelCount ||
+          (assignment.kind!=recovery::OutputKind::Pyro && assignment.kind!=recovery::OutputKind::Servo)) return "INVALID_ARGUMENT";
+      if (assignment.kind==recovery::OutputKind::Servo && (config.airbrakes.channelMask & (1u<<(assignment.channel-1)))) return "INVALID_ARGUMENT";
+      (assignment.kind==recovery::OutputKind::Pyro ? pyros : servos) |= uint8_t(1u<<(assignment.channel-1));
     }
   for (unsigned i=0;i<recovery::ChannelCount;++i)
     if ((servos & (1u<<i)) && !config.servos[i].calibrated) return "SERVOS_NOT_CONFIGURED";
   if (requirePrepared && (servos & ~preparedServos(config))) return "SERVOS_NOT_PREPARED";
   if (!requirePrepared) if (const auto error=prepare(config,servos)) return error;
-  owner_=owner; airbrakeMask_=airMask; allowedPyros_=pyros; servoMask_=servos;
+  owner_=owner; airbrakeMask_=airbrakeMask; allowedPyros_=pyros; servoMask_=servos;
   preparedMask_ &= uint8_t(~servos); // Transfer held PWM to the run without detach/reposition.
-  requestedPyros_=requestedServos_=pendingPyros_=highPyros_=0; enabled_=false; startCount_=0;
+  requestedPyros_=requestedServos_=pendingPyros_=firingPyros_=0; pyroEnabled_=false; reportedStartCount_=0;
   hardware_.pyros(false,0);
   for (uint8_t i=0;i<recovery::ChannelCount;++i) {
-    initialUs_[i]=config.servos[i].initialUs; finalUs_[i]=config.servos[i].finalUs;
+    runInitialUs_[i]=config.servos[i].initialUs; runFinalUs_[i]=config.servos[i].finalUs;
   }
-  epochUs_=clock_(); // Exclude servo preparation, as the sensor source starts next.
+  runStartUs_=clock_(); // Exclude servo preparation, as the sensor source starts next.
   return nullptr;
 }
 void OutputExecutor::report(recovery::VirtualStart start, uint32_t now) {
-  start.timeMs=uint32_t(now-epochUs_)/1000;
-  if (startCount_<started_.size()) started_[startCount_++]=start;
+  start.timeMs=uint32_t(now-runStartUs_)/1000;
+  if (reportedStartCount_<reportedStarts_.size()) reportedStarts_[reportedStartCount_++]=start;
 }
 bool OutputExecutor::submit(const recovery::VirtualStart &start) {
   if (!owner_ || start.channel<1 || start.channel>recovery::ChannelCount) return false;
   const auto i=start.channel-1; const uint8_t bit=uint8_t(1u<<i);
   if (start.kind==recovery::OutputKind::Servo) {
-    if (!(servoMask_ & bit) || (airbrakeMask_ & bit) || (requestedServos_ & bit) || !hardware_.servo(start.channel,finalUs_[i])) return false;
+    if (!(servoMask_ & bit) || (airbrakeMask_ & bit) || (requestedServos_ & bit) || !hardware_.servo(start.channel,runFinalUs_[i])) return false;
     requestedServos_ |= bit; report(start,clock_()); return true;
   }
   if (start.kind!=recovery::OutputKind::Pyro || !(allowedPyros_ & bit) || (requestedPyros_ & bit)) return false;
@@ -123,13 +123,13 @@ bool OutputExecutor::submit(const recovery::VirtualStart &start) {
 bool OutputExecutor::airbrakes(uint64_t owner,const std::array<float,4> &opening) {
   if (!owner_ || owner!=owner_) return false;
   for (unsigned i=0;i<4;++i) if ((airbrakeMask_&(1u<<i)) && (!std::isfinite(opening[i]) || opening[i]<0 || opening[i]>1)) return false;
-  bool ok=true;
+  bool allWritten=true;
   for (uint8_t i=0;i<4;++i) if (airbrakeMask_&(1u<<i)) {
-    const auto pulse=uint16_t(std::lround(initialUs_[i]+opening[i]*(int(finalUs_[i])-int(initialUs_[i]))));
+    const auto pulse=uint16_t(std::lround(runInitialUs_[i]+opening[i]*(int(runFinalUs_[i])-int(runInitialUs_[i]))));
     // Always attempt all channels, including after an individual write failure.
-    if (!hardware_.servo(i+1,pulse)) ok=false;
+    if (!hardware_.servo(i+1,pulse)) allWritten=false;
   }
-  return ok;
+  return allWritten;
 }
 void OutputExecutor::inhibit(uint64_t owner) {
   if (owner_==owner) { pendingPyros_=0; allowedPyros_=0; }
@@ -138,25 +138,25 @@ void OutputExecutor::poll(bool allowNewStarts) {
   if (!owner_) return;
   const auto now=clock_();
   for (unsigned i=0;i<recovery::ChannelCount;++i)
-    if ((highPyros_ & (1u<<i)) && uint32_t(now-pulseUs_[i])>=recovery::PyroPulseMs*1000)
-      highPyros_ &= uint8_t(~(1u<<i));
-  if (allowNewStarts && pendingPyros_ && !enabled_) { enabled_=true; enableUs_=now; }
-  if (allowNewStarts && enabled_ && uint32_t(now-enableUs_)>=recovery::PyroEnableSettleMs*1000) {
+    if ((firingPyros_ & (1u<<i)) && uint32_t(now-pulseStartUs_[i])>=recovery::PyroPulseMs*1000)
+      firingPyros_ &= uint8_t(~(1u<<i));
+  if (allowNewStarts && pendingPyros_ && !pyroEnabled_) { pyroEnabled_=true; pyroEnabledAtUs_=now; }
+  if (allowNewStarts && pyroEnabled_ && uint32_t(now-pyroEnabledAtUs_)>=recovery::PyroEnableSettleMs*1000) {
     for (unsigned i=0;i<recovery::ChannelCount;++i) {
       const uint8_t bit=uint8_t(1u<<i);
       if (!(pendingPyros_ & bit)) continue;
-      highPyros_ |= bit; pendingPyros_ &= uint8_t(~bit); pulseUs_[i]=now;
+      firingPyros_ |= bit; pendingPyros_ &= uint8_t(~bit); pulseStartUs_[i]=now;
       report(pyroStarts_[i],now);
     }
   }
-  if (!pendingPyros_ && !highPyros_) enabled_=false;
-  hardware_.pyros(enabled_,highPyros_);
+  if (!pendingPyros_ && !firingPyros_) pyroEnabled_=false;
+  hardware_.pyros(pyroEnabled_,firingPyros_);
 }
 std::size_t OutputExecutor::drain(recovery::VirtualStart *starts, std::size_t capacity) {
-  const auto count=startCount_<capacity ? startCount_ : capacity;
-  for (std::size_t i=0;i<count;++i) starts[i]=started_[i];
-  for (std::size_t i=count;i<startCount_;++i) started_[i-count]=started_[i];
-  startCount_-=count; return count;
+  const auto count=reportedStartCount_<capacity ? reportedStartCount_ : capacity;
+  for (std::size_t i=0;i<count;++i) starts[i]=reportedStarts_[i];
+  for (std::size_t i=count;i<reportedStartCount_;++i) reportedStarts_[i-count]=reportedStarts_[i];
+  reportedStartCount_-=count; return count;
 }
 unsigned OutputExecutor::stop(uint64_t owner) {
   if (!owner_ || owner!=owner_) return 0;
@@ -165,12 +165,12 @@ unsigned OutputExecutor::stop(uint64_t owner) {
   hardware_.pyros(false,0);
   for (uint8_t i=0;i<recovery::ChannelCount;++i) if (servoMask_ & (1u<<i)) {
     if (airbrakeMask_ & (1u<<i)) {
-      if (hardware_.servo(i+1,initialUs_[i])) {
-        preparedMask_ |= uint8_t(1u<<i); preparedInitial_[i]=initialUs_[i]; preparedFinal_[i]=finalUs_[i];
+      if (hardware_.servo(i+1,runInitialUs_[i])) {
+        preparedMask_ |= uint8_t(1u<<i); preparedInitial_[i]=runInitialUs_[i]; preparedFinal_[i]=runFinalUs_[i];
       } else hardware_.releaseServo(i+1);
     } else hardware_.releaseServo(i+1);
   }
-  owner_=0; airbrakeMask_=0; servoMask_=pendingPyros_=highPyros_=0; enabled_=false;
+  owner_=0; airbrakeMask_=0; servoMask_=pendingPyros_=firingPyros_=0; pyroEnabled_=false;
   return pending;
 }
 }

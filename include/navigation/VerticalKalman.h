@@ -18,8 +18,8 @@ public:
   float covariance(unsigned row, unsigned col) const { return row < 3 && col < 3 ? p_[row][col] : 0; }
 private:
   bool correct(unsigned observed, float value, float variance);
-  float x_[3] = {};
-  float p_[3][3] = {};
+  float x_[3] = {}; // State: altitude [m], vertical velocity [m/s], acceleration bias [m/s^2].
+  float p_[3][3] = {}; // State covariance.
   float acceleration_ = 0;
 };
 }

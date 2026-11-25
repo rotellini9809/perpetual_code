@@ -4,8 +4,8 @@
 #include <cstring>
 
 namespace flight {
-const char *blockerName(ArmBlocker b) {
-  switch (b) {
+const char *blockerName(ArmBlocker blocker) {
+  switch (blocker) {
     case ArmBlocker::Busy: return "BUSY";
     case ArmBlocker::DraftActive: return "DRAFT_ACTIVE";
     case ArmBlocker::ConfigInvalid: return "CONFIG_INVALID";
@@ -31,8 +31,8 @@ const char *Preflight::error() const {
     if (has(ArmBlocker(i))) return blockerName(ArmBlocker(i));
   return nullptr;
 }
-const char *armingStateName(ArmingState s) {
-  switch (s) {
+const char *armingStateName(ArmingState state) {
+  switch (state) {
     case ArmingState::Disarmed: return "disarmed";
     case ArmingState::Arming: return "arming";
     case ArmingState::Preparing: return "preparing";
@@ -41,7 +41,7 @@ const char *armingStateName(ArmingState s) {
   }
   return "unknown";
 }
-const char *flightModeName(FlightMode m) { return m == FlightMode::Simulation ? "simulation" : "physical"; }
+const char *flightModeName(FlightMode mode) { return mode == FlightMode::Simulation ? "simulation" : "physical"; }
 const char *ArmingController::checkPyroContinuity(uint8_t &configured, uint8_t &connected) const {
   configured = connected = 0;
   if (state() != ArmingState::Disarmed || config_.runLocked() || runtime_.blockedByOtherRun() ||
@@ -53,100 +53,100 @@ const char *ArmingController::checkPyroContinuity(uint8_t &configured, uint8_t &
   if (!outputs_) return "HARDWARE_CHECKS_UNAVAILABLE";
   for (std::size_t i = 0; i < plan->ruleCount; ++i)
     for (std::size_t j = 0; j < plan->rules[i].assignmentCount; ++j) {
-      const auto &a = plan->rules[i].assignments[j];
-      if (a.kind == recovery::OutputKind::Pyro) configured |= uint8_t(1u << (a.channel - 1));
+      const auto &assignment = plan->rules[i].assignments[j];
+      if (assignment.kind == recovery::OutputKind::Pyro) configured |= uint8_t(1u << (assignment.channel - 1));
     }
   connected = outputs_->connectedPyros(configured);
   return nullptr;
 }
 Preflight ArmingController::preflight(FlightMode mode, bool record, PhysicalChecks *checks, storage::OutputMode outputMode) const {
   if (mode == FlightMode::Physical) outputMode = storage::OutputMode::Physical;
-  Preflight p;
-  p.imuCalibrationState=imuCalibrationState(); p.imuCalibrationReason=imuCalibrationReason();
+  Preflight report;
+  report.imuCalibrationState=imuCalibrationState(); report.imuCalibrationReason=imuCalibrationReason();
   if (state() != ArmingState::Disarmed || config_.runLocked() || runtime_.blockedByOtherRun() || (recorder_ && recorder_->busy()) ||
       (outputs_ && (outputs_->hasPreview() || (outputMode == storage::OutputMode::Physical && outputs_->owner())))) {
-    p.block(ArmBlocker::Busy); return p; // Never touch hardware while another owner is active.
+    report.block(ArmBlocker::Busy); return report; // Never touch hardware while another owner is active.
   }
-  if (config_.hasDraft()) p.block(ArmBlocker::DraftActive);
-  if (!config_.configValid()) p.block(ArmBlocker::ConfigInvalid);
-  if (mode==FlightMode::Physical && !config_.orientationReady()) p.block(ArmBlocker::OrientationNotReady);
+  if (config_.hasDraft()) report.block(ArmBlocker::DraftActive);
+  if (!config_.configValid()) report.block(ArmBlocker::ConfigInvalid);
+  if (mode==FlightMode::Physical && !config_.orientationReady()) report.block(ArmBlocker::OrientationNotReady);
   if (mode==FlightMode::Physical) {
-    if (!imuStore_ || (!imuStore_->present() && !imuStore_->identityAllowed()) || imuStore_->needsCalibration()) p.block(ArmBlocker::ImuCalibrationMissing);
-    else if (imuStore_->present() && !imuStore_->verified() && !approvalReserved_) p.block(ArmBlocker::ImuVerificationRequired);
+    if (!imuStore_ || (!imuStore_->present() && !imuStore_->identityAllowed()) || imuStore_->needsCalibration()) report.block(ArmBlocker::ImuCalibrationMissing);
+    else if (imuStore_->present() && !imuStore_->verified() && !approvalReserved_) report.block(ArmBlocker::ImuVerificationRequired);
   }
-  if (!config_.disarmed()) p.block(ArmBlocker::NotDisarmed);
-  if ((record || mode == FlightMode::Physical) && (!recorder_ || !recorder_->initialized())) p.block(ArmBlocker::StorageNotReady);
+  if (!config_.disarmed()) report.block(ArmBlocker::NotDisarmed);
+  if ((record || mode == FlightMode::Physical) && (!recorder_ || !recorder_->initialized())) report.block(ArmBlocker::StorageNotReady);
   if (mode == FlightMode::Simulation && outputMode == storage::OutputMode::Virtual) {
-    return p;
+    return report;
   }
-  if (!clock_) p.block(ArmBlocker::TimingUnavailable);
+  if (!clock_) report.block(ArmBlocker::TimingUnavailable);
   if (outputMode == storage::OutputMode::Physical) {
-    if (!outputs_) p.block(ArmBlocker::HardwareChecksUnavailable);
-    else if (!outputs_->timingAvailable()) p.block(ArmBlocker::TimingUnavailable);
+    if (!outputs_) report.block(ArmBlocker::HardwareChecksUnavailable);
+    else if (!outputs_->timingAvailable()) report.block(ArmBlocker::TimingUnavailable);
   }
   uint8_t pyros = 0, servos = 0;
   if (const auto *config = config_.applied()) {
     servos=config_.airbrakesEnabled() ? config->airbrakes.channelMask : 0;
     for (std::size_t i = 0; i < config->ruleCount; ++i)
       for (std::size_t j = 0; j < config->rules[i].assignmentCount; ++j) {
-        const auto &a = config->rules[i].assignments[j];
-        (a.kind == recovery::OutputKind::Pyro ? pyros : servos) |= uint8_t(1u << (a.channel-1));
+        const auto &assignment = config->rules[i].assignments[j];
+        (assignment.kind == recovery::OutputKind::Pyro ? pyros : servos) |= uint8_t(1u << (assignment.channel-1));
       }
     for (std::size_t i = 0; i < recovery::ChannelCount; ++i)
       if ((servos & (1u << i)) && !config->servos[i].calibrated)
-        p.unconfiguredServos |= uint8_t(1u << i);
-    if (outputs_) p.preparedServos = uint8_t(servos & outputs_->preparedServos(*config));
+        report.unconfiguredServos |= uint8_t(1u << i);
+    if (outputs_) report.preparedServos = uint8_t(servos & outputs_->preparedServos(*config));
   }
-  if (p.unconfiguredServos) p.block(ArmBlocker::ServosNotConfigured);
-  if (outputs_) p.failedPyros = uint8_t(pyros & ~outputs_->connectedPyros(pyros));
-  if (p.failedPyros) p.block(ArmBlocker::ContinuityFault);
+  if (report.unconfiguredServos) report.block(ArmBlocker::ServosNotConfigured);
+  if (outputs_) report.failedPyros = uint8_t(pyros & ~outputs_->connectedPyros(pyros));
+  if (report.failedPyros) report.block(ArmBlocker::ContinuityFault);
   if (mode == FlightMode::Simulation) {
     // Initial servo positions are commanded during runtime preparation. Real
     // sensors and gyro calibration are irrelevant to this simulated source.
-    return p;
+    return report;
   }
-  if (!checks) { p.block(ArmBlocker::HardwareChecksUnavailable); return p; }
-  const auto r = checks->inspect();
-  if (!r.imuReady) p.block(ArmBlocker::ImuUnavailable);
-  if (!r.baroReady) p.block(ArmBlocker::BarometerUnavailable);
-  p.unpreparedServos = uint8_t(servos & ~p.preparedServos & ~p.unconfiguredServos);
-  if (p.unpreparedServos) p.block(ArmBlocker::ServosNotPrepared);
-  return p;
+  if (!checks) { report.block(ArmBlocker::HardwareChecksUnavailable); return report; }
+  const auto readiness = checks->inspect();
+  if (!readiness.imuReady) report.block(ArmBlocker::ImuUnavailable);
+  if (!readiness.baroReady) report.block(ArmBlocker::BarometerUnavailable);
+  report.unpreparedServos = uint8_t(servos & ~report.preparedServos & ~report.unconfiguredServos);
+  if (report.unpreparedServos) report.block(ArmBlocker::ServosNotPrepared);
+  return report;
 }
 ArmingState ArmingController::state() const {
   if (state_ == ArmingState::Closing && !runtime_.status().recordingBusy) return ArmingState::Disarmed;
   if (state_ == ArmingState::Armed && !runtime_.active()) return ArmingState::Disarmed;
   return state_;
 }
-const char *ArmingController::startRuntime(float reference, const navigation::SensorCalibration &calibration) {
+const char *ArmingController::startRuntime(float referenceAltitude, const navigation::SensorCalibration &calibration) {
   // Core 0 is cooperative: transfer the configuration reservation without yielding.
-  if (reserved_) { config_.releaseRun(); reserved_ = false; }
-  const auto error = runtime_.begin(*source_, reference, hz_, calibration, recordBytes_,
+  if (runReserved_) { config_.releaseRun(); runReserved_ = false; }
+  const auto error = runtime_.begin(*source_, referenceAltitude, nominalHz_, calibration, recordBytes_,
       mode_ == FlightMode::Simulation ? storage::SensorMode::Simulation : storage::SensorMode::Hardware, outputMode_, mode_==FlightMode::Physical);
   if (error) { error_ = error; stop(); return error; }
   if (runtime_.preparing()) state_=ArmingState::Preparing;
   else { source_->start(); state_=ArmingState::Armed; }
   return nullptr;
 }
-const char *ArmingController::arm(sensors::SensorSource &source, FlightMode mode, float reference, float hz,
-                                 const navigation::SensorCalibration &device, uint32_t bytes, PhysicalChecks *checks, storage::OutputMode outputMode) {
+const char *ArmingController::arm(sensors::SensorSource &source, FlightMode mode, float referenceAltitude, float nominalHz,
+                                 const navigation::SensorCalibration &device, uint32_t recordBytes, PhysicalChecks *checks, storage::OutputMode outputMode) {
   if (mode != FlightMode::Simulation && mode != FlightMode::Physical) return "INVALID_ARGUMENT";
   if (mode == FlightMode::Physical) outputMode = storage::OutputMode::Physical;
   if (outputMode != storage::OutputMode::Virtual && outputMode != storage::OutputMode::Physical) return "INVALID_ARGUMENT";
-  if (!std::isfinite(reference) || !std::isfinite(hz) || hz < 10 || bytes % storage::FlashLayout::SectorBytes ||
-      (mode == FlightMode::Physical && (!bytes || source.convention() != sensors::FrameConvention::SensorAxes))) return "INVALID_ARGUMENT";
+  if (!std::isfinite(referenceAltitude) || !std::isfinite(nominalHz) || nominalHz < 10 || recordBytes % storage::FlashLayout::SectorBytes ||
+      (mode == FlightMode::Physical && (!recordBytes || source.convention() != sensors::FrameConvention::SensorAxes))) return "INVALID_ARGUMENT";
   if (mode == FlightMode::Physical) {
     if (unsigned(device.upAxis) >= 6) return "INVALID_ARGUMENT";
     for (auto bias : device.accelBias) if (!std::isfinite(bias)) return "INVALID_ARGUMENT";
   }
-  lastPreflight_ = preflight(mode, bytes != 0, checks, outputMode);
+  lastPreflight_ = preflight(mode, recordBytes != 0, checks, outputMode);
   if (const auto error = lastPreflight_.error()) { error_ = error; return error; }
   if (source_) source_->stop();
-  mode_ = mode; outputMode_ = outputMode; source_ = &source; checks_ = checks; hz_ = hz; recordBytes_ = bytes;
+  mode_ = mode; outputMode_ = outputMode; source_ = &source; checks_ = checks; nominalHz_ = nominalHz; recordBytes_ = recordBytes;
   navigation_ = {}; calibration_.clear(); error_ = "None"; state_ = ArmingState::Disarmed;
-  if (mode == FlightMode::Simulation) return startRuntime(reference, device);
+  if (mode == FlightMode::Simulation) return startRuntime(referenceAltitude, device);
   if (!config_.acquireRun()) return "BUSY";
-  reserved_ = true;
+  runReserved_ = true;
   // First physical arm persists identity so the existing approval journal also
   // tracks flights/resets when no custom accelerometer calibration was saved.
   if (!imuStore_->present()) {
@@ -164,11 +164,11 @@ const char *ArmingController::arm(sensors::SensorSource &source, FlightMode mode
 PollResult ArmingController::poll(FrameResult &result) {
   result = {};
   if (imuCalibration_.active()) {
-    if (clock_ && uint32_t(clock_()-imuOperationTime_)>180000000u) {
+    if (clock_ && uint32_t(clock_()-imuCalibrationActivityUs_)>ImuCalibrationTimeoutUs) {
       imuError_="IMU_CALIBRATION_TIMEOUT"; cancelImuCalibration(); return {};
     }
-    sensors::Reading r;
-    if (source_->poll(r)) imuCalibration_.add(r);
+    sensors::Reading reading;
+    if (source_->poll(reading)) imuCalibration_.add(reading);
     if (imuCalibration_.failed()) {
       // After use (Boost reached, or a reset while armed) the failure means the sensor changed: the
       // factory identity is revoked for good. Before any use only this calibration attempt is dropped.
@@ -192,31 +192,31 @@ PollResult ArmingController::poll(FrameResult &result) {
     sensors::Reading reading;
     if (source_->poll(reading) && calibration_.add(reading)) {
       // Recheck channels/health after calibration without dropping our reservation.
-      const auto device = calibration_.calibration();
-      const float reference = calibration_.referenceAltitude();
-      config_.releaseRun(); reserved_ = false; state_ = ArmingState::Disarmed;
+      const auto calibration = calibration_.calibration();
+      const float referenceAltitude = calibration_.referenceAltitude();
+      config_.releaseRun(); runReserved_ = false; state_ = ArmingState::Disarmed;
       lastPreflight_ = preflight(mode_, true, checks_, outputMode_);
-      if (const auto error = lastPreflight_.error()) { error_ = error; stop(); PollResult p; p.error = error; return p; }
-      if (const auto error = startRuntime(reference, device)) { PollResult p; p.error = error; return p; }
+      if (const auto error = lastPreflight_.error()) { error_ = error; stop(); PollResult polled; polled.error = error; return polled; }
+      if (const auto error = startRuntime(referenceAltitude, calibration)) { PollResult polled; polled.error = error; return polled; }
     }
     return {}; // Calibration frames never enter navigation/rules/recording.
   }
   if (state() == ArmingState::Closing) return {};
-  const auto p = runtime_.poll(result);
-  if (state_==ArmingState::Preparing && !runtime_.preparing() && !p.error) state_=ArmingState::Armed;
+  const auto polled = runtime_.poll(result);
+  if (state_==ArmingState::Preparing && !runtime_.preparing() && !polled.error) state_=ArmingState::Armed;
   if (approvalReserved_ && runtime_.status().boostReached) { boostConsumed_=true; approvalReserved_=false; }
-  if (p.processed && result.navigation.valid) navigation_ = result.navigation;
-  if (p.error && std::strcmp(p.error, "INVALID_TIMESTAMP")) { error_ = p.error; stop(); }
+  if (polled.processed && result.navigation.valid) navigation_ = result.navigation;
+  if (polled.error && std::strcmp(polled.error, "INVALID_TIMESTAMP")) { error_ = polled.error; stop(); }
   else if (state_ == ArmingState::Armed && !runtime_.active()) {
     if (source_) source_->stop();
     source_=nullptr; checks_=nullptr; calibration_.clear();
     state_=runtime_.status().recordingBusy ? ArmingState::Closing : ArmingState::Disarmed;
   }
-  return p;
+  return polled;
 }
 unsigned ArmingController::stop(storage::RecordingEnd reason) {
   if (imuCalibration_.active()) cancelImuCalibration();
-  if (reserved_) { config_.releaseRun(); reserved_ = false; }
+  if (runReserved_) { config_.releaseRun(); runReserved_ = false; }
   const auto pending = runtime_.stop(reason);
   if (source_) source_->stop();
   source_ = nullptr; checks_ = nullptr; calibration_.clear();
@@ -263,20 +263,20 @@ const char *ArmingController::beginImuCalibration(sensors::SensorSource &source,
   if (verify && (!imuStore_->present() || imuStore_->needsCalibration())) return "IMU_CALIBRATION_MISSING";
   if (!clock_ || source.convention()!=sensors::FrameConvention::SensorAxes) return "INVALID_ARGUMENT";
   if (!config_.acquireDeviceOperation()) return "BUSY";
-  reserved_=true; source_=&source; source_->start();
-  imuCalibration_.begin(verify,imuStore_->record()); imuOperationTime_=clock_(); imuError_="None";
+  runReserved_=true; source_=&source; source_->start();
+  imuCalibration_.begin(verify,imuStore_->record()); imuCalibrationActivityUs_=clock_(); imuError_="None";
   return nullptr;
 }
 const char *ArmingController::captureImuFace(unsigned face) {
   if (!imuCalibration_.capture(face)) return "INVALID_ARGUMENT";
-  imuOperationTime_=clock_(); return nullptr;
+  imuCalibrationActivityUs_=clock_(); return nullptr;
 }
 void ArmingController::cancelImuCalibration() {
   if (!imuCalibration_.active()) return;
   imuCalibration_.cancel();
   if (source_) source_->stop();
   source_=nullptr;
-  if (reserved_) { config_.releaseRun(); reserved_=false; }
+  if (runReserved_) { config_.releaseRun(); runReserved_=false; }
 }
 void ArmingController::settleImuApproval() {
   if (!approvalReserved_ || state()!=ArmingState::Disarmed || (recorder_ && recorder_->busy())) return;
@@ -319,8 +319,8 @@ const char *ArmingController::prepareServos(uint32_t channel) {
   assigned=config.airbrakes.channelMask;
   for (std::size_t i=0;i<config.ruleCount;++i)
     for (std::size_t j=0;j<config.rules[i].assignmentCount;++j) {
-      const auto &a=config.rules[i].assignments[j];
-      if (a.kind==recovery::OutputKind::Servo) assigned |= uint8_t(1u<<(a.channel-1));
+      const auto &assignment=config.rules[i].assignments[j];
+      if (assignment.kind==recovery::OutputKind::Servo) assigned |= uint8_t(1u<<(assignment.channel-1));
     }
   const uint8_t mask=channel ? uint8_t(1u<<(channel-1)) : assigned;
   if (mask & ~assigned) return "SERVO_NOT_ASSIGNED";

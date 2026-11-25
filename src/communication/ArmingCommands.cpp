@@ -12,16 +12,16 @@ void appendState(protocol::Json &json, const flight::ArmingController &controlle
   json.add(",\"arming_state\":\"%s\",\"flight_mode\":\"%s\",\"armed\":%s,\"gyro_samples\":%lu,\"gyro_target\":%lu,\"last_error\":\"%s\"",
       flight::armingStateName(controller.state()), flight::flightModeName(controller.mode()), controller.armed() ? "true" : "false",
       static_cast<unsigned long>(controller.calibrationSamples()), static_cast<unsigned long>(flight::ArmingCalibration::TargetSamples), controller.error());
-  const auto s = controller.runtime().status();
+  const auto status = controller.runtime().status();
   json.add(",\"output_mode\":\"%s\",\"outputs_active\":%s",controller.outputMode()==storage::OutputMode::Physical ? "PHYSICAL" : "VIRTUAL",controller.outputsActive() ? "true" : "false");
-  json.add(R"(,"boost_reached":%s)",s.boostReached ? "true" : "false");
-  protocol::appendRecordingBusy(json,s);
-  json.add(R"(,"recording_discarded":%s)",s.recordingDiscarded ? "true" : "false");
-  protocol::appendRecordingError(json,s);
+  json.add(R"(,"boost_reached":%s)",status.boostReached ? "true" : "false");
+  protocol::appendRecordingBusy(json,status);
+  json.add(R"(,"recording_discarded":%s)",status.recordingDiscarded ? "true" : "false");
+  protocol::appendRecordingError(json,status);
 }
 
 }
-bool ArmingCommands::dispatch(const char *command, const char *arguments, bool hasId, uint32_t id, char *out, std::size_t capacity) {
+bool ArmingCommands::dispatch(const char *command, const char *arguments, bool hasId, uint32_t id, char *output, std::size_t capacity) {
   const bool arm = !std::strcmp(command, "arm"), preflight = !std::strcmp(command, "preflight");
   const bool disarm = !std::strcmp(command, "disarm") || !std::strcmp(command, "ds");
   protocol::Tokens t(arguments); protocol::Json data; const char *error = nullptr;
@@ -40,11 +40,11 @@ bool ArmingCommands::dispatch(const char *command, const char *arguments, bool h
     else if (t.is(0,"identity") && t.count==1) error=physical_.restoreImuIdentityForTesting(); // Test builds only.
 #endif
     else error="INVALID_ARGUMENT";
-    const auto &c=physical_.imuCalibration(); const auto *store=physical_.imuStore();
+    const auto &calibration=physical_.imuCalibration(); const auto *store=physical_.imuStore();
     data.add(R"(,"imu_calibration_state":"%s","imu_calibration_reason":"%s","active":%s,"collecting":%s,"verification":%s,"face":%u,"face_mask":%u,"samples":%u,"target":%u,"last_error":"%s","window_error":"%s","norm_mps2":%.6g,"noise_mps2":%.6g,"revision":%lu)",
-      physical_.imuCalibrationState(),physical_.imuCalibrationReason(),c.active()?"true":"false",c.collecting()?"true":"false",
-      c.verification()?"true":"false",c.face(),c.mask(),c.samples(),flight::ImuCalibration::TargetSamples,physical_.imuError(),c.error(),
-      double(c.norm()),double(c.noise()),static_cast<unsigned long>(store && store->present()?store->record().revision:0));
+      physical_.imuCalibrationState(),physical_.imuCalibrationReason(),calibration.active()?"true":"false",calibration.collecting()?"true":"false",
+      calibration.verification()?"true":"false",calibration.face(),calibration.mask(),calibration.samples(),flight::ImuCalibration::TargetSamples,physical_.imuError(),calibration.error(),
+      double(calibration.norm()),double(calibration.noise()),static_cast<unsigned long>(store && store->present()?store->record().revision:0));
 #ifdef IMU_IDENTITY_TEST
     data.add(R"(,"identity_test_build":true)"); // This firmware can bypass the identity revocation.
 #endif
@@ -52,25 +52,25 @@ bool ArmingCommands::dispatch(const char *command, const char *arguments, bool h
         store && store->identityAllowed() ? "true" : "false",
         store && (store->present() ? store->record().identity : store->identityAllowed()) ? "true" : "false");
     if (store && store->present()) {
-      const auto &r=store->record();
-      data.add(R"(,"bias_mps2":[%.6g,%.6g,%.6g],"scale":[%.6g,%.6g,%.6g])",double(r.bias[0]),double(r.bias[1]),double(r.bias[2]),double(r.scale[0]),double(r.scale[1]),double(r.scale[2]));
-      if (!std::isnan(r.residual[0]) || !std::isnan(r.residual[1]) || !std::isnan(r.residual[2])) {
+      const auto &record=store->record();
+      data.add(R"(,"bias_mps2":[%.6g,%.6g,%.6g],"scale":[%.6g,%.6g,%.6g])",double(record.bias[0]),double(record.bias[1]),double(record.bias[2]),double(record.scale[0]),double(record.scale[1]),double(record.scale[2]));
+      if (!std::isnan(record.residual[0]) || !std::isnan(record.residual[1]) || !std::isnan(record.residual[2])) {
         data.add(R"(,"verification_residual_mps2":[)");
         for (unsigned i=0;i<3;++i) {
-          if (std::isnan(r.residual[i])) data.add(i ? ",null" : "null"); // Face not measured (a failed verification stops early).
-          else data.add(i ? ",%.4g" : "%.4g",double(r.residual[i]));
+          if (std::isnan(record.residual[i])) data.add(i ? ",null" : "null"); // Face not measured (a failed verification stops early).
+          else data.add(i ? ",%.4g" : "%.4g",double(record.residual[i]));
         }
         data.add("]");
       }
     }
-    return protocol::finish(command,data,error,hasId,id,out,capacity,true);
+    return protocol::finish(command,data,error,hasId,id,output,capacity,true);
   }
   const bool prepare=!std::strcmp(command,"servo") && t.is(0,"arm");
   const bool continuity=!std::strcmp(command,"pyro") && t.is(0,"continuity");
   if (!std::strcmp(command,"servo") && t.valid && t.count==1 && t.is(0,"release")) {
     error=physical_.releaseServos();
     if (!error) data.add(",\"released\":true,\"prepared_servo_mask\":0");
-    return protocol::finish(command,data,error,hasId,id,out,capacity,true);
+    return protocol::finish(command,data,error,hasId,id,output,capacity,true);
   }
   if (!std::strcmp(command,"servo") && (t.is(0,"preview") || t.is(0,"release"))) {
     uint32_t channel=0, pwm=0; const bool release=t.is(0,"release");
@@ -78,13 +78,13 @@ bool ArmingCommands::dispatch(const char *command, const char *arguments, bool h
         (!release && (!protocol::unsignedNumber(t[2],pwm) || !pwm))) error="INVALID_ARGUMENT";
     else error=physical_.positionServo(channel,pwm);
     if (!error) data.add(",\"channel\":%lu,\"pwm\":%lu",static_cast<unsigned long>(channel),static_cast<unsigned long>(pwm));
-    return protocol::finish(command,data,error,hasId,id,out,capacity,true);
+    return protocol::finish(command,data,error,hasId,id,output,capacity,true);
   }
 #ifdef IMU_IDENTITY_TEST
   if (!std::strcmp(command,"nav")) { // Test builds only: gyroscope-only attitude for bench checks.
     error=t.valid && t.count==2 && t.is(0,"gyro") && t.is(1,"start") ? physical_.startGyroOnlyAttitudeForTesting() : "INVALID_ARGUMENT";
     appendState(data,physical_);
-    return protocol::finish(command,data,error,hasId,id,out,capacity,true);
+    return protocol::finish(command,data,error,hasId,id,output,capacity,true);
   }
 #endif
   if (!arm && !preflight && !disarm && !prepare && !continuity) return false;
@@ -121,5 +121,5 @@ bool ArmingCommands::dispatch(const char *command, const char *arguments, bool h
   else if (hil_ && (hil_->active() || hil_->controller().state() == flight::ArmingState::Closing)) { owner = &hil_->controller(); error = hil_->disarm(); }
   else error = physical_.disarm();
   appendState(data, *owner);
-  return protocol::finish(command, data, error, hasId, id, out, capacity, true);
+  return protocol::finish(command, data, error, hasId, id, output, capacity, true);
 }

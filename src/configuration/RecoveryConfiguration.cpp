@@ -15,35 +15,36 @@ std::size_t findRule(const Configuration &config, RuleId id) {
     if (config.rules[i].id == id) return i;
   return MaxRules;
 }
-bool cycle(const Configuration &config, std::size_t index, std::array<uint8_t, MaxRules> &colors) {
-  if (colors[index] == 1) return true;
-  if (colors[index] == 2) return false;
-  colors[index] = 1;
+bool cycle(const Configuration &config, std::size_t index, std::array<uint8_t, MaxRules> &visitState) {
+  // Depth-first search: 0 unvisited, 1 on the current path (seen again: a cycle), 2 finished.
+  if (visitState[index] == 1) return true;
+  if (visitState[index] == 2) return false;
+  visitState[index] = 1;
   const auto &rule = config.rules[index];
   for (std::size_t i = 0; i < rule.conditionCount; ++i) {
     const auto &condition = rule.conditions[i];
     if (condition.kind == ConditionKind::TimeSinceRule &&
-        cycle(config, findRule(config, condition.reference), colors)) return true;
+        cycle(config, findRule(config, condition.reference), visitState)) return true;
   }
-  colors[index] = 2;
+  visitState[index] = 2;
   return false;
 }
-bool validCondition(const Condition &c, uint32_t maxTimingMs) {
-  switch (c.kind) {
-    case ConditionKind::Phase: return c.phases != 0 && (c.phases & ~AirborneMask) == 0;
+bool validCondition(const Condition &condition, uint32_t maxTimingMs) {
+  switch (condition.kind) {
+    case ConditionKind::Phase: return condition.phases != 0 && (condition.phases & ~AirborneMask) == 0;
     case ConditionKind::ApogeeDetected: return true;
     case ConditionKind::AltitudeComparison:
-      return std::isfinite(c.value) && (c.comparison == Comparison::Less || c.comparison == Comparison::Greater);
+      return std::isfinite(condition.value) && (condition.comparison == Comparison::Less || condition.comparison == Comparison::Greater);
     case ConditionKind::AltitudeRange:
-      return std::isfinite(c.value) && std::isfinite(c.upper) && c.value <= c.upper;
+      return std::isfinite(condition.value) && std::isfinite(condition.upper) && condition.value <= condition.upper;
     case ConditionKind::AbsoluteVelocityComparison:
-      return std::isfinite(c.value) && c.value >= 0 &&
-             (c.comparison == Comparison::LessEqual || c.comparison == Comparison::GreaterEqual);
+      return std::isfinite(condition.value) && condition.value >= 0 &&
+             (condition.comparison == Comparison::LessEqual || condition.comparison == Comparison::GreaterEqual);
     case ConditionKind::AbsoluteVelocityRange:
-      return std::isfinite(c.value) && std::isfinite(c.upper) && c.value >= 0 && c.value <= c.upper;
+      return std::isfinite(condition.value) && std::isfinite(condition.upper) && condition.value >= 0 && condition.value <= condition.upper;
     case ConditionKind::TimeSinceLaunch:
     case ConditionKind::TimeSinceApogee:
-    case ConditionKind::TimeSinceRule: return c.elapsedMs <= maxTimingMs;
+    case ConditionKind::TimeSinceRule: return condition.elapsedMs <= maxTimingMs;
   }
   return false;
 }
@@ -58,78 +59,78 @@ ValidationResult validate(const Configuration &config, const ValidationLimits &l
 
   // Check all counts/IDs before following any dependency or indexing an array.
   for (std::size_t i = 0; i < config.ruleCount; ++i) {
-    const auto &r = config.rules[i];
-    if (r.id == 0) return failure(ValidationError::InvalidRuleId, Field::Rule, r.id, i);
+    const auto &rule = config.rules[i];
+    if (rule.id == 0) return failure(ValidationError::InvalidRuleId, Field::Rule, rule.id, i);
     for (std::size_t j = 0; j < i; ++j)
-      if (config.rules[j].id == r.id) return failure(ValidationError::DuplicateRuleId, Field::Rule, r.id, i);
+      if (config.rules[j].id == rule.id) return failure(ValidationError::DuplicateRuleId, Field::Rule, rule.id, i);
     bool terminated = false, visible = false;
-    for (char ch : r.name) {
+    for (char ch : rule.name) {
       if (ch == '\0') { terminated = true; break; }
       if (static_cast<unsigned char>(ch) < 32 || ch == 127)
-        return failure(ValidationError::InvalidName, Field::Rule, r.id);
+        return failure(ValidationError::InvalidName, Field::Rule, rule.id);
       if (ch != ' ') visible = true;
     }
-    if (!terminated || !visible) return failure(ValidationError::InvalidName, Field::Rule, r.id);
-    if (r.conditionCount == 0 || r.conditionCount > MaxConditions)
-      return failure(ValidationError::InvalidConditionCount, Field::Rule, r.id);
-    if (r.assignmentCount == 0 || r.assignmentCount > MaxAssignments)
-      return failure(ValidationError::InvalidAssignmentCount, Field::Rule, r.id);
-    if (r.delayMs > limits.maxTimingMs)
-      return failure(ValidationError::InvalidTiming, Field::Rule, r.id);
+    if (!terminated || !visible) return failure(ValidationError::InvalidName, Field::Rule, rule.id);
+    if (rule.conditionCount == 0 || rule.conditionCount > MaxConditions)
+      return failure(ValidationError::InvalidConditionCount, Field::Rule, rule.id);
+    if (rule.assignmentCount == 0 || rule.assignmentCount > MaxAssignments)
+      return failure(ValidationError::InvalidAssignmentCount, Field::Rule, rule.id);
+    if (rule.delayMs > limits.maxTimingMs)
+      return failure(ValidationError::InvalidTiming, Field::Rule, rule.id);
   }
 
   bool assigned[2][ChannelCount] = {};
   for (std::size_t i = 0; i < config.ruleCount; ++i) {
-    const auto &r = config.rules[i];
-    for (std::size_t j = 0; j < r.conditionCount; ++j) {
-      const auto &c = r.conditions[j];
-      if (!validCondition(c, limits.maxTimingMs))
-        return failure(ValidationError::InvalidCondition, Field::Condition, r.id, j);
-      if (c.kind == ConditionKind::TimeSinceRule &&
-          (c.reference == 0 || c.reference == r.id || findRule(config, c.reference) == MaxRules))
-        return failure(ValidationError::InvalidReference, Field::Condition, r.id, j);
+    const auto &rule = config.rules[i];
+    for (std::size_t j = 0; j < rule.conditionCount; ++j) {
+      const auto &condition = rule.conditions[j];
+      if (!validCondition(condition, limits.maxTimingMs))
+        return failure(ValidationError::InvalidCondition, Field::Condition, rule.id, j);
+      if (condition.kind == ConditionKind::TimeSinceRule &&
+          (condition.reference == 0 || condition.reference == rule.id || findRule(config, condition.reference) == MaxRules))
+        return failure(ValidationError::InvalidReference, Field::Condition, rule.id, j);
     }
-    for (std::size_t j = 0; j < r.assignmentCount; ++j) {
-      const auto &a = r.assignments[j];
-      if ((a.kind != OutputKind::Pyro && a.kind != OutputKind::Servo) || a.channel == 0 || a.channel > ChannelCount)
-        return failure(ValidationError::InvalidOutput, Field::Assignment, r.id, j);
-      if (a.delayMs > limits.maxTimingMs)
-        return failure(ValidationError::InvalidTiming, Field::Assignment, r.id, j);
-      const auto kind = static_cast<std::size_t>(a.kind);
-      const auto channel = a.channel - 1;
-      if (assigned[kind][channel]) return failure(ValidationError::DuplicateOutput, Field::Assignment, r.id, j);
+    for (std::size_t j = 0; j < rule.assignmentCount; ++j) {
+      const auto &assignment = rule.assignments[j];
+      if ((assignment.kind != OutputKind::Pyro && assignment.kind != OutputKind::Servo) || assignment.channel == 0 || assignment.channel > ChannelCount)
+        return failure(ValidationError::InvalidOutput, Field::Assignment, rule.id, j);
+      if (assignment.delayMs > limits.maxTimingMs)
+        return failure(ValidationError::InvalidTiming, Field::Assignment, rule.id, j);
+      const auto kind = static_cast<std::size_t>(assignment.kind);
+      const auto channel = assignment.channel - 1;
+      if (assigned[kind][channel]) return failure(ValidationError::DuplicateOutput, Field::Assignment, rule.id, j);
       assigned[kind][channel] = true;
     }
   }
-  const auto &air=config.airbrakes;
-  if (air.channelMask>15 || air.conditionCount>MaxConditions || (air.channelMask && !air.conditionCount))
+  const auto &airbrakes=config.airbrakes;
+  if (airbrakes.channelMask>15 || airbrakes.conditionCount>MaxConditions || (airbrakes.channelMask && !airbrakes.conditionCount))
     return failure(ValidationError::InvalidConditionCount);
-  for (std::size_t j=0;j<air.conditionCount;++j) {
-    const auto &c=air.conditions[j];
-    if (!validCondition(c,limits.maxTimingMs)) return failure(ValidationError::InvalidCondition,Field::Condition,0,j);
-    if (c.kind==ConditionKind::TimeSinceRule && (!c.reference || findRule(config,c.reference)==MaxRules))
+  for (std::size_t j=0;j<airbrakes.conditionCount;++j) {
+    const auto &condition=airbrakes.conditions[j];
+    if (!validCondition(condition,limits.maxTimingMs)) return failure(ValidationError::InvalidCondition,Field::Condition,0,j);
+    if (condition.kind==ConditionKind::TimeSinceRule && (!condition.reference || findRule(config,condition.reference)==MaxRules))
       return failure(ValidationError::InvalidReference,Field::Condition,0,j);
   }
-  for (unsigned i=0;i<ChannelCount;++i) if (air.channelMask&(1u<<i)) {
+  for (unsigned i=0;i<ChannelCount;++i) if (airbrakes.channelMask&(1u<<i)) {
     if (assigned[1][i]) return failure(ValidationError::DuplicateOutput,Field::Servo,0,i);
     const auto &servo=config.servos[i];
     if (!servo.calibrated || servo.initialUs==servo.finalUs) return failure(ValidationError::InvalidServoSettings,Field::Servo,0,i);
   }
-  std::array<uint8_t, MaxRules> colors{};
+  std::array<uint8_t, MaxRules> visitState{};
   for (std::size_t i = 0; i < config.ruleCount; ++i)
-    if (cycle(config, i, colors)) return failure(ValidationError::DependencyCycle, Field::Rule, config.rules[i].id);
+    if (cycle(config, i, visitState)) return failure(ValidationError::DependencyCycle, Field::Rule, config.rules[i].id);
 
   // Rules may be saved before servo setup. Physical preflight checks that assigned
   // servos are configured; explicitly supplied settings must still be valid here.
   for (std::size_t i = 0; i < ChannelCount; ++i) {
-    const auto &p = config.pyros[i];
-    if ((assigned[0][i] && p.pulseMs == 0) || p.pulseMs > limits.maxPyroPulseMs)
+    const auto &pyro = config.pyros[i];
+    if ((assigned[0][i] && pyro.pulseMs == 0) || pyro.pulseMs > limits.maxPyroPulseMs)
       return failure(ValidationError::InvalidPyroSettings, Field::Pyro, 0, i);
-    const auto &s = config.servos[i];
-    const bool supplied = s.calibrated || s.initialUs != 0 || s.finalUs != 0;
+    const auto &servo = config.servos[i];
+    const bool supplied = servo.calibrated || servo.initialUs != 0 || servo.finalUs != 0;
     if (supplied &&
-        (!s.calibrated || s.initialUs < limits.minServoUs || s.initialUs > limits.maxServoUs ||
-         s.finalUs < limits.minServoUs || s.finalUs > limits.maxServoUs))
+        (!servo.calibrated || servo.initialUs < limits.minServoUs || servo.initialUs > limits.maxServoUs ||
+         servo.finalUs < limits.minServoUs || servo.finalUs > limits.maxServoUs))
       return failure(ValidationError::InvalidServoSettings, Field::Servo, 0, i);
   }
   return {};

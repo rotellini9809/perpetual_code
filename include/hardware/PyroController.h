@@ -29,7 +29,7 @@ private:
   static constexpr uint16_t CONTINUITY_CONNECTED_MIN_RAW = 1000;
 
   bool enabled_ = false;
-  uint8_t mask_ = 0;
+  uint8_t firingMask_ = 0;
 
   bool isValidChannel(uint8_t channel) const;
   uint8_t channelToIndex(uint8_t channel) const;

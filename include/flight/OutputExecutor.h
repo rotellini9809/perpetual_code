@@ -34,25 +34,28 @@ public:
   std::size_t drain(recovery::VirtualStart *starts, std::size_t capacity);
   unsigned stop(uint64_t owner);
   uint64_t owner() const { return owner_; }
-  bool active() const { return owner_ && (servoMask_ || pendingPyros_ || highPyros_); }
-  bool pulsing() const { return pendingPyros_ || highPyros_; }
+  bool active() const { return owner_ && (servoMask_ || pendingPyros_ || firingPyros_); }
+  bool pulsing() const { return pendingPyros_ || firingPyros_; }
 private:
   OutputHardware &hardware_;
   timing::Clock clock_;
   uint64_t owner_ = 0;
-  uint32_t epochUs_ = 0, enableUs_ = 0;
+  uint32_t runStartUs_ = 0; // Time origin of the reported start times.
+  uint32_t pyroEnabledAtUs_ = 0; // PYRO_ENABLE raised; channels fire after PyroEnableSettleMs.
   uint8_t airbrakeMask_ = 0;
   uint8_t servoMask_ = 0, allowedPyros_ = 0, requestedPyros_ = 0, requestedServos_ = 0;
-  uint8_t pendingPyros_ = 0, highPyros_ = 0;
-  bool enabled_ = false;
-  uint8_t preparedMask_ = 0;
+  uint8_t pendingPyros_ = 0; // Requested, waiting for PYRO_ENABLE to settle.
+  uint8_t firingPyros_ = 0; // Driven high now; each pulse lasts PyroPulseMs from pulseStartUs_.
+  bool pyroEnabled_ = false;
+  uint8_t preparedMask_ = 0; // Servos holding PWM outside a run (prepared or previewed).
   uint8_t previewMask_ = 0; // Held PWM for positioning, never valid flight preparation.
+  // Endpoints a servo was prepared with: a configuration edited since then invalidates it.
   std::array<uint16_t, recovery::ChannelCount> preparedInitial_{}, preparedFinal_{};
-  std::array<uint16_t, recovery::ChannelCount> initialUs_{}, finalUs_{};
-  std::array<uint32_t, recovery::ChannelCount> pulseUs_{};
-  std::array<recovery::VirtualStart, recovery::ChannelCount> pyroStarts_{};
-  std::array<recovery::VirtualStart, recovery::MaxAssignments> started_{};
-  std::size_t startCount_ = 0;
+  std::array<uint16_t, recovery::ChannelCount> runInitialUs_{}, runFinalUs_{}; // Endpoints for this run.
+  std::array<uint32_t, recovery::ChannelCount> pulseStartUs_{};
+  std::array<recovery::VirtualStart, recovery::ChannelCount> pyroStarts_{}; // Reported when the pyro fires.
+  std::array<recovery::VirtualStart, recovery::MaxAssignments> reportedStarts_{}; // Executed, waiting for drain().
+  std::size_t reportedStartCount_ = 0;
   void report(recovery::VirtualStart start, uint32_t now);
 };
 }

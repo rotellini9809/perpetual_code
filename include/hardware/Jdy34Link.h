@@ -20,12 +20,12 @@ public:
   bool feed(char byte, uint32_t now); // True: one application line, without LF.
   void overflow(); // Invalidate the session and discard through the next LF.
   bool ready() const { return stage_ == Stage::Ready; }
-  bool connected() const { return ready() && connected_ != 0; }
+  bool connected() const { return ready() && connectedChannels_ != 0; }
   const char *error() const { return error_; }
   uint32_t epoch() const { return epoch_; }
   const char *line() const { return line_; }
-  std::size_t length() const { return completed_; }
-  uint32_t uartBaud() const { return baud_; } // MAIN reconfigures its UART when this changes.
+  std::size_t length() const { return completedLength_; }
+  uint32_t uartBaud() const { return uartBaud_; } // MAIN reconfigures its UART when this changes.
   const char *name() const { return name_; } // SPP name read at startup; empty when unknown.
   bool configured() const { return configured_; } // A factory module was set up this power-up.
   // Renaming: requestName() validates and queues; MAIN calls startRename() once the reply that
@@ -47,12 +47,15 @@ private:
   Stage stage_ = Stage::Settle;
   char line_[130] = {};
   char notification_[64] = {};
-  char name_[20] = {}, requested_[20] = {}, request_[40] = {};
+  char name_[20] = {}, requestedName_[20] = {}, requestBuffer_[40] = {};
   std::size_t notificationLength_ = 0;
-  std::size_t length_ = 0, completed_ = 0;
-  uint32_t since_ = 0, hold_ = 0, receivedAt_ = 0, epoch_ = 0, baud_ = UartBaud;
-  uint8_t connected_ = 0, known_ = 0, attempts_ = 0;
-  bool waiting_ = false, matched_ = false, ack_ = false, discard_ = false;
+  std::size_t lineLength_ = 0, completedLength_ = 0;
+  uint32_t stageSinceMs_ = 0, holdMs_ = 0; // No request before holdMs_ has elapsed since stageSinceMs_.
+  uint32_t replyReceivedMs_ = 0, uartBaud_ = UartBaud;
+  uint32_t epoch_ = 0; // Changes on every link session change: MAIN then resets its command session.
+  // Bit n: radio channel n. knownChannels_ collects AT+STAT answers (255 once all 8 have answered).
+  uint8_t connectedChannels_ = 0, knownChannels_ = 0, attempts_ = 0;
+  bool awaitingReply_ = false, replyMatched_ = false, statusAcked_ = false, discardLine_ = false;
   bool setupTried_ = false, configured_ = false, renamePending_ = false;
   const char *error_ = "STARTING";
   Stage failedAt_ = Stage::Settle; // Step that failed, kept while stage_ is Failed.
@@ -60,7 +63,7 @@ private:
   bool setup() const { return stage_ >= Stage::SetupHandshake && stage_ <= Stage::SetupReset; }
   bool renaming() const { return stage_ >= Stage::RenameHandshake && stage_ <= Stage::RenameReset; }
   uint8_t attemptLimit() const;
-  void wait(uint32_t now, uint32_t ms) { since_ = now; hold_ = ms; waiting_ = false; }
+  void wait(uint32_t now, uint32_t ms) { stageSinceMs_ = now; holdMs_ = ms; awaitingReply_ = false; }
   void fail(const char *error, uint32_t now);
   void connections(uint8_t mask);
   bool advance(uint32_t now); // True: send the next request now.

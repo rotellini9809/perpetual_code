@@ -24,10 +24,10 @@ private:
   timing::Clock clock_;
   bool started_ = false;
   bool imuInterrupted_ = false;
-  bool imuTimed_ = false;
+  bool imuTimeAnchored_ = false;
   double imuTimeUs_ = 0; // Last emitted IMU frame time on the source epoch.
-  uint32_t lastClock_ = 0;
-  uint64_t elapsed_ = 0;
+  uint32_t lastClockUs_ = 0;
+  uint64_t elapsedUs_ = 0;
   Reading latest_;
 };
 }

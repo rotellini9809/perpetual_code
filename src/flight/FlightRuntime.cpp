@@ -4,6 +4,7 @@
 #include <limits>
 
 namespace flight {
+namespace { constexpr float RadiansToDegrees = 57.29577951308232f; }
 const char *FlightRuntime::preparationError() const {
   if (run_.active() || config_.runLocked()) return "BUSY";
   if (recorder_ && recorder_->busy()) return "BUSY";
@@ -23,12 +24,12 @@ const char *FlightRuntime::begin(sensors::SensorSource &source, float referenceA
   if (recordBytes && (!recorder_ || !recorder_->initialized())) return "STORAGE_NOT_READY";
   if (recordBytes % storage::FlashLayout::SectorBytes) return "INVALID_ARGUMENT";
   pipeline_.end(); source_ = nullptr; started_ = preparing_ = false;
-  machine_=config_.stateMachine(); abortReason_=recovery::AbortReason::None; velocityMedian_=tilt_=0;
-  if (!pipeline_.begin(source, calibration, referenceAltitude, nominalHz,machine_)) return "INITIALIZATION_FAILED";
+  stateMachine_=config_.stateMachine(); abortReason_=recovery::AbortReason::None; coastVelocityMedian_=tiltRadians_=0;
+  if (!pipeline_.begin(source, calibration, referenceAltitude, nominalHz,stateMachine_)) return "INITIALIZATION_FAILED";
   if (const char *error = run_.begin(RunMode::Sensors, config_)) { pipeline_.end(); return error; }
   airbrakes_.begin(config_.airbrakesEnabled() ? config_.applied()->airbrakes.channelMask : 0);
-  recordingRequested_ = recordBytes != 0; saved_ = dropped_ = 0; full_ = false; lastBaroSequence_ = 0;
-  boostReached_ = processingFailed_ = landed_ = closingStarts_ = false; sensorMode_ = sensorMode; outputMode_ = outputMode;
+  recordingRequested_ = recordBytes != 0; savedSamples_ = droppedSamples_ = 0; samplesFull_ = false; lastBaroSequence_ = 0;
+  boostReached_ = processingFailed_ = landed_ = startsClosed_ = false; sensorMode_ = sensorMode; outputMode_ = outputMode;
   recordingSequence_ = 0; recordingError_ = storage::RecorderError::None;
   timing_ = {}; timing_.nominalPeriodUs = uint32_t(1000000.0f / nominalHz); haveFrame_ = false;
   if (recordingRequested_) {
@@ -37,7 +38,7 @@ const char *FlightRuntime::begin(sensors::SensorSource &source, float referenceA
     storage::FlightCalibration snapshot;
     snapshot.available=true; snapshot.sensorAxes=source.convention()==sensors::FrameConvention::SensorAxes;
     snapshot.gyroCalibrated=sensorMode==storage::SensorMode::Hardware && calibration.configured;
-    snapshot.machine=machine_; snapshot.airbrakeLawVersion=control::AirbrakeLawVersion; snapshot.airbrakesEnabled=config_.airbrakesEnabled();
+    snapshot.machine=stateMachine_; snapshot.airbrakeLawVersion=control::AirbrakeLawVersion; snapshot.airbrakesEnabled=config_.airbrakesEnabled();
     snapshot.referenceAltitude=referenceAltitude; snapshot.upAxis=uint8_t(calibration.upAxis);
     snapshot.accelCalibrationRevision=calibration.accelCalibrationRevision;
     for (unsigned i=0;i<3;++i) { snapshot.gyroBias[i]=calibration.gyroBias[i]; snapshot.accelBias[i]=calibration.accelBias[i]; snapshot.accelScale[i]=calibration.accelScale[i]; }
@@ -52,24 +53,24 @@ const char *FlightRuntime::begin(sensors::SensorSource &source, float referenceA
     }
     if (!preparing_) recordingSequence_ = recorder_->current()->sequence;
   }
-  source_ = &source; identity_ = run_.identity(); started_ = true; maxComputeUs_ = 0;
+  source_ = &source; runIdentity_ = run_.identity(); started_ = true; maxComputeUs_ = 0;
   if (preparing_) return nullptr; // No source epoch or physical outputs before storage acknowledgment.
   if (outputMode_ == storage::OutputMode::Physical) {
-    if (const auto error = outputs_->begin(*config_.applied(),identity_,sensorMode==storage::SensorMode::Hardware,config_.airbrakesEnabled())) { stop(); return error; }
+    if (const auto error = outputs_->begin(*config_.applied(),runIdentity_,sensorMode==storage::SensorMode::Hardware,config_.airbrakesEnabled())) { stop(); return error; }
   }
-  if (airbrakes_.status().channelMask) lastControlUs_=clock_ ? clock_() : 0;
+  if (airbrakes_.status().channelMask) lastAirbrakeUpdateUs_=clock_ ? clock_() : 0;
   return nullptr;
 }
 RuntimeStatus FlightRuntime::status() const {
   const auto &progress = run_.progress(RunMode::Sensors);
   RuntimeStatus status; status.airbrakes=airbrakes_.status(); status.active = active(); status.timingValid = clock_ != nullptr;
-  status.bistage=machine_.bistage; status.abortReason=abortReason_; status.coastVelocityMedian=velocityMedian_; status.tiltRadians=tilt_;
+  status.bistage=stateMachine_.bistage; status.abortReason=abortReason_; status.coastVelocityMedian=coastVelocityMedian_; status.tiltRadians=tiltRadians_;
   status.outputMode = outputMode_;
-  status.outputsActive = outputMode_ == storage::OutputMode::Physical && outputs_ && outputs_->owner() == identity_ && outputs_->active();
+  status.outputsActive = outputMode_ == storage::OutputMode::Physical && outputs_ && outputs_->owner() == runIdentity_ && outputs_->active();
   status.samples = progress.samples; status.timeMs = progress.timeMs; status.maxComputeUs = maxComputeUs_;
   status.recordingRequested = recordingRequested_; status.recordingSequence = recordingSequence_;
   status.recordingActive = active() && recordingRequested_ && recorder_ && recorder_->active() && recorder_->current()->sequence == recordingSequence_;
-  status.savedSamples = saved_; status.droppedSamples = dropped_; status.samplesFull = full_;
+  status.savedSamples = savedSamples_; status.droppedSamples = droppedSamples_; status.samplesFull = samplesFull_;
   status.boostReached = boostReached_;
   status.recordingError = recordingError_;
   refreshRecordingStatus(status);
@@ -88,7 +89,7 @@ void FlightRuntime::refreshRecordingStatus(RuntimeStatus &status) const {
     status.recordingBusy = recorder_->busy();
     status.recordingDiscarded = !status.recordingBusy && recorder_->current()->status == storage::FlightStatus::Invalidated;
     status.savedSamples = recorder_->committedSamples(); status.samplesFull = recorder_->samplesFull();
-    status.droppedSamples = dropped_ + recorder_->backgroundDroppedSamples(); status.recordingAsync = recorder_->queued();
+    status.droppedSamples = droppedSamples_ + recorder_->backgroundDroppedSamples(); status.recordingAsync = recorder_->queued();
     status.pendingSamples = recorder_->pendingSamples(); status.queueCapacity = recorder_->sampleQueueCapacity();
     if (status.recordingError == storage::RecorderError::None && recorder_->error() != storage::RecorderError::None)
       status.recordingError = recorder_->error();
@@ -96,9 +97,9 @@ void FlightRuntime::refreshRecordingStatus(RuntimeStatus &status) const {
 }
 bool FlightRuntime::applyAirbrakes() {
   if (!airbrakes_.status().channelMask || outputMode_!=storage::OutputMode::Physical) return true;
-  if (outputs_->airbrakes(identity_,airbrakes_.commands())) return true;
+  if (outputs_->airbrakes(runIdentity_,airbrakes_.commands())) return true;
   airbrakes_.close(control::OutputFault);
-  outputs_->airbrakes(identity_,airbrakes_.commands()); // Best effort close after a rejected write.
+  outputs_->airbrakes(runIdentity_,airbrakes_.commands()); // Best effort close after a rejected write.
   return false;
 }
 void FlightRuntime::recordingFault(storage::RecorderError error) {
@@ -111,10 +112,10 @@ unsigned FlightRuntime::stop(storage::RecordingEnd reason) {
   if (preparing_ && owned) recorder_->abort();
   airbrakes_.close(uint16_t(airbrakes_.status().flags & ~(control::Configured|control::Enabled)));
   unsigned outputPending=0;
-  if (outputMode_ == storage::OutputMode::Physical && outputs_ && outputs_->owner() == identity_) {
+  if (outputMode_ == storage::OutputMode::Physical && outputs_ && outputs_->owner() == runIdentity_) {
     recovery::VirtualStart starts[recovery::MaxAssignments];
     const auto count = outputs_->drain(starts,recovery::MaxAssignments);
-    outputPending=outputs_->stop(identity_); // Outputs made safe before storage finalization.
+    outputPending=outputs_->stop(runIdentity_); // Outputs made safe before storage finalization.
     if (owned && recordingRequested_ && recorder_ && recorder_->active() && recorder_->current()->sequence == recordingSequence_)
       for (std::size_t i=0;i<count;++i)
         if (!recorder_->recordStart(starts[i].rule,starts[i].kind,starts[i].channel,uint32_t(starts[i].timeMs))) {
@@ -130,7 +131,7 @@ unsigned FlightRuntime::stop(storage::RecordingEnd reason) {
     if (!owned) recordingFault(storage::RecorderError::NotRecording);
     else {
       const auto start = clock_ ? clock_() : 0;
-      storage::RecordingSummary summary; summary.droppedSamples=dropped_; summary.reason=reason;
+      storage::RecordingSummary summary; summary.droppedSamples=droppedSamples_; summary.reason=reason;
       // Keep development recordings for diagnosis, including PAD-only HIL. Live
       // retention uses actual navigation history, never buffered/persisted samples.
       const auto retention = sensorMode_ == storage::SensorMode::Hardware && !boostReached_ && !processingFailed_
@@ -139,7 +140,7 @@ unsigned FlightRuntime::stop(storage::RecordingEnd reason) {
       timing_.finishUs = clock_ ? uint32_t(clock_() - start) : 0;
       if (!finished) recordingFault(recorder_->error());
     }
-    saved_ = recorder_->committedSamples(); full_ = recorder_->samplesFull();
+    savedSamples_ = recorder_->committedSamples(); samplesFull_ = recorder_->samplesFull();
   }
   return pending+outputPending;
 }
@@ -150,8 +151,8 @@ void FlightRuntime::save(const sensors::Reading &input, const FrameResult &resul
     recordingFault(error == storage::RecorderError::None ? storage::RecorderError::NotRecording : error); return;
   }
   for (std::size_t i = 0; i < result.events.startCount; ++i) {
-    const auto &a = result.events.starts[i];
-    if (!recorder_->recordStart(a.rule, a.kind, a.channel, uint32_t(a.timeMs))) { recordingFault(recorder_->error()); return; }
+    const auto &start = result.events.starts[i];
+    if (!recorder_->recordStart(start.rule, start.kind, start.channel, uint32_t(start.timeMs))) { recordingFault(recorder_->error()); return; }
   }
   storage::FlightSample sample; sample.timeUs = input.timeUs; sample.imuSequence = uint32_t(input.imuSequence);
   sample.imuValid = input.imuValid;
@@ -174,15 +175,15 @@ void FlightRuntime::save(const sensors::Reading &input, const FrameResult &resul
   if (nav.valid) {
     sample.values[storage::FlightSample::AltitudeM] = nav.altitude;
     sample.values[storage::FlightSample::VelocityMps] = nav.verticalVelocity;
-    for (unsigned i = 0; i < 3; ++i) sample.values[storage::FlightSample::RollDegrees+i] = nav.eulerRadians[i] * 57.29577951308232f;
+    for (unsigned i = 0; i < 3; ++i) sample.values[storage::FlightSample::RollDegrees+i] = nav.eulerRadians[i] * RadiansToDegrees;
     sample.values[storage::FlightSample::VerticalAccelMps2] = nav.verticalAcceleration;
   }
   if (!recorder_->append(sample)) {
-    if (recorder_->error() == storage::RecorderError::Full || recorder_->error() == storage::RecorderError::Backpressure) ++dropped_;
+    if (recorder_->error() == storage::RecorderError::Full || recorder_->error() == storage::RecorderError::Backpressure) ++droppedSamples_;
     else { recordingFault(recorder_->error()); return; }
   }
   if (!recorder_->service()) { recordingFault(recorder_->error()); return; }
-  saved_ = recorder_->committedSamples(); full_ = recorder_->samplesFull();
+  savedSamples_ = recorder_->committedSamples(); samplesFull_ = recorder_->samplesFull();
 }
 PollResult FlightRuntime::poll(FrameResult &result) {
   result = {};
@@ -199,24 +200,24 @@ PollResult FlightRuntime::poll(FrameResult &result) {
     }
     preparing_=false; recordingSequence_=recorder_->current()->sequence;
     if (outputMode_==storage::OutputMode::Physical) {
-      if (const auto error=outputs_->begin(*config_.applied(),identity_,sensorMode_==storage::SensorMode::Hardware,config_.airbrakesEnabled())) {
+      if (const auto error=outputs_->begin(*config_.applied(),runIdentity_,sensorMode_==storage::SensorMode::Hardware,config_.airbrakesEnabled())) {
         stop(); polled.error=error; return polled;
       }
     }
     source_->start();
-    if (airbrakes_.status().channelMask) lastControlUs_=clock_ ? clock_() : 0;
+    if (airbrakes_.status().channelMask) lastAirbrakeUpdateUs_=clock_ ? clock_() : 0;
     return polled;
   }
   if (outputMode_ == storage::OutputMode::Physical) {
-    outputs_->poll(!machine_.bistage);
-    if (landed_ && (run_.landingWindowExpired(RunMode::Sensors) || (clock_ && uint32_t(clock_()-landingClockUs_)>=15000000u))) {
-      run_.closeStarts(); closingStarts_=true;
+    outputs_->poll(!stateMachine_.bistage);
+    if (landed_ && (run_.landingWindowExpired(RunMode::Sensors) || (clock_ && uint32_t(clock_()-landedAtUs_)>=LandedCloseUs))) {
+      run_.closeStarts(); startsClosed_=true;
     }
     // Holding PWM is not an unfinished action. Finish pulses before normal landing
     // closure; stop/disarm closes airbrakes and releases ordinary flight servos.
-    if (closingStarts_ && !outputs_->pulsing()) { stop(storage::RecordingEnd::Completed); return polled; }
+    if (startsClosed_ && !outputs_->pulsing()) { stop(storage::RecordingEnd::Completed); return polled; }
   }
-  if (clock_ && airbrakes_.status().channelMask && uint32_t(clock_()-lastControlUs_)>100000u && !(airbrakes_.status().flags & control::StaleEstimate)) {
+  if (clock_ && airbrakes_.status().channelMask && uint32_t(clock_()-lastAirbrakeUpdateUs_)>AirbrakeStaleUs && !(airbrakes_.status().flags & control::StaleEstimate)) {
     airbrakes_.close(control::StaleEstimate);
     if (!applyAirbrakes()) { processingFailed_=true; stop(); polled.error="OUTPUT_ERROR"; return polled; }
   }
@@ -228,49 +229,49 @@ PollResult FlightRuntime::poll(FrameResult &result) {
 }
 const char *FlightRuntime::process(const sensors::Reading &input, FrameResult &result) {
   if (input.timeUs / 1000 > std::numeric_limits<uint32_t>::max()) return "INVALID_TIMESTAMP";
-  const auto time = uint32_t(input.timeUs / 1000);
-  if (!run_.validTime(RunMode::Sensors, time)) return "INVALID_TIMESTAMP";
+  const auto timeMs = uint32_t(input.timeUs / 1000);
+  if (!run_.validTime(RunMode::Sensors, timeMs)) return "INVALID_TIMESTAMP";
   if (haveFrame_) {
-    if (input.imuSequence != lastSequence_+1) ++timing_.sequenceGaps;
+    if (input.imuSequence != lastImuSequence_+1) ++timing_.sequenceGaps;
     else if (input.timeUs > lastFrameUs_) {
       const uint64_t dt = input.timeUs-lastFrameUs_; const uint32_t clamped = dt > 0xFFFFFFFFu ? 0xFFFFFFFFu : uint32_t(dt);
       if (!timing_.frameDtMinUs || clamped < timing_.frameDtMinUs) timing_.frameDtMinUs = clamped;
       if (clamped > timing_.frameDtMaxUs) timing_.frameDtMaxUs = clamped;
     }
   }
-  haveFrame_ = true; lastFrameUs_ = input.timeUs; lastSequence_ = input.imuSequence;
-  const auto start = clock_ ? clock_() : 0;
+  haveFrame_ = true; lastFrameUs_ = input.timeUs; lastImuSequence_ = input.imuSequence;
+  const auto computeStart = clock_ ? clock_() : 0;
   if (!pipeline_.process(input, result.navigation)) { processingFailed_ = true; stop(); return "SOURCE_ERROR"; }
-  abortReason_=result.navigation.abortReason; velocityMedian_=result.navigation.coastVelocityMedian; tilt_=result.navigation.tiltRadians;
-  if (machine_.bistage && !result.navigation.valid) result.navigation.startsAllowed=false;
-  if (result.navigation.phase==recovery::FlightPhase::Abort && outputMode_==storage::OutputMode::Physical) outputs_->inhibit(identity_);
-  result.events = run_.evaluate(RunMode::Sensors, time, result.navigation.ruleSnapshot());
+  abortReason_=result.navigation.abortReason; coastVelocityMedian_=result.navigation.coastVelocityMedian; tiltRadians_=result.navigation.tiltRadians;
+  if (stateMachine_.bistage && !result.navigation.valid) result.navigation.startsAllowed=false;
+  if (result.navigation.phase==recovery::FlightPhase::Abort && outputMode_==storage::OutputMode::Physical) outputs_->inhibit(runIdentity_);
+  result.events = run_.evaluate(RunMode::Sensors, timeMs, result.navigation.ruleSnapshot());
   if (result.events.accepted && outputMode_ == storage::OutputMode::Physical) {
     for (std::size_t i=0;i<result.events.startCount;++i)
       if (!outputs_->submit(result.events.starts[i])) { processingFailed_=true; stop(); return "OUTPUT_ERROR"; }
-    outputs_->poll(!machine_.bistage || (result.navigation.valid && result.navigation.startsAllowed));
+    outputs_->poll(!stateMachine_.bistage || (result.navigation.valid && result.navigation.startsAllowed));
     result.events.startCount=outputs_->drain(result.events.starts.data(),result.events.starts.size());
   }
-  airbrakes_.update(result.navigation,run_.airbrakeConditions(time,result.navigation.ruleSnapshot()));
-  if (airbrakes_.status().channelMask) lastControlUs_=clock_ ? clock_() : 0;
-  if (!applyAirbrakes()) { result.timeMs=time; save(input,result); processingFailed_=true; stop(); return "OUTPUT_ERROR"; }
+  airbrakes_.update(result.navigation,run_.airbrakeConditions(timeMs,result.navigation.ruleSnapshot()));
+  if (airbrakes_.status().channelMask) lastAirbrakeUpdateUs_=clock_ ? clock_() : 0;
+  if (!applyAirbrakes()) { result.timeMs=timeMs; save(input,result); processingFailed_=true; stop(); return "OUTPUT_ERROR"; }
   const auto computeEnd = clock_ ? clock_() : 0;
-  result.computeUs = uint32_t(computeEnd - start);
+  result.computeUs = uint32_t(computeEnd - computeStart);
   if (result.computeUs > maxComputeUs_) maxComputeUs_ = result.computeUs;
   if (!result.events.accepted) { processingFailed_ = true; stop(); return "PROCESSING_ERROR"; }
   // The detector's phase history remains authoritative even if this frame's
   // numerical estimate is invalid after the detector has advanced.
   if (recovery::boostPhase(result.navigation.phase)) boostReached_ = true;
   if (!landed_ && result.navigation.phase == recovery::FlightPhase::Landed) {
-    landed_=true; landingClockUs_=clock_ ? clock_() : 0;
+    landed_=true; landedAtUs_=clock_ ? clock_() : 0;
   }
-  result.timeMs = time;
+  result.timeMs = timeMs;
   const bool recordingWork = recordingRequested_ && recordingError_ == storage::RecorderError::None;
   save(input, result); // The selected sink either queues work or performs synchronous development writes.
   const auto stepEnd = clock_ ? clock_() : 0;
   timing_.compute.add(result.computeUs);
   if (recordingWork) timing_.storage.add(uint32_t(stepEnd - computeEnd));
-  const auto stepUs = uint32_t(stepEnd - start); timing_.step.add(stepUs);
+  const auto stepUs = uint32_t(stepEnd - computeStart); timing_.step.add(stepUs);
   if (clock_ && timing_.nominalPeriodUs && stepUs > timing_.nominalPeriodUs) ++timing_.overBudget;
   return nullptr;
 }

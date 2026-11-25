@@ -55,9 +55,12 @@ private:
   bool gyroOnlyActive_ = false;
   VerticalKalman filter_;
   FlightDetector detector_;
-  float reference_ = 0, firstDt_ = 0, baseline_ = 0, padGate_ = 0;
-  uint64_t lastTime_ = 0, lastImuSequence_ = 0, lastBaroSequence_ = 0;
-  bool attitudeAligned_ = false;
+  float referenceAltitude_ = 0; // Pressure altitude at arming; altitudes are relative to it.
+  float nominalDt_ = 0; // 1/nominal IMU rate: dt of the first frame; a gap over 2x breaks confirmations.
+  // On PAD, after 3 s at about 1 g, a slow filter tracks barometer drift; it is subtracted from altitude.
+  float padBaseline_ = 0, padStillSeconds_ = 0;
+  uint64_t lastImuTimeUs_ = 0, lastImuSequence_ = 0, lastBaroSequence_ = 0;
+  bool attitudeAligned_ = false; // Bistage: the attitude is first aligned with gravity from a still frame.
   bool initialized_ = false, haveImu_ = false, haveBaro_ = false;
 };
 }

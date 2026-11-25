@@ -99,20 +99,20 @@ bool validOutput(recovery::OutputKind kind, uint32_t channel) {
 }
 // Drafts may contain incomplete plans, forward references or invalid ranges.
 // Complete cross-rule/range/timing validation remains explicit validate/apply.
-bool editableCondition(const recovery::Condition &c) {
+bool editableCondition(const recovery::Condition &condition) {
   using namespace recovery;
-  switch (c.kind) {
+  switch (condition.kind) {
     case ConditionKind::Phase: case ConditionKind::ApogeeDetected:
     case ConditionKind::TimeSinceLaunch: case ConditionKind::TimeSinceApogee:
     case ConditionKind::TimeSinceRule: return true;
     case ConditionKind::AltitudeComparison:
-      return std::isfinite(c.value) && (c.comparison == Comparison::Less || c.comparison == Comparison::Greater);
+      return std::isfinite(condition.value) && (condition.comparison == Comparison::Less || condition.comparison == Comparison::Greater);
     case ConditionKind::AbsoluteVelocityComparison:
-      return std::isfinite(c.value) && c.value >= 0 &&
-          (c.comparison == Comparison::LessEqual || c.comparison == Comparison::GreaterEqual);
-    case ConditionKind::AltitudeRange: return std::isfinite(c.value) && std::isfinite(c.upper);
+      return std::isfinite(condition.value) && condition.value >= 0 &&
+          (condition.comparison == Comparison::LessEqual || condition.comparison == Comparison::GreaterEqual);
+    case ConditionKind::AltitudeRange: return std::isfinite(condition.value) && std::isfinite(condition.upper);
     case ConditionKind::AbsoluteVelocityRange:
-      return std::isfinite(c.value) && std::isfinite(c.upper) && c.value >= 0;
+      return std::isfinite(condition.value) && std::isfinite(condition.upper) && condition.value >= 0;
   }
   return false;
 }
@@ -137,87 +137,87 @@ const char *ConfigurationService::setServo(uint32_t channel, uint32_t initialUs,
   if (channel < 1 || channel > recovery::ChannelCount || initialUs < limits_.minServoUs || initialUs > limits_.maxServoUs ||
       finalUs < limits_.minServoUs || finalUs > limits_.maxServoUs)
     return "INVALID_ARGUMENT";
-  auto &s = draft_.servos[channel - 1]; s.calibrated = true;
-  s.initialUs = uint16_t(initialUs); s.finalUs = uint16_t(finalUs); return nullptr;
+  auto &servo = draft_.servos[channel - 1]; servo.calibrated = true;
+  servo.initialUs = uint16_t(initialUs); servo.finalUs = uint16_t(finalUs); return nullptr;
 }
 const char *ConfigurationService::addRule(recovery::RuleId id, const char *name) {
   if (const char *error = editError()) return error;
   if (!id || !validName(name)) return "INVALID_ARGUMENT";
   if (findRule(id)) return "DUPLICATE_RULE_ID";
   if (draft_.ruleCount == recovery::MaxRules) return "CAPACITY";
-  auto &r = draft_.rules[draft_.ruleCount++]; r = {}; r.id = id; strcpy(r.name.data(), name); return nullptr;
+  auto &rule = draft_.rules[draft_.ruleCount++]; rule = {}; rule.id = id; strcpy(rule.name.data(), name); return nullptr;
 }
 const char *ConfigurationService::renameRule(recovery::RuleId id, const char *name) {
   if (const char *error = editError()) return error;
-  auto *r = findRule(id); if (!r || !validName(name)) return "INVALID_ARGUMENT";
+  auto *rule = findRule(id); if (!rule || !validName(name)) return "INVALID_ARGUMENT";
   std::array<char, recovery::MaxNameBytes> copy{}; strcpy(copy.data(), name);
-  r->name = copy; return nullptr;
+  rule->name = copy; return nullptr;
 }
 const char *ConfigurationService::setRuleDelay(recovery::RuleId id, uint32_t delayMs) {
   if (const char *error = editError()) return error;
-  auto *r = findRule(id); if (!r || delayMs > limits_.maxTimingMs) return "INVALID_ARGUMENT";
-  r->delayMs = delayMs; return nullptr;
+  auto *rule = findRule(id); if (!rule || delayMs > limits_.maxTimingMs) return "INVALID_ARGUMENT";
+  rule->delayMs = delayMs; return nullptr;
 }
 const char *ConfigurationService::removeRule(recovery::RuleId id, recovery::RuleId *referencingRule) {
   if (referencingRule) *referencingRule = 0;
   if (const char *error = editError()) return error;
-  auto *r = findRule(id); if (!r) return "INVALID_ARGUMENT";
+  auto *rule = findRule(id); if (!rule) return "INVALID_ARGUMENT";
   for (std::size_t j=0;j<draft_.airbrakes.conditionCount;++j)
     if (draft_.airbrakes.conditions[j].kind==recovery::ConditionKind::TimeSinceRule && draft_.airbrakes.conditions[j].reference==id)
       return "RULE_REFERENCED";
   for (std::size_t i = 0; i < draft_.ruleCount; ++i)
     for (std::size_t j = 0; j < draft_.rules[i].conditionCount; ++j) {
-      const auto &c = draft_.rules[i].conditions[j];
-      if (c.kind == recovery::ConditionKind::TimeSinceRule && c.reference == id) {
+      const auto &condition = draft_.rules[i].conditions[j];
+      if (condition.kind == recovery::ConditionKind::TimeSinceRule && condition.reference == id) {
         if (referencingRule) *referencingRule = draft_.rules[i].id;
         return "RULE_REFERENCED";
       }
     }
-  const auto index = std::size_t(r - draft_.rules.data());
+  const auto index = std::size_t(rule - draft_.rules.data());
   for (std::size_t i = index + 1; i < draft_.ruleCount; ++i) draft_.rules[i - 1] = draft_.rules[i];
   draft_.rules[--draft_.ruleCount] = {}; return nullptr;
 }
 const char *ConfigurationService::addCondition(recovery::RuleId id, const recovery::Condition &condition) {
   if (const char *error = editError()) return error;
-  auto *r = findRule(id);
-  if (!r || r->conditionCount == recovery::MaxConditions || !editableCondition(condition)) return "INVALID_ARGUMENT";
-  r->conditions[r->conditionCount++] = condition; return nullptr;
+  auto *rule = findRule(id);
+  if (!rule || rule->conditionCount == recovery::MaxConditions || !editableCondition(condition)) return "INVALID_ARGUMENT";
+  rule->conditions[rule->conditionCount++] = condition; return nullptr;
 }
 const char *ConfigurationService::replaceCondition(recovery::RuleId id, std::size_t index, const recovery::Condition &condition) {
   if (const char *error = editError()) return error;
-  auto *r = findRule(id);
-  if (!r || index >= r->conditionCount || !editableCondition(condition)) return "INVALID_ARGUMENT";
-  r->conditions[index] = condition; return nullptr;
+  auto *rule = findRule(id);
+  if (!rule || index >= rule->conditionCount || !editableCondition(condition)) return "INVALID_ARGUMENT";
+  rule->conditions[index] = condition; return nullptr;
 }
 const char *ConfigurationService::removeCondition(recovery::RuleId id, std::size_t index) {
   if (const char *error = editError()) return error;
-  auto *r = findRule(id); if (!r || index >= r->conditionCount) return "INVALID_ARGUMENT";
-  for (std::size_t i = index + 1; i < r->conditionCount; ++i) r->conditions[i - 1] = r->conditions[i];
-  r->conditions[--r->conditionCount] = {}; return nullptr;
+  auto *rule = findRule(id); if (!rule || index >= rule->conditionCount) return "INVALID_ARGUMENT";
+  for (std::size_t i = index + 1; i < rule->conditionCount; ++i) rule->conditions[i - 1] = rule->conditions[i];
+  rule->conditions[--rule->conditionCount] = {}; return nullptr;
 }
 const char *ConfigurationService::assignOutput(recovery::RuleId id, recovery::OutputKind kind, uint32_t channel, uint32_t delayMs) {
   if (const char *error = editError()) return error;
-  auto *r = findRule(id);
-  if (!r || !validOutput(kind, channel) || delayMs > limits_.maxTimingMs || r->assignmentCount == recovery::MaxAssignments ||
+  auto *rule = findRule(id);
+  if (!rule || !validOutput(kind, channel) || delayMs > limits_.maxTimingMs || rule->assignmentCount == recovery::MaxAssignments ||
       (kind == recovery::OutputKind::Pyro && recovery::PyroPulseMs > limits_.maxPyroPulseMs))
     return "INVALID_ARGUMENT";
   for (std::size_t i = 0; i < draft_.ruleCount; ++i)
     for (std::size_t j = 0; j < draft_.rules[i].assignmentCount; ++j) {
-      const auto &a = draft_.rules[i].assignments[j];
-      if (a.kind == kind && a.channel == channel) return "OUTPUT_ALREADY_ASSIGNED";
+      const auto &assignment = draft_.rules[i].assignments[j];
+      if (assignment.kind == kind && assignment.channel == channel) return "OUTPUT_ALREADY_ASSIGNED";
     }
-  auto &a = r->assignments[r->assignmentCount++]; a = {}; a.kind = kind; a.channel = uint8_t(channel);
-  a.delayMs = delayMs;
+  auto &assignment = rule->assignments[rule->assignmentCount++]; assignment = {}; assignment.kind = kind; assignment.channel = uint8_t(channel);
+  assignment.delayMs = delayMs;
   if (kind == recovery::OutputKind::Pyro) draft_.pyros[channel-1].pulseMs = recovery::PyroPulseMs;
   return nullptr;
 }
 const char *ConfigurationService::unassignOutput(recovery::RuleId id, recovery::OutputKind kind, uint32_t channel) {
   if (const char *error = editError()) return error;
-  auto *r = findRule(id); if (!r || !validOutput(kind, channel)) return "INVALID_ARGUMENT";
-  for (std::size_t i = 0; i < r->assignmentCount; ++i) {
-    if (r->assignments[i].kind != kind || r->assignments[i].channel != channel) continue;
-    for (std::size_t j = i + 1; j < r->assignmentCount; ++j) r->assignments[j - 1] = r->assignments[j];
-    r->assignments[--r->assignmentCount] = {}; return nullptr;
+  auto *rule = findRule(id); if (!rule || !validOutput(kind, channel)) return "INVALID_ARGUMENT";
+  for (std::size_t i = 0; i < rule->assignmentCount; ++i) {
+    if (rule->assignments[i].kind != kind || rule->assignments[i].channel != channel) continue;
+    for (std::size_t j = i + 1; j < rule->assignmentCount; ++j) rule->assignments[j - 1] = rule->assignments[j];
+    rule->assignments[--rule->assignmentCount] = {}; return nullptr;
   }
   return "INVALID_ARGUMENT";
 }
@@ -227,22 +227,22 @@ const char *ConfigurationService::setAirbrakeChannels(uint32_t mask) {
   if (mask>15) return "INVALID_ARGUMENT";
   draft_.airbrakes.channelMask=uint8_t(mask); return nullptr;
 }
-const char *ConfigurationService::addAirbrakeCondition(const recovery::Condition &c) {
+const char *ConfigurationService::addAirbrakeCondition(const recovery::Condition &condition) {
   if (const char *error=editError()) return error;
-  auto &a=draft_.airbrakes;
-  if (a.conditionCount>=recovery::MaxConditions || !editableCondition(c)) return "INVALID_ARGUMENT";
-  a.conditions[a.conditionCount++]=c; return nullptr;
+  auto &airbrakes=draft_.airbrakes;
+  if (airbrakes.conditionCount>=recovery::MaxConditions || !editableCondition(condition)) return "INVALID_ARGUMENT";
+  airbrakes.conditions[airbrakes.conditionCount++]=condition; return nullptr;
 }
-const char *ConfigurationService::replaceAirbrakeCondition(std::size_t index,const recovery::Condition &c) {
+const char *ConfigurationService::replaceAirbrakeCondition(std::size_t index,const recovery::Condition &condition) {
   if (const char *error=editError()) return error;
-  auto &a=draft_.airbrakes;
-  if (index>=a.conditionCount || !editableCondition(c)) return "INVALID_ARGUMENT";
-  a.conditions[index]=c; return nullptr;
+  auto &airbrakes=draft_.airbrakes;
+  if (index>=airbrakes.conditionCount || !editableCondition(condition)) return "INVALID_ARGUMENT";
+  airbrakes.conditions[index]=condition; return nullptr;
 }
 const char *ConfigurationService::removeAirbrakeCondition(std::size_t index) {
   if (const char *error=editError()) return error;
-  auto &a=draft_.airbrakes;
-  if (index>=a.conditionCount) return "INVALID_ARGUMENT";
-  for (std::size_t i=index+1;i<a.conditionCount;++i) a.conditions[i-1]=a.conditions[i];
-  a.conditions[--a.conditionCount]={}; return nullptr;
+  auto &airbrakes=draft_.airbrakes;
+  if (index>=airbrakes.conditionCount) return "INVALID_ARGUMENT";
+  for (std::size_t i=index+1;i<airbrakes.conditionCount;++i) airbrakes.conditions[i-1]=airbrakes.conditions[i];
+  airbrakes.conditions[--airbrakes.conditionCount]={}; return nullptr;
 }

@@ -87,14 +87,14 @@ bool CommandRouter::airbrakeStatusReply(const char *command, const char *argumen
   const bool physicalActive = arming_ && arming_->active();
   protocol::Tokens t(arguments); protocol::Json data;
   auto runtime=physicalActive ? arming_->status() : simActive ? simulation_->status() : hil_.status();
-  const auto *plan=settings_.applied(); const auto &a=runtime.airbrakes;
+  const auto *plan=settings_.applied(); const auto &airbrakes=runtime.airbrakes;
   data.add(R"(,"enabled":%s,"active":%s,"physical":%s,"channel_mask":%u,"flags":%u,"failed_conditions":%u,"opening_pct":[)",
     settings_.airbrakesEnabled() ? "true" : "false",runtime.active ? "true" : "false",
     runtime.outputMode==storage::OutputMode::Physical ? "true" : "false",plan ? unsigned(plan->airbrakes.channelMask) : 0,
-    runtime.active ? unsigned(a.flags) : 0,runtime.active ? unsigned(a.failedConditions) : 0);
+    runtime.active ? unsigned(airbrakes.flags) : 0,runtime.active ? unsigned(airbrakes.failedConditions) : 0);
   for (unsigned i=0;i<4;++i) {
     if (i) data.add(",");
-    if (runtime.active && a.opening[i]!=65535) data.add("%.2f",double(a.opening[i])/100); else data.add("null");
+    if (runtime.active && airbrakes.opening[i]!=65535) data.add("%.2f",double(airbrakes.opening[i])/100); else data.add("null");
   }
   data.add("]");
   return protocol::finish(command,data,t.valid && t.count==1 ? nullptr : "INVALID_ARGUMENT",hasId,id,output,capacity);

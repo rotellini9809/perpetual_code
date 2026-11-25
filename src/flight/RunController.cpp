@@ -12,8 +12,8 @@ const char *RunController::begin(RunMode mode, ConfigurationService &config) {
   settings_ = &config;
   settings_->setDisarmed(false);
   ruleCount_ = config.applied()->ruleCount;
-  for (std::size_t i = 0; i < ruleCount_; ++i) ids_[i] = config.applied()->rules[i].id;
-  reported_ = {}; previousPhase_=recovery::FlightPhase::Pad; landed_ = false; landedAt_ = 0;
+  for (std::size_t i = 0; i < ruleCount_; ++i) ruleIds_[i] = config.applied()->rules[i].id;
+  triggerReported_ = {}; previousPhase_=recovery::FlightPhase::Pad; landed_ = false; landedAtMs_ = 0;
   progress_[mode == RunMode::Sensors ? 1 : 0] = {};
   ++identity_; mode_ = mode; return nullptr;
 }
@@ -25,25 +25,25 @@ unsigned RunController::stop(RunMode mode) {
   engine_.end(); settings_->releaseRun(); settings_->setDisarmed(true); settings_ = nullptr; mode_ = RunMode::None; return pending;
 }
 bool RunController::validTime(RunMode mode, uint32_t time) const {
-  const auto &p = progress(mode);
-  return active(mode) && (!p.samples || time > p.timeMs) && p.samples != std::numeric_limits<uint32_t>::max();
+  const auto &runProgress = progress(mode);
+  return active(mode) && (!runProgress.samples || time > runProgress.timeMs) && runProgress.samples != std::numeric_limits<uint32_t>::max();
 }
 RunEvaluation RunController::evaluate(RunMode mode, uint32_t time, const recovery::FlightSnapshot &snapshot) {
   if (!validTime(mode, time)) return {};
   if (snapshot.phaseValid && settings_->stateMachine().bistage && previousPhase_==recovery::FlightPhase::Coast && snapshot.phase==recovery::FlightPhase::Descent) engine_.cancelPending();
   if (snapshot.phaseValid) previousPhase_=snapshot.phase;
   if (snapshot.phaseValid && snapshot.phase == recovery::FlightPhase::Landed && !landed_) {
-    landed_ = true; landedAt_ = time;
+    landed_ = true; landedAtMs_ = time;
   }
-  if (landed_ && time - landedAt_ >= 15000) engine_.closeStarts();
+  if (landed_ && time - landedAtMs_ >= LandingStartWindowMs) engine_.closeStarts();
   RunEvaluation result;
   static_cast<recovery::Evaluation &>(result) = engine_.evaluate(time, snapshot);
   if (result.accepted) {
     for (std::size_t i = 0; i < ruleCount_; ++i) {
-      if (reported_[i] || !engine_.rules()[i].triggered) continue;
-      reported_[i] = true; result.triggered[result.triggerCount++] = ids_[i];
+      if (triggerReported_[i] || !engine_.rules()[i].triggered) continue;
+      triggerReported_[i] = true; result.triggered[result.triggerCount++] = ruleIds_[i];
     }
-    auto &p = progress_[mode == RunMode::Sensors ? 1 : 0]; ++p.samples; p.timeMs = time;
+    auto &runProgress = progress_[mode == RunMode::Sensors ? 1 : 0]; ++runProgress.samples; runProgress.timeMs = time;
   }
   return result;
 }

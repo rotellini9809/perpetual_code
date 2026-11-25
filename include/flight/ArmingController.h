@@ -16,8 +16,8 @@ struct Preflight {
   uint32_t blockers = 0;
   uint8_t failedPyros = 0, unpreparedServos = 0, unconfiguredServos = 0, preparedServos = 0;
   bool ready() const { return blockers == 0; }
-  void block(ArmBlocker b) { blockers |= uint32_t(1) << unsigned(b); }
-  bool has(ArmBlocker b) const { return (blockers & (uint32_t(1) << unsigned(b))) != 0; }
+  void block(ArmBlocker blocker) { blockers |= uint32_t(1) << unsigned(blocker); }
+  bool has(ArmBlocker blocker) const { return (blockers & (uint32_t(1) << unsigned(blocker))) != 0; }
   const char *imuCalibrationState = "absent";
   const char *imuCalibrationReason = "MISSING";
   const char *error() const;
@@ -36,14 +36,17 @@ const char *armingStateName(ArmingState state);
 const char *flightModeName(FlightMode mode);
 
 // Shared lifecycle; physical simulation checks outputs but skips real sensors/calibration.
+// Physical arming: Disarmed -> Arming (RAM-only gyro bias/attitude collection) -> Preparing
+// (recording prepared on core 1) -> Armed -> Closing (recording still finishing) -> Disarmed.
 class ArmingController {
 public:
+  static constexpr uint32_t ImuCalibrationTimeoutUs = 180000000; // 3 minutes without a capture command.
   ArmingController(ConfigurationService &config, RunController &run, timing::Clock clock = nullptr,
                    storage::RecordingSink *recorder = nullptr, OutputExecutor *outputs = nullptr)
       : config_(config), clock_(clock), recorder_(recorder), runtime_(config, run, clock, recorder, outputs), outputs_(outputs) {}
   Preflight preflight(FlightMode mode, bool record, PhysicalChecks *checks = nullptr,
                       storage::OutputMode outputMode = storage::OutputMode::Virtual) const;
-  const char *arm(sensors::SensorSource &source, FlightMode mode, float reference, float hz,
+  const char *arm(sensors::SensorSource &source, FlightMode mode, float referenceAltitude, float nominalHz,
                   const navigation::SensorCalibration &device = navigation::SensorCalibration{},
                   uint32_t recordBytes = 0, PhysicalChecks *checks = nullptr,
                   storage::OutputMode outputMode = storage::OutputMode::Virtual);
@@ -90,7 +93,7 @@ public:
   void refreshRecordingStatus(RuntimeStatus &status) const { runtime_.refreshRecordingStatus(status); }
 private:
   void settleImuApproval();
-  const char *startRuntime(float reference, const navigation::SensorCalibration &calibration);
+  const char *startRuntime(float referenceAltitude, const navigation::SensorCalibration &calibration);
   ConfigurationService &config_;
   timing::Clock clock_;
   storage::RecordingSink *recorder_;
@@ -102,16 +105,18 @@ private:
   PhysicalChecks *checks_ = nullptr;
   FlightMode mode_ = FlightMode::Physical;
   ArmingState state_ = ArmingState::Disarmed;
-  bool reserved_ = false;
-  float hz_ = 0;
+  bool runReserved_ = false; // Holds the ConfigurationService run lock (arming calibration or IMU calibration).
+  float nominalHz_ = 0; // Expected IMU frame rate handed to the runtime.
   uint32_t recordBytes_ = 0;
   navigation::NavigationOutput navigation_;
   const char *error_ = "None";
   Preflight lastPreflight_;
   storage::ImuCalibrationStore *imuStore_=nullptr;
   ImuCalibration imuCalibration_;
+  // arm() marks the stored IMU approval InUse. A run that ends before BOOST gives it back as Verified
+  // (settleImuApproval); after BOOST it stays InUse and the next flight needs a new verification.
   bool approvalReserved_=false,boostConsumed_=false;
-  uint32_t imuOperationTime_=0;
+  uint32_t imuCalibrationActivityUs_=0; // Last IMU calibration command, for ImuCalibrationTimeoutUs.
   const char *imuError_="None";
 };
 }

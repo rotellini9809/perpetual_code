@@ -4,64 +4,64 @@
 
 namespace navigation {
 void FlightDetector::reset(const recovery::StateMachineSettings &settings) {
-  settings_=settings; phase_=Phase::Pad; stable_=minimum_=maximum_=0; window_=false;
-  samples_=0; velocities_={}; median_=0; abortReason_=recovery::AbortReason::None;
-  boostTime_=coastTime_=-1;
+  settings_=settings; phase_=Phase::Pad; landingStillSeconds_=landingAltitudeMin_=landingAltitudeMax_=0; landingWindowOpen_=false;
+  coastVelocitySamples_=0; coastVelocities_={}; coastVelocityMedian_=0; abortReason_=recovery::AbortReason::None;
+  boostElapsed_=coastElapsed_=-1;
 }
 void FlightDetector::confirmCoastVelocity(float velocity) {
-  if (!settings_.bistage || phase_!=Phase::Coast || samples_>=8 || !std::isfinite(velocity)) return;
-  velocities_[samples_++]=velocity;
-  if (samples_==8) {
-    auto sorted=velocities_; std::sort(sorted.begin(),sorted.end()); median_=sorted[3]*.5f+sorted[4]*.5f;
-    if (median_<=settings_.minimumCoastVelocity) { phase_=Phase::Abort; abortReason_=recovery::AbortReason::Velocity; }
+  if (!settings_.bistage || phase_!=Phase::Coast || coastVelocitySamples_>=CoastVelocitySampleCount || !std::isfinite(velocity)) return;
+  coastVelocities_[coastVelocitySamples_++]=velocity;
+  if (coastVelocitySamples_==CoastVelocitySampleCount) {
+    auto sorted=coastVelocities_; std::sort(sorted.begin(),sorted.end()); coastVelocityMedian_=sorted[3]*.5f+sorted[4]*.5f;
+    if (coastVelocityMedian_<=settings_.minimumCoastVelocity) { phase_=Phase::Abort; abortReason_=recovery::AbortReason::Velocity; }
   }
 }
 bool FlightDetector::ignition(float magnitude, float dt) {
-  if (boostTime_ < 0 ? magnitude > BoostTriggerMps2 : magnitude > BoostHoldMps2) return confirm(boostTime_,dt,BoostConfirmSeconds);
-  boostTime_=-1; return false;
+  if (boostElapsed_ < 0 ? magnitude > BoostTriggerMps2 : magnitude > BoostHoldMps2) return confirm(boostElapsed_,dt,BoostConfirmSeconds);
+  boostElapsed_=-1; return false;
 }
-void FlightDetector::update(float dt, float magnitude, float bodyX, float gyro, float baro, float velocity, float tilt) {
-  if (!std::isfinite(dt) || dt <= 0 || dt > 0.1f || !std::isfinite(magnitude) ||
-      !std::isfinite(bodyX) || !std::isfinite(gyro) || !std::isfinite(velocity)) {
-    stable_ = 0; window_ = false; interruptConfirmation(); return;
+void FlightDetector::update(float dt, float accelerationMagnitude, float bodyX, float gyroMagnitude, float barometerAltitude, float previousVerticalVelocity, float tiltRadians) {
+  if (!std::isfinite(dt) || dt <= 0 || dt > 0.1f || !std::isfinite(accelerationMagnitude) ||
+      !std::isfinite(bodyX) || !std::isfinite(gyroMagnitude) || !std::isfinite(previousVerticalVelocity)) {
+    landingStillSeconds_ = 0; landingWindowOpen_ = false; interruptConfirmation(); return;
   }
-  if (settings_.bistage && phase_==Phase::Coast && std::isfinite(tilt) && tilt>=40.0f*0.017453292519943295f) {
+  if (settings_.bistage && phase_==Phase::Coast && std::isfinite(tiltRadians) && tiltRadians>=BistageAbortTiltRadians) {
     phase_=Phase::Abort; abortReason_=recovery::AbortReason::Tilt;
   }
   switch (phase_) {
     case Phase::Pad:
-      if (ignition(magnitude,dt)) phase_=Phase::Boost;
+      if (ignition(accelerationMagnitude,dt)) phase_=Phase::Boost;
       break;
     case Phase::Boost:
-      if (bodyX>0) coastTime_=-1;
-      else if (confirm(coastTime_,dt,CoastConfirmSeconds)) {
+      if (bodyX>0) coastElapsed_=-1;
+      else if (confirm(coastElapsed_,dt,CoastConfirmSeconds)) {
         phase_=Phase::Coast;
-        if (settings_.bistage && std::isfinite(tilt) && tilt>=40.0f*0.017453292519943295f) {
+        if (settings_.bistage && std::isfinite(tiltRadians) && tiltRadians>=BistageAbortTiltRadians) {
           phase_=Phase::Abort; abortReason_=recovery::AbortReason::Tilt;
         }
       }
       break;
     case Phase::Coast:
-      if (velocity<=-.5f) phase_=Phase::Descent;
-      else if (settings_.bistage && samples_==8 && ignition(magnitude,dt)) phase_=Phase::Boost2; // Same rule as launch.
+      if (previousVerticalVelocity<=-.5f) phase_=Phase::Descent;
+      else if (settings_.bistage && coastVelocitySamples_==CoastVelocitySampleCount && ignition(accelerationMagnitude,dt)) phase_=Phase::Boost2; // Same rule as launch.
       break;
     case Phase::Boost2:
-      if (bodyX>0) coastTime_=-1;
-      else if (confirm(coastTime_,dt,CoastConfirmSeconds)) phase_=Phase::Coast2;
+      if (bodyX>0) coastElapsed_=-1;
+      else if (confirm(coastElapsed_,dt,CoastConfirmSeconds)) phase_=Phase::Coast2;
       break;
-    case Phase::Coast2: if (velocity<=-.5f) phase_=Phase::Descent; break;
+    case Phase::Coast2: if (previousVerticalVelocity<=-.5f) phase_=Phase::Descent; break;
     case Phase::Abort: break;
     case Phase::Descent: case Phase::Landed: break;
   }
-  if (phase_ != Phase::Descent) { stable_ = 0; window_ = false; return; }
-  if (std::fabs(magnitude - 9.81f) >= 2.0f || !std::isfinite(gyro) || gyro >= 0.5f) {
-    stable_ = 0; window_ = false;
-  } else if (std::isfinite(baro)) {
-    if (!window_) { minimum_ = maximum_ = baro; window_ = true; }
-    else { minimum_ = std::fmin(minimum_, baro); maximum_ = std::fmax(maximum_, baro); }
-    if (maximum_ - minimum_ < 1.0f) {
-      stable_ += dt; if (stable_ >= 2.0f) phase_ = Phase::Landed;
-    } else { stable_ = 0; window_ = false; }
-  } else if (window_) stable_ += dt; // Legacy: only a fresh baro can confirm landing.
+  if (phase_ != Phase::Descent) { landingStillSeconds_ = 0; landingWindowOpen_ = false; return; }
+  if (std::fabs(accelerationMagnitude - 9.81f) >= 2.0f || !std::isfinite(gyroMagnitude) || gyroMagnitude >= 0.5f) {
+    landingStillSeconds_ = 0; landingWindowOpen_ = false;
+  } else if (std::isfinite(barometerAltitude)) {
+    if (!landingWindowOpen_) { landingAltitudeMin_ = landingAltitudeMax_ = barometerAltitude; landingWindowOpen_ = true; }
+    else { landingAltitudeMin_ = std::fmin(landingAltitudeMin_, barometerAltitude); landingAltitudeMax_ = std::fmax(landingAltitudeMax_, barometerAltitude); }
+    if (landingAltitudeMax_ - landingAltitudeMin_ < 1.0f) {
+      landingStillSeconds_ += dt; if (landingStillSeconds_ >= 2.0f) phase_ = Phase::Landed;
+    } else { landingStillSeconds_ = 0; landingWindowOpen_ = false; }
+  } else if (landingWindowOpen_) landingStillSeconds_ += dt; // Legacy: only a fresh barometer reading can confirm landing.
 }
 }

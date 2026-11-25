@@ -57,17 +57,17 @@ constexpr uint32_t StackPaint = 0x5AC3A55Cu, Core1StackBytes = 0x2000;
 uint32_t *core1StackBottom = nullptr;
 __attribute__((noinline)) void paintStack(uint32_t *bottom) {
   uint32_t *sp; asm volatile("mov %0, sp" : "=r"(sp));
-  for (volatile uint32_t *p = bottom; p + 32 < sp; ++p) *p = StackPaint; // 128 bytes below the live frame stay untouched.
+  for (volatile uint32_t *word = bottom; word + 32 < sp; ++word) *word = StackPaint; // 128 bytes below the live frame stay untouched.
 }
 StackUse stackUse(const uint32_t *bottom, const uint32_t *top) {
   StackUse use; if (!bottom || top <= bottom) return use;
   use.capacityBytes = uint32_t(top - bottom) * 4;
-  const volatile uint32_t *p = bottom; while (p < top && *p == StackPaint) ++p;
-  use.usedBytes = uint32_t(top - p) * 4; use.exhausted = p == bottom;
-  bool first = true;
-  for (const volatile uint32_t *q = bottom; q < top; ++q) if (*q == StackPaint) {
-    use.intactBytes += 4; const uint32_t offset = uint32_t(q - bottom) * 4;
-    if (first) { use.intactLowOffset = offset; first = false; }
+  const volatile uint32_t *lowestUsed = bottom; while (lowestUsed < top && *lowestUsed == StackPaint) ++lowestUsed;
+  use.usedBytes = uint32_t(top - lowestUsed) * 4; use.exhausted = lowestUsed == bottom;
+  bool firstIntact = true;
+  for (const volatile uint32_t *word = bottom; word < top; ++word) if (*word == StackPaint) {
+    use.intactBytes += 4; const uint32_t offset = uint32_t(word - bottom) * 4;
+    if (firstIntact) { use.intactLowOffset = offset; firstIntact = false; }
     use.intactHighOffset = offset;
   }
   return use;
@@ -127,12 +127,12 @@ flight::ArmingController physicalFlight(settings, run, navigationClock, &recordi
 class BoardArmingChecks : public flight::PhysicalChecks {
 public:
   flight::PhysicalReadiness inspect() override {
-    flight::PhysicalReadiness r;
-    r.imuReady = hardwareSource.imuReady(); r.baroReady = hardwareSource.baroReady();
+    flight::PhysicalReadiness readiness;
+    readiness.imuReady = hardwareSource.imuReady(); readiness.baroReady = hardwareSource.baroReady();
     // A missing IMU or barometer blocks physical mode. Never fake hardware
     // measurements. Simulation explicitly skips physical hardware checks.
     // Output preparation/continuity are shared with simulation in OutputExecutor.
-    return r;
+    return readiness;
   }
 } physicalChecks;
 ArmingCommands armingCommands(physicalFlight, hardwareSource, physicalChecks, &standaloneSimulation, &hilSession);
@@ -155,17 +155,20 @@ uint32_t bluetoothUartBaud = bluetooth::Jdy34Link::UartBaud;
 uint32_t bluetoothQuietSince = 0; // Last time a reply or AT request was still being sent.
 CommandService::Status commandStatus;
 bool usbConnected = false;
-bool bluetoothGate = false;
-uint32_t bluetoothEpoch = 0;
-const char *bluetoothQuery = nullptr;
-std::size_t bluetoothQueryOffset = 0;
+bool bluetoothDataMode = false; // PWRC level: high once the module is ready (data), low for AT commands.
+uint32_t bluetoothSessionEpoch = 0; // Last Jdy34Link::epoch() seen; a change resets the command session.
+const char *bluetoothAtRequest = nullptr; // AT request being written to the UART, byte by byte.
+std::size_t bluetoothAtRequestSent = 0;
 uint32_t lastHardwarePollUs = 0, lastBaroMs = 0, lastImuMs = 0;
 BoardDiagnostics diagnostics;
-uint32_t lastLoopUs = 0, runFifoBase = 0, runFifoEnd = 0, runStartMs = 0;
+// IMU FIFO overruns of the current/last physical run = counter now (or at run end) minus the base.
+uint32_t lastLoopUs = 0, runFifoOverrunsBase = 0, runFifoOverrunsAtEnd = 0, runStartMs = 0;
 bool loopUsbInput = false; // The previous loop read USB command input.
 bool runWasActive = false;
-const flight::ArmingController *lastRun = nullptr; // Physical, simulation or HIL owner of the last run.
+const flight::ArmingController *lastRunOwner = nullptr; // Physical, simulation or HIL owner of the last run.
 uint64_t lastBaroSequence = 0, lastImuSequence = 0;
+
+constexpr float RadiansToDegrees = 57.2957795f;
 
 void updateHardwareStatus() {
   if (hardwareSource.latest().baroSequence != lastBaroSequence) {
@@ -225,9 +228,9 @@ template <class Port> void sendPending(Port &port, CommandEndpoint &endpoint) {
 }
 
 void syncBluetoothSession() {
-  if (bluetoothEpoch == bluetoothLink.epoch()) return;
+  if (bluetoothSessionEpoch == bluetoothLink.epoch()) return;
   bluetoothEndpoint.reset(); bluetoothSession.disconnect();
-  bluetoothEpoch = bluetoothLink.epoch();
+  bluetoothSessionEpoch = bluetoothLink.epoch();
 }
 
 void pollBluetooth() {
@@ -247,22 +250,22 @@ void pollBluetooth() {
   // requests one writable byte at a time, exactly like application responses.
   // Start a rename only after its accepting reply reached the phone or PC: the module still has to
   // transmit the bytes over the air after they leave the UART, and the rename then drops the link.
-  if (bluetoothEndpoint.pending() || bluetoothQuery) bluetoothQuietSince = millis();
+  if (bluetoothEndpoint.pending() || bluetoothAtRequest) bluetoothQuietSince = millis();
   else if (bluetoothLink.renamePending() && uint32_t(millis()-bluetoothQuietSince) >= 500) { Serial2.flush(); bluetoothLink.startRename(millis()); }
-  if (!bluetoothQuery) {
-    bluetoothQuery = bluetoothLink.poll(millis()); bluetoothQueryOffset = 0;
+  if (!bluetoothAtRequest) {
+    bluetoothAtRequest = bluetoothLink.poll(millis()); bluetoothAtRequestSent = 0;
   }
   // Setup of a factory module switches between 230400 and 9600; requests are complete by then.
-  if (bluetoothLink.uartBaud() != bluetoothUartBaud && !bluetoothQuery) {
+  if (bluetoothLink.uartBaud() != bluetoothUartBaud && !bluetoothAtRequest) {
     Serial2.flush(); Serial2.end(); bluetoothUartBaud = bluetoothLink.uartBaud(); Serial2.begin(bluetoothUartBaud);
     commandStatus.bluetoothBaud = bluetoothUartBaud;
   }
-  if (bluetoothQuery && Serial2.availableForWrite() > 0) {
-    if (Serial2.write(uint8_t(bluetoothQuery[bluetoothQueryOffset]))) ++bluetoothQueryOffset;
-    if (!bluetoothQuery[bluetoothQueryOffset]) bluetoothQuery = nullptr;
+  if (bluetoothAtRequest && Serial2.availableForWrite() > 0) {
+    if (Serial2.write(uint8_t(bluetoothAtRequest[bluetoothAtRequestSent]))) ++bluetoothAtRequestSent;
+    if (!bluetoothAtRequest[bluetoothAtRequestSent]) bluetoothAtRequest = nullptr;
   }
-  if (bluetoothGate != bluetoothLink.ready()) {
-    bluetoothGate = bluetoothLink.ready(); gpio_put(PWRC_BLE, bluetoothGate);
+  if (bluetoothDataMode != bluetoothLink.ready()) {
+    bluetoothDataMode = bluetoothLink.ready(); gpio_put(PWRC_BLE, bluetoothDataMode);
   }
   commandStatus.bluetoothReady = bluetoothLink.ready();
   commandStatus.bluetoothConnected = bluetoothLink.connected();
@@ -273,16 +276,16 @@ void pollBluetooth() {
   if (bluetoothLink.connected()) sendPending(Serial2, bluetoothEndpoint);
 }
 
-void refreshDiagnostics(BoardDiagnostics &d) {
-  d.stack[0] = stackUse(&__scratch_x_end__, &__StackTop);
-  d.stack[1] = stackUse(core1StackBottom, core1StackBottom ? core1StackBottom + Core1StackBytes/4 : nullptr);
-  d.runActive = runWasActive;
-  if (!lastRun) return;
-  const auto &t = lastRun->runtime().timing();
-  d.step = t.step; d.compute = t.compute; d.storage = t.storage; d.overBudget = t.overBudget;
-  d.frameDtMinUs = t.frameDtMinUs; d.frameDtMaxUs = t.frameDtMaxUs; d.sequenceGaps = t.sequenceGaps;
+void refreshDiagnostics(BoardDiagnostics &diag) {
+  diag.stack[0] = stackUse(&__scratch_x_end__, &__StackTop);
+  diag.stack[1] = stackUse(core1StackBottom, core1StackBottom ? core1StackBottom + Core1StackBytes/4 : nullptr);
+  diag.runActive = runWasActive;
+  if (!lastRunOwner) return;
+  const auto &runTiming = lastRunOwner->runtime().timing();
+  diag.step = runTiming.step; diag.compute = runTiming.compute; diag.storage = runTiming.storage; diag.overBudget = runTiming.overBudget;
+  diag.frameDtMinUs = runTiming.frameDtMinUs; diag.frameDtMaxUs = runTiming.frameDtMaxUs; diag.sequenceGaps = runTiming.sequenceGaps;
   // Simulation and HIL do not read the IMU, so its FIFO overruns only mean something for a physical run.
-  d.fifoOverruns = lastRun == &physicalFlight ? (runWasActive ? sensorDevice.imuFifoOverruns() : runFifoEnd) - runFifoBase : 0;
+  diag.fifoOverruns = lastRunOwner == &physicalFlight ? (runWasActive ? sensorDevice.imuFifoOverruns() : runFifoOverrunsAtEnd) - runFifoOverrunsBase : 0;
 }
 
 void setup() {
@@ -333,7 +336,7 @@ void setup() {
   // Hardware UART1: MCU TX GP4, RX GP5. PWRC is AT access, not power/reset.
   gpio_init(PWRC_BLE); gpio_put(PWRC_BLE, false); gpio_set_dir(PWRC_BLE, GPIO_OUT);
   Serial2.setTX(TX_BLE); Serial2.setRX(RX_BLE); Serial2.setFIFOSize(256); Serial2.begin(bluetooth::Jdy34Link::UartBaud); commandStatus.bluetoothBaud=bluetooth::Jdy34Link::UartBaud;
-  bluetoothLink.begin(millis()); bluetoothEpoch = bluetoothLink.epoch();
+  bluetoothLink.begin(millis()); bluetoothSessionEpoch = bluetoothLink.epoch();
   // Blue means development/disarmed, not flight-ready.
 }
 
@@ -341,7 +344,7 @@ void loop() {
   const uint32_t loopUs = micros();
   // Loop evidence belongs to the run: it stops at run end, so commands after landing
   // (flight list, download) never show up as flight stalls. Before any run it covers idle.
-  if (lastLoopUs && (runWasActive || !lastRun)) {
+  if (lastLoopUs && (runWasActive || !lastRunOwner)) {
     const uint32_t period = loopUs - lastLoopUs;
     if (period > diagnostics.loop.maxUs) { // Phase and input are still those of the loop that just ended.
       diagnostics.loopMaxRunMs = millis() - runStartMs; diagnostics.loopMaxPhase = commandStatus.phase;
@@ -370,11 +373,11 @@ void loop() {
     lastHardwarePollUs = nowUs;
     sensors::Reading frame;
     const auto readStart = micros();
-    const bool emitted = hardwareSource.poll(frame);
-    const uint32_t elapsed = micros() - readStart;
+    const bool frameEmitted = hardwareSource.poll(frame);
+    const uint32_t readUs = micros() - readStart;
     // Frame-time quality as navigation would see it (dt and sequence continuity).
     static uint64_t lastFrameUs = 0; static uint32_t lastSequence = 0;
-    if (emitted) {
+    if (frameEmitted) {
       if (lastSequence && frame.imuSequence == lastSequence + 1 && frame.timeUs > lastFrameUs) {
         const auto dt = uint32_t(frame.timeUs - lastFrameUs);
         if (!commandStatus.idleDtMinUs || dt < commandStatus.idleDtMinUs) commandStatus.idleDtMinUs = dt;
@@ -384,16 +387,16 @@ void loop() {
     }
     commandStatus.imuFifoOverruns = sensorDevice.imuFifoOverruns(); commandStatus.imuFifoErrors = sensorDevice.imuFifoErrors();
     ++commandStatus.idlePolls;
-    commandStatus.idleReadUs += elapsed;
-    if (elapsed > commandStatus.idleReadMaxUs) commandStatus.idleReadMaxUs = elapsed;
+    commandStatus.idleReadUs += readUs;
+    if (readUs > commandStatus.idleReadMaxUs) commandStatus.idleReadMaxUs = readUs;
     if (sensorDevice.sample().imuFresh && sensorDevice.sample().imuValid) ++commandStatus.idleImuSamples;
     if (sensorDevice.sample().baroFresh && sensorDevice.sample().baroValid) ++commandStatus.idleBaroSamples;
   }
-  const bool connected = static_cast<bool>(Serial);
-  if (connected != usbConnected) {
+  const bool usbNowConnected = static_cast<bool>(Serial);
+  if (usbNowConnected != usbConnected) {
     usbEndpoint.reset();
-    if (!connected) usbSession.disconnect();
-    usbConnected = connected;
+    if (!usbNowConnected) usbSession.disconnect();
+    usbConnected = usbNowConnected;
   }
   commandStatus.uptimeMs = millis();
   commandStatus.powerMode=power.name();
@@ -406,51 +409,52 @@ void loop() {
   commandStatus.estimateReplayActive = replay.active();
   commandStatus.sensorHilActive = hil.active();
   commandStatus.simulationActive = standaloneSimulation.active();
-  const flight::ArmingController *owner = nullptr;
-  if (physicalFlight.active() || physicalFlight.state() == flight::ArmingState::Closing) owner = &physicalFlight;
-  else if (standaloneSimulation.active() || standaloneSimulation.controller().state() == flight::ArmingState::Closing) owner = &standaloneSimulation.controller();
-  else if (hil.active() || hilSession.controller().state() == flight::ArmingState::Closing) owner = &hilSession.controller();
-  if (owner && !runWasActive) { // A run begins: loop and run evidence restart for it.
+  const flight::ArmingController *runOwner = nullptr;
+  if (physicalFlight.active() || physicalFlight.state() == flight::ArmingState::Closing) runOwner = &physicalFlight;
+  else if (standaloneSimulation.active() || standaloneSimulation.controller().state() == flight::ArmingState::Closing) runOwner = &standaloneSimulation.controller();
+  else if (hil.active() || hilSession.controller().state() == flight::ArmingState::Closing) runOwner = &hilSession.controller();
+  if (runOwner && !runWasActive) { // A run begins: loop and run evidence restart for it.
     diagnostics.loop = {}; diagnostics.loopOverPeriod = 0; diagnostics.loopMaxRunMs = 0; diagnostics.loopMaxPhase = -1;
-    diagnostics.loopMaxUsbInput = false; runStartMs = millis(); runFifoBase = sensorDevice.imuFifoOverruns(); lastRun = owner;
-    diagnostics.run = owner == &physicalFlight ? "physical" : owner == &standaloneSimulation.controller() ? "simulation" : "hil";
+    diagnostics.loopMaxUsbInput = false; runStartMs = millis(); runFifoOverrunsBase = sensorDevice.imuFifoOverruns(); lastRunOwner = runOwner;
+    diagnostics.run = runOwner == &physicalFlight ? "physical" : runOwner == &standaloneSimulation.controller() ? "simulation" : "hil";
   }
-  if (owner == &physicalFlight) {
+  if (runOwner == &physicalFlight) {
     // The IMU is not read while the recording is prepared (initial erase on core 1), and the
     // overrun this leaves is detected by the first read after it. Count from the first processed
     // frame, the one that re-anchors the timing; later overruns are real losses.
     const auto state = physicalFlight.state();
     if (state == flight::ArmingState::Preparing || (state == flight::ArmingState::Armed && physicalFlight.runtime().timing().step.count <= 1))
-      runFifoBase = sensorDevice.imuFifoOverruns();
+      runFifoOverrunsBase = sensorDevice.imuFifoOverruns();
   }
-  if (!owner && runWasActive) runFifoEnd = sensorDevice.imuFifoOverruns(); // The run ends: freeze its count.
-  runWasActive = owner != nullptr;
-  commandStatus.armingState = owner ? flight::armingStateName(owner->state()) : "disarmed";
-  commandStatus.flightMode = owner ? flight::flightModeName(owner->mode()) : "none";
-  commandStatus.outputMode = (owner && (owner->mode()==flight::FlightMode::Physical || owner->runtime().status().outputMode == storage::OutputMode::Physical)) || outputExecutor.hasPreparation() ? "PHYSICAL" : "VIRTUAL";
-  commandStatus.outputsActive = (owner && owner->runtime().status().outputsActive) || outputExecutor.hasPreparation();
-  commandStatus.phase = owner && owner->navigation().valid ? int(owner->navigation().phase) : -1;
+  if (!runOwner && runWasActive) runFifoOverrunsAtEnd = sensorDevice.imuFifoOverruns(); // The run ends: freeze its count.
+  runWasActive = runOwner != nullptr;
+  commandStatus.armingState = runOwner ? flight::armingStateName(runOwner->state()) : "disarmed";
+  commandStatus.flightMode = runOwner ? flight::flightModeName(runOwner->mode()) : "none";
+  commandStatus.outputMode = (runOwner && (runOwner->mode()==flight::FlightMode::Physical || runOwner->runtime().status().outputMode == storage::OutputMode::Physical)) || outputExecutor.hasPreparation() ? "PHYSICAL" : "VIRTUAL";
+  commandStatus.outputsActive = (runOwner && runOwner->runtime().status().outputsActive) || outputExecutor.hasPreparation();
+  commandStatus.phase = runOwner && runOwner->navigation().valid ? int(runOwner->navigation().phase) : -1;
   commandStatus.attitudeValid = commandStatus.phase >= 0;
   if (commandStatus.attitudeValid) {
-    const auto &n = owner->navigation(); commandStatus.tiltDeg = n.tiltRadians * 57.2957795f;
-    for (unsigned i = 0; i < 3; ++i) commandStatus.upBody[i] = n.upBody[i];
+    const auto &nav = runOwner->navigation(); commandStatus.tiltDeg = nav.tiltRadians * RadiansToDegrees;
+    for (unsigned i = 0; i < 3; ++i) commandStatus.upBody[i] = nav.upBody[i];
   }
-  commandStatus.gyroOnlyValid = commandStatus.attitudeValid && owner->navigation().gyroOnly;
+  commandStatus.gyroOnlyValid = commandStatus.attitudeValid && runOwner->navigation().gyroOnly;
   if (commandStatus.gyroOnlyValid) {
-    const auto &n = owner->navigation(); commandStatus.gyroOnlyTiltDeg = n.gyroOnlyTiltRadians * 57.2957795f;
-    for (unsigned i = 0; i < 3; ++i) commandStatus.gyroOnlyUpBody[i] = n.gyroOnlyUpBody[i];
+    const auto &nav = runOwner->navigation(); commandStatus.gyroOnlyTiltDeg = nav.gyroOnlyTiltRadians * RadiansToDegrees;
+    for (unsigned i = 0; i < 3; ++i) commandStatus.gyroOnlyUpBody[i] = nav.gyroOnlyUpBody[i];
   }
-  commandStatus.gyroSamples = owner ? owner->calibrationSamples() : 0;
+  commandStatus.gyroSamples = runOwner ? runOwner->calibrationSamples() : 0;
   commandStatus.gyroTarget = flight::ArmingCalibration::TargetSamples;
   updateHardwareStatus();
   const auto ledMode=power.sleeping() ? LedMode::PowerSaving : (physicalFlight.state()==flight::ArmingState::Arming || physicalFlight.state()==flight::ArmingState::Preparing) ? LedMode::Calibrating :
-      commandStatus.phase==5 ? LedMode::Boost : commandStatus.phase==6 ? LedMode::Coast :
-      commandStatus.phase==7 ? LedMode::Abort : commandStatus.phase>=0 ? static_cast<LedMode>(commandStatus.phase) : LedMode::Disarmed;
+      // BOOST 2, COAST 2 and ABORT have no LedMode of their own; PAD..LANDED map one to one.
+      commandStatus.phase==int(recovery::FlightPhase::Boost2) ? LedMode::Boost : commandStatus.phase==int(recovery::FlightPhase::Coast2) ? LedMode::Coast :
+      commandStatus.phase==int(recovery::FlightPhase::Abort) ? LedMode::Abort : commandStatus.phase>=0 ? static_cast<LedMode>(commandStatus.phase) : LedMode::Disarmed;
   statusLed.update(millis(),ledMode);
   pollBluetooth();
   // Both endpoints get a bounded turn every loop; neither waits for TX space.
   // USB remains normally active even while the radio is absent or backpressured.
-  if (connected) {
+  if (usbNowConnected) {
     sendPending(Serial, usbEndpoint);
     for (unsigned budget = 0; budget < 64 && !usbEndpoint.pending() && Serial.available() > 0; ++budget, loopUsbInput = true)
       usbEndpoint.feed(static_cast<char>(Serial.read()), commandStatus);

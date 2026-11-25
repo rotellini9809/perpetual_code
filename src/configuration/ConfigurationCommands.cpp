@@ -15,60 +15,60 @@ bool outputKind(const char *text, recovery::OutputKind &kind) {
   if (strcmp(text, "servo") == 0) { kind = recovery::OutputKind::Servo; return true; }
   return false;
 }
-bool parseCondition(const Tokens &t, unsigned at, recovery::Condition &c) {
+bool parseCondition(const Tokens &t, unsigned at, recovery::Condition &condition) {
   using namespace recovery;
-  const auto n = t.count - at;
-  if (t.is(at, "apogee") && n == 1) { c.kind = ConditionKind::ApogeeDetected; return true; }
-  if (t.is(at, "phase") && n == 2) {
-    c.kind = ConditionKind::Phase;
-    if (t.is(at + 1, "ascent")) c.phases = BoostMask | CoastMask | Boost2Mask | Coast2Mask;
-    else if (t.is(at + 1, "descent")) c.phases = DescentMask;
-    else if (t.is(at + 1, "airborne")) c.phases = AirborneMask;
-    else { uint32_t mask; if (!unsignedNumber(t[at + 1], mask) || mask > 255) return false; c.phases = uint8_t(mask); }
+  const auto remaining = t.count - at;
+  if (t.is(at, "apogee") && remaining == 1) { condition.kind = ConditionKind::ApogeeDetected; return true; }
+  if (t.is(at, "phase") && remaining == 2) {
+    condition.kind = ConditionKind::Phase;
+    if (t.is(at + 1, "ascent")) condition.phases = BoostMask | CoastMask | Boost2Mask | Coast2Mask;
+    else if (t.is(at + 1, "descent")) condition.phases = DescentMask;
+    else if (t.is(at + 1, "airborne")) condition.phases = AirborneMask;
+    else { uint32_t mask; if (!unsignedNumber(t[at + 1], mask) || mask > 255) return false; condition.phases = uint8_t(mask); }
     return true;
   }
-  if ((t.is(at, "altitude") || t.is(at, "speed")) && n == 3) {
+  if ((t.is(at, "altitude") || t.is(at, "speed")) && remaining == 3) {
     const bool speed = t.is(at, "speed");
-    c.kind = speed ? ConditionKind::AbsoluteVelocityComparison : ConditionKind::AltitudeComparison;
-    if (t.is(at + 1, "<") && !speed) c.comparison = Comparison::Less;
-    else if (t.is(at + 1, ">") && !speed) c.comparison = Comparison::Greater;
-    else if (t.is(at + 1, "<=") && speed) c.comparison = Comparison::LessEqual;
-    else if (t.is(at + 1, ">=") && speed) c.comparison = Comparison::GreaterEqual;
+    condition.kind = speed ? ConditionKind::AbsoluteVelocityComparison : ConditionKind::AltitudeComparison;
+    if (t.is(at + 1, "<") && !speed) condition.comparison = Comparison::Less;
+    else if (t.is(at + 1, ">") && !speed) condition.comparison = Comparison::Greater;
+    else if (t.is(at + 1, "<=") && speed) condition.comparison = Comparison::LessEqual;
+    else if (t.is(at + 1, ">=") && speed) condition.comparison = Comparison::GreaterEqual;
     else return false;
-    return finiteNumber(t[at + 2], c.value) && (!speed || c.value >= 0);
+    return finiteNumber(t[at + 2], condition.value) && (!speed || condition.value >= 0);
   }
-  if ((t.is(at, "altitude_range") || t.is(at, "speed_range")) && n == 3) {
-    c.kind = t.is(at, "speed_range") ? ConditionKind::AbsoluteVelocityRange : ConditionKind::AltitudeRange;
-    return finiteNumber(t[at + 1], c.value) && finiteNumber(t[at + 2], c.upper) &&
-           (c.kind != ConditionKind::AbsoluteVelocityRange || c.value >= 0);
+  if ((t.is(at, "altitude_range") || t.is(at, "speed_range")) && remaining == 3) {
+    condition.kind = t.is(at, "speed_range") ? ConditionKind::AbsoluteVelocityRange : ConditionKind::AltitudeRange;
+    return finiteNumber(t[at + 1], condition.value) && finiteNumber(t[at + 2], condition.upper) &&
+           (condition.kind != ConditionKind::AbsoluteVelocityRange || condition.value >= 0);
   }
-  if ((t.is(at, "since_launch_ms") || t.is(at, "since_apogee_ms")) && n == 2) {
-    c.kind = t.is(at, "since_launch_ms") ? ConditionKind::TimeSinceLaunch : ConditionKind::TimeSinceApogee;
-    return unsignedNumber(t[at + 1], c.elapsedMs);
+  if ((t.is(at, "since_launch_ms") || t.is(at, "since_apogee_ms")) && remaining == 2) {
+    condition.kind = t.is(at, "since_launch_ms") ? ConditionKind::TimeSinceLaunch : ConditionKind::TimeSinceApogee;
+    return unsignedNumber(t[at + 1], condition.elapsedMs);
   }
-  if (t.is(at, "since_rule_ms") && n == 3) {
-    c.kind = ConditionKind::TimeSinceRule;
-    return unsignedNumber(t[at + 1], c.reference) && unsignedNumber(t[at + 2], c.elapsedMs);
+  if (t.is(at, "since_rule_ms") && remaining == 3) {
+    condition.kind = ConditionKind::TimeSinceRule;
+    return unsignedNumber(t[at + 1], condition.reference) && unsignedNumber(t[at + 2], condition.elapsedMs);
   }
   return false;
 }
-void appendCondition(Json &data,const recovery::Condition &c) {
-  data.add(",\"kind\":%u,\"comparison\":%u,\"phase_mask\":%u,\"value\":", unsigned(c.kind), unsigned(c.comparison), unsigned(c.phases));
-  if (std::isfinite(c.value)) data.add("%.9g", double(c.value)); else data.add("null");
-  data.add(",\"value_valid\":%s,\"upper\":", std::isfinite(c.value) ? "true" : "false");
-  if (std::isfinite(c.upper)) data.add("%.9g", double(c.upper)); else data.add("null");
-  data.add(",\"upper_valid\":%s,\"elapsed_ms\":%lu,\"reference\":%lu", std::isfinite(c.upper) ? "true" : "false",
-           static_cast<unsigned long>(c.elapsedMs), static_cast<unsigned long>(c.reference));
+void appendCondition(Json &data,const recovery::Condition &condition) {
+  data.add(",\"kind\":%u,\"comparison\":%u,\"phase_mask\":%u,\"value\":", unsigned(condition.kind), unsigned(condition.comparison), unsigned(condition.phases));
+  if (std::isfinite(condition.value)) data.add("%.9g", double(condition.value)); else data.add("null");
+  data.add(",\"value_valid\":%s,\"upper\":", std::isfinite(condition.value) ? "true" : "false");
+  if (std::isfinite(condition.upper)) data.add("%.9g", double(condition.upper)); else data.add("null");
+  data.add(",\"upper_valid\":%s,\"elapsed_ms\":%lu,\"reference\":%lu", std::isfinite(condition.upper) ? "true" : "false",
+           static_cast<unsigned long>(condition.elapsedMs), static_cast<unsigned long>(condition.reference));
 }
 
 }
 
 bool ConfigurationCommands::dispatch(const char *command, const char *arguments, bool hasId, uint32_t id,
                                      char *output, std::size_t capacity) {
-  const auto &limits_ = service_.limits();
-  const auto &applied_ = service_.view(false);
+  const auto &limits = service_.limits();
+  const auto &appliedView = service_.view(false);
   const auto &draftView = service_.view(true);
-  const bool drafting_ = service_.hasDraft(), appliedValid_ = service_.configValid();
+  const bool drafting = service_.hasDraft(), appliedValid = service_.configValid();
   const bool config = strcmp(command, "config") == 0;
   const bool rule = strcmp(command, "rule") == 0;
   const bool condition = strcmp(command, "condition") == 0;
@@ -88,8 +88,8 @@ bool ConfigurationCommands::dispatch(const char *command, const char *arguments,
     data.add(",\"max_rules\":%u,\"max_conditions\":%u,\"max_assignments\":%u,\"name_bytes\":%u,"
              "\"servo_min_us\":%u,\"servo_max_us\":%u,\"max_pyro_ms\":%lu,\"max_timing_ms\":%lu,\"physical_actions\":%s",
              unsigned(recovery::MaxRules), unsigned(recovery::MaxConditions), unsigned(recovery::MaxAssignments), unsigned(recovery::MaxNameBytes - 1),
-             limits_.minServoUs, limits_.maxServoUs, static_cast<unsigned long>(limits_.maxPyroPulseMs),
-             static_cast<unsigned long>(limits_.maxTimingMs),physicalActions_ ? "true" : "false");
+             limits.minServoUs, limits.maxServoUs, static_cast<unsigned long>(limits.maxPyroPulseMs),
+             static_cast<unsigned long>(limits.maxTimingMs),physicalActions_ ? "true" : "false");
     data.add(",\"physical_simulation\":%s",physicalSimulation_ ? "true" : "false");
     data.add(R"(,"output_delays":true,"airbrakes":true)");
     data.add(",\"pyro_pulse_ms\":%lu,\"pyro_enable_settle_ms\":%lu,\"rule_timing\":\"delay\"",
@@ -129,34 +129,34 @@ bool ConfigurationCommands::dispatch(const char *command, const char *arguments,
   }
   if (config && t.count == 1 && (t.is(0, "show") || t.is(0, "draft"))) {
     const bool draft = t.is(0, "draft");
-    const auto &plan = draft ? draftView : applied_;
+    const auto &plan = draft ? draftView : appliedView;
     data.add(",\"view\":\"%s\",\"available\":%s,\"draft_active\":%s,\"store_error\":\"%s\",\"rule_ids\":[",
-             draft ? "draft" : "applied", (draft ? drafting_ : appliedValid_) ? "true" : "false", drafting_ ? "true" : "false", configError());
-    if (draft ? drafting_ : appliedValid_)
+             draft ? "draft" : "applied", (draft ? drafting : appliedValid) ? "true" : "false", drafting ? "true" : "false", configError());
+    if (draft ? drafting : appliedValid)
       for (std::size_t i = 0; i < plan.ruleCount; ++i) data.add("%s%lu", i ? "," : "", static_cast<unsigned long>(plan.rules[i].id));
     data.add("]"); return finish();
   }
   // Detailed inspection selects draft while editing, otherwise applied settings.
   const bool inspection = t.is(0, "show") || (rule && t.is(0, "list"));
-  if (inspection && (drafting_ || appliedValid_)) {
-    const auto &plan = drafting_ ? draftView : applied_;
-    data.add(",\"view\":\"%s\"", drafting_ ? "draft" : "applied");
+  if (inspection && (drafting || appliedValid)) {
+    const auto &plan = drafting ? draftView : appliedView;
+    data.add(",\"view\":\"%s\"", drafting ? "draft" : "applied");
     uint32_t number;
     if ((pyro || servo) && t.count == 2 && unsignedNumber(t[1], number) && number >= 1 && number <= 4) {
       data.add(",\"channel\":%lu", static_cast<unsigned long>(number));
       if (pyro) data.add(",\"pulse_ms\":%lu", static_cast<unsigned long>(plan.pyros[number - 1].pulseMs));
       else {
-        const auto &s = plan.servos[number - 1];
-        data.add(",\"calibrated\":%s,\"initial_us\":%u,\"final_us\":%u", s.calibrated ? "true" : "false", s.initialUs, s.finalUs);
+        const auto &servoSettings = plan.servos[number - 1];
+        data.add(",\"calibrated\":%s,\"initial_us\":%u,\"final_us\":%u", servoSettings.calibrated ? "true" : "false", servoSettings.initialUs, servoSettings.finalUs);
       }
       return finish();
     }
     if (airbrake) {
-      const auto &a=plan.airbrakes;
-      if (t.count==1) { data.add(R"(,"channel_mask":%u,"conditions":%u,"logic":"and")",unsigned(a.channelMask),unsigned(a.conditionCount)); return finish(); }
+      const auto &airbrakeRule=plan.airbrakes;
+      if (t.count==1) { data.add(R"(,"channel_mask":%u,"conditions":%u,"logic":"and")",unsigned(airbrakeRule.channelMask),unsigned(airbrakeRule.conditionCount)); return finish(); }
       uint32_t index;
-      if (t.count==2 && unsignedNumber(t[1],index) && index<a.conditionCount) {
-        data.add(R"(,"index":%lu)",(unsigned long)index); appendCondition(data,a.conditions[index]); return finish();
+      if (t.count==2 && unsignedNumber(t[1],index) && index<airbrakeRule.conditionCount) {
+        data.add(R"(,"index":%lu)",(unsigned long)index); appendCondition(data,airbrakeRule.conditions[index]); return finish();
       }
     }
     if (rule && t.is(0, "list") && t.count == 1) {
@@ -166,23 +166,23 @@ bool ConfigurationCommands::dispatch(const char *command, const char *arguments,
     }
     if (t.count >= 2 && unsignedNumber(t[1], number)) {
       for (std::size_t i = 0; i < plan.ruleCount; ++i) {
-        const auto &r = plan.rules[i]; if (r.id != number) continue;
+        const auto &selectedRule = plan.rules[i]; if (selectedRule.id != number) continue;
         if (rule && t.count == 2) {
-          data.add(",\"rule_id\":%lu,\"name\":", static_cast<unsigned long>(r.id)); data.quoted(r.name.data());
-          data.add(",\"delay_ms\":%lu,\"conditions\":%u,\"outputs\":%u", static_cast<unsigned long>(r.delayMs), unsigned(r.conditionCount), unsigned(r.assignmentCount));
+          data.add(",\"rule_id\":%lu,\"name\":", static_cast<unsigned long>(selectedRule.id)); data.quoted(selectedRule.name.data());
+          data.add(",\"delay_ms\":%lu,\"conditions\":%u,\"outputs\":%u", static_cast<unsigned long>(selectedRule.delayMs), unsigned(selectedRule.conditionCount), unsigned(selectedRule.assignmentCount));
           return finish();
         }
         uint32_t index;
         if (t.count == 3 && unsignedNumber(t[2], index)) {
-          data.add(",\"rule_id\":%lu,\"index\":%lu", static_cast<unsigned long>(r.id), static_cast<unsigned long>(index));
-          if (condition && index < r.conditionCount) {
-            const auto &c = r.conditions[index];
-            appendCondition(data,c);
+          data.add(",\"rule_id\":%lu,\"index\":%lu", static_cast<unsigned long>(selectedRule.id), static_cast<unsigned long>(index));
+          if (condition && index < selectedRule.conditionCount) {
+            const auto &selectedCondition = selectedRule.conditions[index];
+            appendCondition(data,selectedCondition);
             return finish();
           }
-          if (assignment && index < r.assignmentCount) {
-            const auto &a = r.assignments[index];
-            data.add(",\"kind\":\"%s\",\"channel\":%u,\"delay_ms\":%lu", a.kind == recovery::OutputKind::Pyro ? "pyro" : "servo", a.channel, (unsigned long)a.delayMs);
+          if (assignment && index < selectedRule.assignmentCount) {
+            const auto &selectedAssignment = selectedRule.assignments[index];
+            data.add(",\"kind\":\"%s\",\"channel\":%u,\"delay_ms\":%lu", selectedAssignment.kind == recovery::OutputKind::Pyro ? "pyro" : "servo", selectedAssignment.channel, (unsigned long)selectedAssignment.delayMs);
             return finish();
           }
         }
@@ -205,12 +205,12 @@ bool ConfigurationCommands::dispatch(const char *command, const char *arguments,
     if (!error) data.add(",\"reset\":true,\"persisted\":true,\"verified\":true");
     return finish();
   }
-  if (!drafting_) { error = "NO_DRAFT"; return finish(); }
+  if (!drafting) { error = "NO_DRAFT"; return finish(); }
   if (config && t.count == 1 && (t.is(0, "validate") || t.is(0, "apply"))) {
-    const auto v = service_.validateDraft();
-    if (!v.ok()) {
+    const auto validation = service_.validateDraft();
+    if (!validation.ok()) {
       error = "CONFIG_INVALID";
-      data.add(",\"validation\":\"%s\",\"field\":%u,\"rule_id\":%lu,\"index\":%u", recovery::errorName(v.error), unsigned(v.field), static_cast<unsigned long>(v.rule), unsigned(v.index));
+      data.add(",\"validation\":\"%s\",\"field\":%u,\"rule_id\":%lu,\"index\":%u", recovery::errorName(validation.error), unsigned(validation.field), static_cast<unsigned long>(validation.rule), unsigned(validation.index));
       return finish();
     }
     if (t.is(0, "validate")) { data.add(",\"valid\":true"); return finish(); }
@@ -218,41 +218,44 @@ bool ConfigurationCommands::dispatch(const char *command, const char *arguments,
     if (error) { data.add(",\"store_error\":\"%s\"", configError()); return finish(); }
     data.add(",\"applied\":true,\"persisted\":true,\"verified\":true"); return finish();
   }
-  uint32_t ruleId, a, b;
+  // Numeric arguments of the edit commands below. target is the rule ID, or the channel for
+  // `pyro set`/`servo set`; firstNumber/secondNumber are the values that follow (mask, index,
+  // pulse, delay or channel, depending on the command).
+  uint32_t target, firstNumber, secondNumber;
   error = "INVALID_ARGUMENT";
   bool servoChanged = false;
   if (airbrake) {
     recovery::Condition value;
-    if (t.is(0,"channels") && t.count==2 && unsignedNumber(t[1],a)) error=service_.setAirbrakeChannels(a);
+    if (t.is(0,"channels") && t.count==2 && unsignedNumber(t[1],firstNumber)) error=service_.setAirbrakeChannels(firstNumber);
     else if (t.is(0,"add") && t.count>=2 && parseCondition(t,1,value)) error=service_.addAirbrakeCondition(value);
-    else if (t.is(0,"replace") && t.count>=3 && unsignedNumber(t[1],a) && parseCondition(t,2,value)) error=service_.replaceAirbrakeCondition(a,value);
-    else if (t.is(0,"remove") && t.count==2 && unsignedNumber(t[1],a)) error=service_.removeAirbrakeCondition(a);
-  } else if ((pyro || servo) && t.is(0, "set") && unsignedNumber(t[1], ruleId)) {
-    if (pyro && t.count == 3 && unsignedNumber(t[2], a)) error = service_.setPyro(ruleId, a);
-    if (servo && t.count == 4 && unsignedNumber(t[2], a) && unsignedNumber(t[3], b)) {
-      error = service_.setServo(ruleId, a, b); servoChanged = !error;
+    else if (t.is(0,"replace") && t.count>=3 && unsignedNumber(t[1],firstNumber) && parseCondition(t,2,value)) error=service_.replaceAirbrakeCondition(firstNumber,value);
+    else if (t.is(0,"remove") && t.count==2 && unsignedNumber(t[1],firstNumber)) error=service_.removeAirbrakeCondition(firstNumber);
+  } else if ((pyro || servo) && t.is(0, "set") && unsignedNumber(t[1], target)) {
+    if (pyro && t.count == 3 && unsignedNumber(t[2], firstNumber)) error = service_.setPyro(target, firstNumber);
+    if (servo && t.count == 4 && unsignedNumber(t[2], firstNumber) && unsignedNumber(t[3], secondNumber)) {
+      error = service_.setServo(target, firstNumber, secondNumber); servoChanged = !error;
     }
-  } else if (rule && t.count >= 2 && unsignedNumber(t[1], ruleId)) {
-    if (t.is(0, "add") && t.count == 3) error = service_.addRule(ruleId, t[2]);
-    else if (t.is(0, "rename") && t.count == 3) error = service_.renameRule(ruleId, t[2]);
-    else if (t.is(0, "delay") && t.count == 3 && unsignedNumber(t[2], a)) error = service_.setRuleDelay(ruleId, a);
+  } else if (rule && t.count >= 2 && unsignedNumber(t[1], target)) {
+    if (t.is(0, "add") && t.count == 3) error = service_.addRule(target, t[2]);
+    else if (t.is(0, "rename") && t.count == 3) error = service_.renameRule(target, t[2]);
+    else if (t.is(0, "delay") && t.count == 3 && unsignedNumber(t[2], firstNumber)) error = service_.setRuleDelay(target, firstNumber);
     else if (t.is(0, "remove") && t.count == 2) {
       recovery::RuleId referencing = 0;
-      error = service_.removeRule(ruleId, &referencing);
+      error = service_.removeRule(target, &referencing);
       if (referencing) data.add(",\"referencing_rule_id\":%lu", static_cast<unsigned long>(referencing));
     }
-  } else if (condition && t.count >= 2 && unsignedNumber(t[1], ruleId)) {
+  } else if (condition && t.count >= 2 && unsignedNumber(t[1], target)) {
     recovery::Condition value;
-    if (t.is(0, "add") && t.count >= 3 && parseCondition(t, 2, value)) error = service_.addCondition(ruleId, value);
-    else if (t.is(0, "replace") && t.count >= 4 && unsignedNumber(t[2], a) && parseCondition(t, 3, value))
-      error = service_.replaceCondition(ruleId, a, value);
-    else if (t.is(0, "remove") && t.count == 3 && unsignedNumber(t[2], a)) error = service_.removeCondition(ruleId, a);
-  } else if (assignment && t.count >= 4 && unsignedNumber(t[1], ruleId)) {
+    if (t.is(0, "add") && t.count >= 3 && parseCondition(t, 2, value)) error = service_.addCondition(target, value);
+    else if (t.is(0, "replace") && t.count >= 4 && unsignedNumber(t[2], firstNumber) && parseCondition(t, 3, value))
+      error = service_.replaceCondition(target, firstNumber, value);
+    else if (t.is(0, "remove") && t.count == 3 && unsignedNumber(t[2], firstNumber)) error = service_.removeCondition(target, firstNumber);
+  } else if (assignment && t.count >= 4 && unsignedNumber(t[1], target)) {
     recovery::OutputKind kind;
-    if (outputKind(t[2], kind) && unsignedNumber(t[3], a)) {
-      if (t.is(0, "assign") && (t.count == 4 || (t.count == 5 && unsignedNumber(t[4], b))))
-        error = service_.assignOutput(ruleId, kind, a, t.count == 5 ? b : 0);
-      else if (t.is(0, "unassign") && t.count == 4) error = service_.unassignOutput(ruleId, kind, a);
+    if (outputKind(t[2], kind) && unsignedNumber(t[3], firstNumber)) {
+      if (t.is(0, "assign") && (t.count == 4 || (t.count == 5 && unsignedNumber(t[4], secondNumber))))
+        error = service_.assignOutput(target, kind, firstNumber, t.count == 5 ? secondNumber : 0);
+      else if (t.is(0, "unassign") && t.count == 4) error = service_.unassignOutput(target, kind, firstNumber);
     }
   }
   if (!error) {

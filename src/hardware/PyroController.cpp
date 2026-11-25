@@ -30,16 +30,16 @@ void PyroController::begin() {
   pinMode(BATT_SENSE, INPUT);
   analogReadResolution(12);
 
-  enabled_=false; mask_=0;
+  enabled_=false; firingMask_=0;
 }
 
 void PyroController::drive(bool enabled, uint8_t mask) {
   mask = enabled ? uint8_t(mask & 0x0f) : 0;
-  if (enabled==enabled_ && mask==mask_) return;
+  if (enabled==enabled_ && mask==firingMask_) return;
   if (!enabled) digitalWrite(PYRO_ENABLE,LOW);
   for (uint8_t i=0;i<CHANNEL_COUNT;++i) digitalWrite(PYRO_OUTPUT_PINS[i],(mask & (1u<<i)) ? HIGH : LOW);
   if (enabled) digitalWrite(PYRO_ENABLE,HIGH);
-  enabled_=enabled; mask_=mask;
+  enabled_=enabled; firingMask_=mask;
 }
 
 PyroController::ContinuityReading PyroController::checkContinuity(uint8_t channel) {

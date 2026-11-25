@@ -46,6 +46,8 @@ struct PollResult {
 class FlightRuntime {
 public:
   using Clock = timing::Clock;
+  static constexpr uint32_t AirbrakeStaleUs = 100000; // No airbrake update for this long closes them.
+  static constexpr uint32_t LandedCloseUs = 15000000; // Physical outputs: this long after LANDED, starts close and the run ends once pulses finish.
   FlightRuntime(ConfigurationService &config, RunController &run, Clock clock = nullptr,
                 storage::RecordingSink *recorder = nullptr, OutputExecutor *outputs = nullptr)
       : config_(config), run_(run), clock_(clock), recorder_(recorder), outputs_(outputs) {}
@@ -61,7 +63,7 @@ public:
   bool preparing() const { return active() && preparing_; }
   PollResult poll(FrameResult &result);
   unsigned stop(storage::RecordingEnd reason = storage::RecordingEnd::Stopped);
-  bool active() const { return started_ && identity_ == run_.identity() && run_.active(RunMode::Sensors); }
+  bool active() const { return started_ && runIdentity_ == run_.identity() && run_.active(RunMode::Sensors); }
   bool blockedByOtherRun() const { return run_.active() && !active(); }
   RuntimeStatus status() const;
   void refreshRecordingStatus(RuntimeStatus &status) const;
@@ -74,7 +76,7 @@ private:
   void recordingFault(storage::RecorderError error);
   bool applyAirbrakes();
   control::AirbrakeController airbrakes_;
-  uint32_t lastControlUs_=0;
+  uint32_t lastAirbrakeUpdateUs_=0; // Clock of the last airbrake command, for AirbrakeStaleUs.
   ConfigurationService &config_;
   RunController &run_;
   Clock clock_;
@@ -84,25 +86,26 @@ private:
   OutputExecutor *outputs_;
   const BatteryMonitor *battery_ = nullptr;
   storage::OutputMode outputMode_ = storage::OutputMode::Virtual;
-  bool recordingRequested_ = false, full_ = false;
+  bool recordingRequested_ = false, samplesFull_ = false;
   bool boostReached_ = false, processingFailed_ = false;
   storage::SensorMode sensorMode_ = storage::SensorMode::Simulation;
   uint64_t recordingSequence_ = 0;
-  uint32_t saved_ = 0, dropped_ = 0;
+  uint32_t savedSamples_ = 0, droppedSamples_ = 0;
   uint64_t lastBaroSequence_ = 0; // Barometer identity already sent to the recorder.
   storage::RecorderError recordingError_ = storage::RecorderError::None;
-  uint64_t identity_ = 0;
+  uint64_t runIdentity_ = 0; // RunController identity of this run; also the OutputExecutor owner token.
   bool started_ = false;
   bool preparing_ = false;
   uint32_t preparationStartUs_ = 0;
-  bool landed_ = false, closingStarts_ = false;
-  uint32_t landingClockUs_ = 0;
+  bool landed_ = false, startsClosed_ = false; // startsClosed_: no new output starts after landing.
+  uint32_t landedAtUs_ = 0; // Clock when LANDED was first seen, for LandedCloseUs.
   uint32_t maxComputeUs_ = 0;
   RuntimeTiming timing_;
+  // Previous frame, for the dt and sequence-gap statistics in RuntimeTiming.
   bool haveFrame_ = false;
-  uint64_t lastFrameUs_ = 0, lastSequence_ = 0;
-  recovery::StateMachineSettings machine_;
+  uint64_t lastFrameUs_ = 0, lastImuSequence_ = 0;
+  recovery::StateMachineSettings stateMachine_;
   recovery::AbortReason abortReason_ = recovery::AbortReason::None;
-  float velocityMedian_ = 0, tilt_ = 0;
+  float coastVelocityMedian_ = 0, tiltRadians_ = 0;
 };
 }

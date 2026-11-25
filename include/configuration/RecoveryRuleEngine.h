@@ -39,7 +39,7 @@ public:
   void cancelPending();
   void end();
   bool active() const { return active_; }
-  const std::array<RuleRuntime, MaxRules> &rules() const { return runtime_; }
+  const std::array<RuleRuntime, MaxRules> &rules() const { return ruleStates_; }
   const std::array<VirtualAction, MaxAssignments> &actions() const { return actions_; }
   std::size_t actionCount() const { return actionCount_; }
 private:
@@ -47,7 +47,7 @@ private:
                      const FlightSnapshot &snapshot, bool altitudeFresh, bool velocityFresh) const;
   bool fresh(uint64_t now, uint64_t measured) const;
   Configuration config_{};
-  std::array<RuleRuntime, MaxRules> runtime_{};
+  std::array<RuleRuntime, MaxRules> ruleStates_{};
   std::array<VirtualAction, MaxAssignments> actions_{};
   std::size_t actionCount_ = 0;
   uint32_t maxAgeMs_ = 0;
@@ -57,7 +57,7 @@ private:
   bool active_ = false;
   bool startsClosed_ = false;
   bool launched_ = false;
-  bool apogee_ = false;
+  bool apogeeDetected_ = false;
   bool landed_ = false;
   uint64_t launchMs_ = 0;
   uint64_t apogeeMs_ = 0;
