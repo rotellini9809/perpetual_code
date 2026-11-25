@@ -76,14 +76,6 @@ def check_simulation_and_arming(app,wait):
         assert backend.prepared_mask and window.sim_start.isEnabled()
         window.sim_physical.setChecked(False)
         original_request=backend.request
-        def unsupported_release(command,timeout=5):
-            if command=='servo release': raise CommandError(command,dict(code='INVALID_ARGUMENT',ok=False))
-            return original_request(command,timeout)
-        marker=len(backend.commands)
-        with patch.object(backend,'request',side_effect=unsupported_release):
-            window.sim_start.click(); wait(lambda:not controller.state.foreground)
-        assert 'Update the board firmware' in controller.state.error and backend.prepared_mask
-        assert not any(command.startswith('sim begin') for command in backend.commands[marker:])
         marker=len(backend.commands)
         window.sim_record.setChecked(True)
         def recovered_storage(command,timeout=5):

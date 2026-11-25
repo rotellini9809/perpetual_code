@@ -71,8 +71,10 @@ one period and is pulled 1/32 toward the observed arrival estimate (status-read 
 queued frames), never later than it, so dt stays regular and drift cannot accumulate. A gap
 re-anchors on the observation and breaks sequence continuity. Measured idle over 30 s: 476.2 Hz,
 0 sequence gaps/overruns/tag errors despite loop stalls up to 3.5 ms, dt 1809-2165 µs around
-2100 µs. Timestamps are estimates within about one poll period, not interrupt edges. Mounting and
-bias calibration must be verified on hardware before live flight qualification.
+2100 µs. Timestamps are estimates within about one poll period, not interrupt edges. The six-face
+accelerometer calibration was run and verified on the board on 25 November 2026 (see
+[Validation](testing/VALIDATION.md#remaining-work-and-limits)); mounting and attitude still need
+qualification before live flight.
 
 ## Outputs
 

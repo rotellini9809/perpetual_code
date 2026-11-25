@@ -32,7 +32,7 @@ def check_maintenance(app,wait):
         assert panel.image.accessibleName()=='Anteprima orientamento -Y' and panel.image.pixmap().width()>panel.image.pixmap().height()
         assert panel.image.pixmap().toImage()!=left
         panel.axis.setCurrentIndex(panel.axis.findData('+Z')); app.processEvents()
-        assert panel.image.accessibleName()=='Anteprima orientamento +Z' and not panel.z_artwork.isNull()
+        assert panel.image.accessibleName()=='Anteprima orientamento +Z' and not panel.image.pixmap().isNull()
         positive_z=panel.image.pixmap().toImage()
         panel.axis.setCurrentIndex(panel.axis.findData('-Z')); app.processEvents()
         assert panel.image.accessibleName()=='Anteprima orientamento -Z' and panel.image.pixmap().toImage()==positive_z.transformed(QTransform().rotate(180))

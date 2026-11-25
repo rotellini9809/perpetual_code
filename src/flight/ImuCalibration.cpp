@@ -18,7 +18,8 @@ bool ImuCalibration::capture(unsigned face) {
 void ImuCalibration::add(const sensors::Reading &r) {
   if (!collecting_) return;
   if (have_ && (r.timeUs<=lastTime_ || r.imuSequence<=lastSequence_)) return;
-  if (have_ && r.timeUs-lastTime_>100000) resetWindow();
+  if (have_ && r.timeUs-lastTime_>100000) resetWindow(); // A data gap is not the user's doing: restart silently.
+  if (!have_) settleStart_=r.timeUs;
   have_=true; lastTime_=r.timeUs; lastSequence_=r.imuSequence;
   bool valid=r.imuValid; float a[3],g2=0,n2=0;
   for (unsigned i=0;i<3;++i) {
@@ -39,7 +40,11 @@ void ImuCalibration::add(const sensors::Reading &r) {
     for (unsigned i=0;i<3;++i) if (i!=axis) transverse+=a[i]*a[i];
     if (!(std::sqrt(transverse)<=magnitude*VerificationTiltSin)) valid=false;
   } else for (unsigned i=0;i<3;++i) if (i!=axis && std::fabs(a[i])>orientationMagnitude*.15f) valid=false;
-  if (!valid) { resetWindow(); error_="POSITION_OR_MOTION"; return; }
+  if (!valid) {
+    resetWindow();
+    if (r.timeUs-settleStart_>=SettleUs) { collecting_=false; error_="POSITION_OR_MOTION"; } // Capture again.
+    return;
+  }
   if (!samples_) startTime_=r.timeUs;
   for (unsigned i=0;i<3;++i) { sum_[i]+=a[i]; square_[i]+=double(a[i])*a[i]; }
   ++samples_; error_="None";
@@ -51,10 +56,11 @@ void ImuCalibration::add(const sensors::Reading &r) {
     noise_=std::max(noise_,float(std::sqrt(std::max(0.,square_[i]/samples_-mean*mean))));
   }
   norm_=std::sqrt(norm_);
-  if (noise_>.12f) { resetWindow(); error_="NOISY"; return; }
+  if (noise_>.12f) { resetWindow(); collecting_=false; error_="NOISY"; return; } // Capture again.
   // Verification judges only the corrected magnitude, which does not depend on how well the face
   // is aligned (the capture gate above already bounds that to about 8.6 degrees). The upward axis
   // carries almost all of gravity, so each face checks that axis' bias and scale.
+  if (verification_) residual_[axis]=norm_-G;
   if (verification_ && !(std::fabs(norm_-G)<.35f)) { failed_=true; collecting_=false; error_="IMU_VERIFICATION_FAILED"; return; }
   mask_|=1u<<face_; collecting_=false;
 }
@@ -64,6 +70,7 @@ bool ImuCalibration::result(storage::ImuCalibrationRecord &r) const {
   if (verification_) { r.approval=storage::ImuApproval::Verified; return true; }
   if (r.revision==UINT32_MAX) return false;
   ++r.revision; r.approval=storage::ImuApproval::Required; r.identity=false;
+  for (unsigned i=0;i<3;++i) r.residual[i]=NAN; // New coefficients: not verified yet.
   for (unsigned i=0;i<3;++i) {
     const float plus=means_[2*i][i],minus=means_[2*i+1][i];
     r.bias[i]=(plus+minus)*.5f; r.scale[i]=2*G/(plus-minus);

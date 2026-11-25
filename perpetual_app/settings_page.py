@@ -69,11 +69,13 @@ class SettingsPage(QWidget):
         body.addLayout(row(label('Perpetual-','settingsDescription'),self.bluetooth_suffix,self.bluetooth_default,None))
         hint=label(t('Up to 4 letters, digits or -. The module restarts to apply the name: over Bluetooth the app reconnects by itself. The BLE name gets "_BLE". Windows shows the old name until you remove and pair the board again; the connection keeps working.'),'hint')
         hint.setWordWrap(True); body.addWidget(hint)
-        frame,body=setting_card(t('Language')); box.addWidget(frame)
+        self.language_apply=button(t('Apply'),self._apply_language,'saveAction'); self.applied_language=language()
+        frame,body=setting_card(t('Language'),self.language_apply); box.addWidget(frame)
         self.language=QComboBox(); self.language.setFixedWidth(200)
         for code,name in LANGUAGES.items(): self.language.addItem(name,code)
         self.language.setCurrentIndex(self.language.findData(language()))
-        self.language.currentIndexChanged.connect(lambda _:self.language_selected.emit(self.language.currentData()))
+        self.language.currentIndexChanged.connect(lambda _:self.language_apply.setEnabled(self.language.currentData()!=self.applied_language))
+        self.language_apply.setEnabled(False)
         body.addLayout(row(self.language,None))
         hint=label(t('The new language is applied when Perpetual restarts. Error messages stay in English.'),'hint'); hint.setWordWrap(True); body.addWidget(hint)
         actions=[(t('Factory reset'),t('Deletes rules, servo positions and orientation.'),
@@ -109,19 +111,23 @@ class SettingsPage(QWidget):
         self.factory_reset_button.setEnabled(maintenance)
         self.format_memory_button.setEnabled(maintenance and not s.dirty and not s.staged)
 
+    def _apply_language(self):
+        # Compared with the saved choice, not the running language: a choice saved without restarting stays applied.
+        self.applied_language=self.language.currentData(); self.language_apply.setEnabled(False)
+        self.language_selected.emit(self.applied_language)
+
     def _rename_bluetooth(self):
         if self.bluetooth_suffix.hasAcceptableInput(): self.controller.rename_bluetooth(self.bluetooth_suffix.text())
 
     def _render_bluetooth(self,s):
         info=s.bluetooth if s.connected else {}
-        supported='name' in info; name=info.get('name','')
+        name=info.get('name','')
         if not s.connected: text=t('Connect the board to read the Bluetooth name.')
-        elif not supported: text=t('Update the board firmware to rename Bluetooth.')
         elif s.bluetooth_restart: text=t('Restarting the Bluetooth module to apply "{name}"…',name=s.bluetooth_restart)
         elif name: text=t('Current name: {name} · BLE: {name}_BLE',name=name)
         else: text=t('Bluetooth module not ready.')
         self.bluetooth_current.setText(text)
-        editable=(s.editable and supported and bool(info.get('ready')) and not s.bluetooth_restart and
+        editable=(s.editable and bool(info.get('ready')) and not s.bluetooth_restart and
                   not s.sim.get('active') and not s.status.get('sensor_hil_active'))
         self.bluetooth_suffix.setEnabled(editable)
         suffix=self.bluetooth_suffix.text()
@@ -134,19 +140,18 @@ class SettingsPage(QWidget):
     def _render_airbrakes(self,s):
         saved=s.airbrakes if s.connected else {}
         local=s.local_setting('airbrakes')
-        observed=(s.connected,local,saved.get('ready'),saved.get('supported'))
+        observed=(s.connected,local,saved.get('ready'),bool(saved))
         if observed!=self._rendered_airbrakes:
             self._rendered_airbrakes=observed
             self.airbrakes_enabled.blockSignals(True); self.airbrakes_enabled.setChecked(local); self.airbrakes_enabled.blockSignals(False)
-        editable=s.editable and not s.dirty and not s.staged and not s.sim.get('active') and not s.status.get('sensor_hil_active') and saved.get('supported') is True
+        editable=s.editable and not s.dirty and not s.staged and not s.sim.get('active') and not s.status.get('sensor_hil_active') and bool(saved)
         self.airbrakes_enabled.setEnabled(editable)
         changed=not saved.get('ready',True) or s.setting_changed('airbrakes')
         self.airbrakes_save.setEnabled(editable and changed)
-        self.airbrakes_save.setText(t('Saved') if s.connected and saved.get('supported') and not changed else t('Save'))
+        self.airbrakes_save.setText(t('Saved') if s.connected and saved and not changed else t('Save'))
         text=t('Connect the board to read this setting.')
         if s.connected:
-            if saved.get('supported') is False: text=t('Update the firmware to enable the airbrakes.')
-            elif not saved.get('ready',True): text=t('Invalid setting: save it again.')
+            if not saved.get('ready',True): text=t('Invalid setting: save it again.')
             elif 'enabled' in saved:
                 text=t('Unsaved change: press Save.') if changed else ''
         self.airbrakes_saved.setText(text)
@@ -155,14 +160,14 @@ class SettingsPage(QWidget):
     def _render_machine(self,s):
         machine=s.machine if s.connected else {}
         local=s.local_setting('machine')
-        observed=(s.connected,local,machine.get('supported'))
+        observed=(s.connected,local,bool(machine))
         if observed!=self._rendered_machine:
             self._rendered_machine=observed
             self.bistage_enabled.blockSignals(True); self.bistage_min_speed.blockSignals(True)
             self.bistage_enabled.setChecked(local[0]); self.bistage_min_speed.setValue(local[1])
             self.bistage_enabled.blockSignals(False); self.bistage_min_speed.blockSignals(False)
             self._update_machine_sequence(local[0])
-        editable=s.editable and not s.dirty and not s.staged and not s.sim.get('active') and not s.status.get('sensor_hil_active') and machine.get('supported') is True
+        editable=s.editable and not s.dirty and not s.staged and not s.sim.get('active') and not s.status.get('sensor_hil_active') and bool(machine)
         self.bistage_parameters.setEnabled(editable)
         self.bistage_enabled.setEnabled(editable)
         self.bistage_fields.setEnabled(editable and self.bistage_enabled.isChecked())
@@ -172,11 +177,10 @@ class SettingsPage(QWidget):
             self.bistage_parameters.style().unpolish(self.bistage_parameters); self.bistage_parameters.style().polish(self.bistage_parameters)
         changed=not machine.get('machine_ready',True) or s.setting_changed('machine')
         self.machine_save.setEnabled(editable and changed)
-        self.machine_save.setText(t('Saved') if s.connected and machine.get('supported') is True and not changed else t('Save'))
+        self.machine_save.setText(t('Saved') if s.connected and machine and not changed else t('Save'))
         text=''
         if s.connected:
-            if machine.get('supported') is False: text=t('Update the firmware to set bistage flight.')
-            elif not machine.get('machine_ready',True): text=t('State machine to save: invalid setting on the board.')
+            if not machine.get('machine_ready',True): text=t('State machine to save: invalid setting on the board.')
         self.machine_saved.setText(text)
         self.machine_saved.setVisible(bool(text))
 

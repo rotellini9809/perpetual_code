@@ -69,7 +69,7 @@ The commit page holds magic 0x43564450 ("PDVC"), the header CRC and its compleme
 
 | Type | Record | Payload |
 |---|---|---|
-| 1 | IMU calibration | 30 bytes: approval (u8: 0 required, 1 verified, 2 in use, 3 invalid), identity (u8: 0x49 factory identity coefficients, FF custom), revision (u32), accel bias XYZ (3 x float32, m/s^2), accel scale XYZ (3 x float32) |
+| 1 | IMU calibration | 42 bytes: approval (u8: 0 required, 1 verified, 2 in use, 3 invalid), identity (u8: 0x49 factory identity coefficients, FF custom), revision (u32), accel bias XYZ (3 x float32, m/s^2), accel scale XYZ (3 x float32), last verification residuals: corrected \|a\| minus g on +X, +Y, +Z (3 x float32 m/s^2, NaN for a face not measured; all NaN for a new calibration). A verification, passed or failed, writes its residuals with the approval it leads to. |
 | 2 | Orientation | 1 byte: up axis +X, -X, +Y, -Y, +Z, -Z = 0..5 |
 | 3 | Rules | configuration codec version (u16, 3), then the [codec v3 package](#configuration-codec-v3) (at most 4094 bytes) |
 | 4 | IMU identity revoked | empty; its presence revokes the factory identity |

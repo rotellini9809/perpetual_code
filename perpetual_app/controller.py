@@ -18,11 +18,11 @@ from .i18n import t
 # Job kinds drive behaviour; job names are user-facing labels only.
 OPERATION, POLL, PREVIEW, DOWNLOAD, SIMULATION_START = 'operation', 'poll', 'servo_preview', 'download', 'simulation_start'
 
-# State parts read with one plain command; the others use a _read_<name> method (optional on older firmware).
+# State parts read with one plain command; the others use a _read_<name> method.
 READS = dict(status='status',preflight='preflight',sensors='sensors',sim='sim status',events='sim events',
-             control='control status',capabilities='capabilities',bluetooth='bluetooth status')
-
-OLD_FIRMWARE = ('UNKNOWN_COMMAND','INVALID_ARGUMENT','NO_DRAFT') # Error codes meaning "this firmware lacks the command".
+             control='control status',capabilities='capabilities',bluetooth='bluetooth status',
+             orientation='config orientation',imu_calibration='imu status',machine='config machine',
+             airbrakes='config airbrakes',airbrake_status='airbrake status')
 # A manual pyro continuity check is shown for this long; disarming clears it at once.
 PYRO_CHECK_VALID_S = 600
 
@@ -255,35 +255,21 @@ class Controller(QObject):
         plan,meta,view=read_plan(client)
         return dict(plan=plan,meta=meta,view=view)
 
-    def _optional(self,client,command,old_firmware=OLD_FIRMWARE,flag=True):
-        """Read a feature newer firmware provides; on older firmware return supported=False ({} without flag)."""
-        try: response=self.request(client,command)
-        except CommandError as error:
-            if error.code not in old_firmware: raise
-            return dict(supported=False) if flag else {}
-        return dict(response,supported=True) if flag else response
-
-    def _read_orientation(self,client): return self._optional(client,'config orientation')
-    def _read_imu_calibration(self,client): return self._optional(client,'imu status',('UNKNOWN_COMMAND',))
-    def _read_machine(self,client): return self._optional(client,'config machine')
-    def _read_airbrakes(self,client): return self._optional(client,'config airbrakes')
-    def _read_airbrake_status(self,client): return self._optional(client,'airbrake status',flag=False)
-
     def save_airbrakes(self,enabled):
         s=self.state
-        if not s.editable or s.dirty or s.staged or s.sim.get('active') or s.status.get('sensor_hil_active') or s.airbrakes.get('supported') is not True: return
+        if not s.editable or s.dirty or s.staged or s.sim.get('active') or s.status.get('sensor_hil_active') or not s.airbrakes: return
         client=self.connection
         def save():
             reply=self.request(client,'config airbrakes '+('on' if enabled else 'off'),60)
             if not all(reply.get(k) is True for k in ('persisted','verified')): raise RuntimeError('Airbrake save not confirmed')
-            setting=self._read_airbrakes(client)
+            setting=self.request(client,READS['airbrakes'])
             if setting.get('enabled')!=enabled or not setting.get('ready'): raise RuntimeError('Airbrake setting verification failed')
             return dict(saved_setting='airbrakes',airbrakes=setting,**self._read(client,'airbrake_status','status','preflight'))
         self._job(t('Saving airbrakes'),save)
 
     def save_machine(self,bistage,minimum):
         s=self.state
-        if not s.editable or s.dirty or s.staged or s.machine.get('supported') is False: return
+        if not s.editable or s.dirty or s.staged: return
         if s.sim.get('active') or s.status.get('sensor_hil_active'): return
         if type(bistage) is not bool or not math.isfinite(minimum) or not 0<=minimum<=100000: return
         client=self.connection
@@ -291,7 +277,7 @@ class Controller(QObject):
             command='config machine '+('bistage '+format(minimum,'.9g') if bistage else 'normal')
             reply=self.request(client,command,60)
             if not all(reply.get(key) is True for key in ('persisted','verified')): raise RuntimeError('State machine save not confirmed')
-            machine=self._read_machine(client)
+            machine=self.request(client,READS['machine'])
             if machine.get('bistage')!=bistage or machine.get('minimum_coast_velocity')!=(minimum if bistage else 0):
                 raise RuntimeError('State machine verification failed')
             return dict(saved_setting='machine',machine=machine,**self._read(client,'status','preflight'))
@@ -365,7 +351,7 @@ class Controller(QObject):
         if command=='sensors': return dict(sensors=response),()
         if command=='airbrake status': return dict(airbrake_status=response),()
         if command=='pyro continuity': return dict(pyro_continuity=dict(response,expires_at=time.monotonic()+PYRO_CHECK_VALID_S)),()
-        if command.startswith('imu '): return dict(imu_calibration=dict(response,supported=True)),('preflight','status')
+        if command.startswith('imu '): return dict(imu_calibration=response),('preflight','status')
         if command.startswith('config airbrakes'): return {},('airbrakes','airbrake_status')
         if command.startswith('sim '): return {},('sim','status')
         if command in ('arm','disarm','ds','sleep','wake') or command.startswith('servo arm') or command=='servo release':
@@ -388,7 +374,6 @@ class Controller(QObject):
 
     def save_orientation(self,axis):
         s=self.state
-        if s.orientation.get('supported') is False: return
         if axis not in ('+X','-X','+Y','-Y','+Z','-Z'): return
         if not s.editable or s.dirty or s.staged or s.sim.get('active') or s.status.get('sensor_hil_active'): return
         client=self.connection
@@ -481,13 +466,9 @@ class Controller(QObject):
                 if status.get('arming_state')!='disarmed' or any(status.get(key) for key in ('simulation_active','sensor_hil_active','estimate_replay_active')):
                     raise RuntimeError('Stop the current activity before starting the virtual simulation.')
                 if status.get('outputs_active'):
-                    try: released=self.request(client,'servo release')
-                    except CommandError as error:
-                        if error.code in OLD_FIRMWARE:
-                            raise RuntimeError('Update the board firmware: automatic servo release is not supported.') from error
-                        raise
+                    released=self.request(client,'servo release')
                     if released.get('released') is not True or released.get('prepared_servo_mask')!=0:
-                        raise RuntimeError('Servo release not confirmed by the board. Update the firmware before retrying.')
+                        raise RuntimeError('Servo release not confirmed by the board.')
                     if self.request(client,'status').get('outputs_active'):
                         raise RuntimeError('Servo PWM is still active: simulation not started.')
             if record: self.request(client,'flights recover',600)
@@ -706,10 +687,10 @@ class Controller(QObject):
                 if bluetooth_pending: result['bluetooth']=client.request('bluetooth status') # Until it is ready.
                 return result
             self._last_status=now; self._poll(poll_status)
-        elif self.state.imu_calibration.get('supported') and (self.page==1 or self.state.imu_calibration.get('active')) and now-self._last_imu>=.75:
+        elif self.state.imu_calibration and (self.page==1 or self.state.imu_calibration.get('active')) and now-self._last_imu>=.75:
             was_active=self.state.imu_calibration.get('active')
             def poll_imu():
-                imu=self._read_imu_calibration(client); result=dict(imu_calibration=imu)
+                imu=self.request(client,READS['imu_calibration']); result=dict(imu_calibration=imu)
                 if was_active and not imu.get('active'): result['preflight']=client.request('preflight')
                 return result
             self._last_imu=now; self._poll(poll_imu)

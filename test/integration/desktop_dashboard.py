@@ -77,7 +77,7 @@ def check_rule_selection(app,wait):
 
 
 def check_orientation_and_pyros(app,wait):
-    """Older firmware without orientation still loads; pyro continuity is separate from preflight."""
+    """Memory preparation stays cancellable; pyro continuity is separate from preflight."""
     with session(app,wait) as s:
         controller,window,backend=s.controller,s.window,s.backend
         # Memory preparation must remain cancellable, without presenting the board as armed.
@@ -90,21 +90,8 @@ def check_orientation_and_pyros(app,wait):
             window.dashboard_page.toggle_arming()
             assert command.call_args.args[0]=='disarm'
         controller.state.status=saved_status; window.render()
-        # Older firmware may lack orientation; its valid plan must still load on initial sync.
-        old_request=backend.request
-        for code in ('NO_DRAFT','INVALID_ARGUMENT','UNKNOWN_COMMAND'):
-            def unsupported_orientation(command,timeout=5,code=code):
-                if command=='config orientation': raise CommandError(command,dict(ok=False,code=code))
-                return old_request(command,timeout)
-            controller.state.base=None; controller.state.local=None
-            with patch.object(backend,'request',side_effect=unsupported_orientation):
-                controller.refresh(); wait(lambda:not controller.state.foreground)
-            assert not controller.state.error and controller.state.base is not None
-            assert controller.state.orientation==dict(supported=False)
-            assert not window.dashboard_page.servo_selection[0].isHidden() and window.dashboard_page.check_pyros_button.isEnabled()
-            assert 'Aggiorna il firmware' in window.settings_page.orientation_panel.saved.text() and not window.settings_page.orientation_panel.save.isEnabled()
         controller.refresh(); wait(lambda:not controller.state.foreground)
-        assert controller.state.orientation['supported'] and controller.state.orientation['up_axis']=='+X'
+        assert controller.state.orientation['up_axis']=='+X'
         backend.failed_pyros=1
         preflight=deepcopy(controller.state.preflight); before=backend.commands.count('preflight')
         window.dashboard_page.check_pyros_button.click(); wait(lambda:not controller.state.foreground)

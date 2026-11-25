@@ -7,6 +7,19 @@ from .widgets import ASSETS,label,button,row
 from .i18n import t
 
 AXES=('+X','-X','+Y','-Y','+Z','-Z')
+ROTATIONS={'+X':0,'-X':180,'+Y':90,'-Y':-90,'+Z':0,'-Z':180} # Board artwork rotation that puts that sensor axis up.
+_ARTWORK={}; _PREVIEWS={}
+
+
+def board_preview(axis,width,height):
+    """Board artwork with the given sensor axis pointing up (side view for Z); shared by Settings and IMU calibration."""
+    side=axis in ('+Z','-Z'); key=(side,ROTATIONS.get(axis,0),width,height)
+    if key not in _PREVIEWS:
+        box=(height,width) if key[1] in (90,-90) else (width,height) # Scale once, then only rotate: -Z is exactly +Z turned over.
+        if (side,box) not in _ARTWORK:
+            _ARTWORK[side,box]=QPixmap(str(ASSETS/('board-orientation-z-reference.jpg' if side else 'board-orientation-reference.jpg'))).scaled(*box,Qt.KeepAspectRatio,Qt.SmoothTransformation)
+        _PREVIEWS[key]=_ARTWORK[side,box].transformed(QTransform().rotate(key[1]))
+    return _PREVIEWS[key]
 
 
 class OrientationPanel(QWidget):
@@ -18,9 +31,7 @@ class OrientationPanel(QWidget):
         layout.addWidget(self.direction,0,0)
         self.image=label(); self.image.setFixedSize(200,220); self.image.setAlignment(Qt.AlignCenter)
         self.image_opacity=QGraphicsOpacityEffect(self.image); self.image.setGraphicsEffect(self.image_opacity)
-        self.artwork=QPixmap(str(ASSETS/'board-orientation-reference.jpg')).scaled(220,220,Qt.KeepAspectRatio,Qt.SmoothTransformation)
-        self.z_artwork=QPixmap(str(ASSETS/'board-orientation-z-reference.jpg')).scaled(200,220,Qt.KeepAspectRatio,Qt.SmoothTransformation)
-        self._previews={}; layout.addWidget(self.image,1,0)
+        layout.addWidget(self.image,1,0)
         details=QVBoxLayout(); details.setSpacing(12)
         text=label(t('Select the sensor axis that points toward the rocket nose.'),'settingsDescription')
         text.setWordWrap(True); details.addWidget(text)
@@ -41,14 +52,8 @@ class OrientationPanel(QWidget):
 
     def update_preview(self):
         axis=self.axis.currentData()
-        rotations={'+X':0,'-X':180,'+Y':90,'-Y':-90,'+Z':0,'-Z':180}
-        illustrated=axis in rotations
-        rotation=rotations.get(axis,0)
-        key=(axis in ('+Z','-Z'),rotation)
-        if key not in self._previews:
-            artwork=self.z_artwork if key[0] else self.artwork
-            self._previews[key]=artwork.transformed(QTransform().rotate(rotation)).scaled(200,220,Qt.KeepAspectRatio,Qt.SmoothTransformation)
-        self.image.setPixmap(self._previews[key])
+        illustrated=axis in ROTATIONS
+        self.image.setPixmap(board_preview(axis,200,220))
         self.image.setAccessibleName(t('Orientation preview {axis}',axis=axis) if illustrated else t('Orientation not selected'))
         self.image_opacity.setOpacity(1 if illustrated else .25)
         self.render(self.controller.state,update_selection=False)
@@ -61,15 +66,13 @@ class OrientationPanel(QWidget):
             self._observed=observed
             self.axis.blockSignals(True); self.axis.setCurrentIndex(self.axis.findData(axis) if axis in AXES else 0); self.axis.blockSignals(False)
             self.update_preview()
-        supported=orientation.get('supported') is not False
         ready=orientation.get('orientation_ready',False)
         selected=self.axis.currentData()
         self.saved.setText(t('Saved on the board: {axis}',axis=orientation['up_axis']) if ready else
                            t('Orientation: — to set before arming.') if s.connected and orientation else t('Connect the board to read the orientation.'))
         if s.connected and selected in AXES and (not ready or selected!=orientation.get('up_axis')):
             self.saved.setText(t('Unsaved preview.')+(t(' On the board: {axis}',axis=orientation['up_axis']) if ready else t(' Save to set the orientation.')))
-        if s.connected and not supported: self.saved.setText(t('Update the board firmware to set the orientation.'))
-        editable=(supported and s.editable and not s.dirty and not s.staged and not s.sim.get('active') and
+        editable=(s.editable and not s.dirty and not s.staged and not s.sim.get('active') and
                   not s.status.get('sensor_hil_active'))
         self.axis.setEnabled(editable)
         self.save.setEnabled(editable and self.axis.currentData() in AXES and (not ready or self.axis.currentData()!=orientation.get('up_axis')))

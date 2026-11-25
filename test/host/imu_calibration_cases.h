@@ -1,6 +1,7 @@
 #pragma once
 #include "flight/ImuCalibration.h"
 #include <limits>
+#include <cstring>
 
 namespace test_imu_calibration {
 using namespace test_arming_controller;
@@ -60,8 +61,9 @@ void testMisalignedFaces(const storage::ImuCalibrationRecord &truth) {
   // Verification only judges |a|: faces up to 10 degrees off in any direction are accepted.
   c.begin(true,fitted);
   assert(c.capture(0)); feedTilted(c,0,truth,9.5f,Lean::Diagonal); assert(!c.failed() && !c.collecting());
-  assert(c.capture(2)); feedTilted(c,2,truth,11); assert(c.collecting() && !c.failed() && !c.samples()); // Beyond 10 deg: retries.
-  feedTilted(c,2,truth,9.5f,Lean::Other); assert(!c.collecting() && !c.failed());
+  assert(c.capture(2)); feedTilted(c,2,truth,11); // Beyond 10 deg: the capture stops, the face is captured again.
+  assert(!c.collecting() && !c.failed() && !c.samples() && !std::strcmp(c.error(),"POSITION_OR_MOTION") && !(c.mask()&4));
+  assert(c.capture(2) && !std::strcmp(c.error(),"None")); feedTilted(c,2,truth,9.5f,Lean::Other); assert(!c.collecting() && !c.failed());
   assert(c.capture(4)); feedTilted(c,4,truth,9.5f); assert(!c.failed());
   storage::ImuCalibrationRecord verified; assert(c.complete() && c.result(verified) && verified.approval==storage::ImuApproval::Verified);
   // Wrong coefficients fail on the face whose axis points up, whatever the alignment.
@@ -92,20 +94,40 @@ void run() {
   assert(collector.result(measured) && measured.revision==1 && measured.approval==storage::ImuApproval::Required);
   for (unsigned i=0;i<3;++i) { assert(std::fabs(measured.bias[i]-truth.bias[i])<.00001f); assert(std::fabs(measured.scale[i]-truth.scale[i])<.00001f); }
   collector.begin(true,measured); assert(collector.capture(0));
-  feed(collector,2,truth); assert(!collector.samples() && collector.collecting()); // Wrong face.
-  feed(collector,0,truth); assert(!collector.complete());
+  feed(collector,2,truth); assert(!collector.samples() && !collector.collecting() && !collector.failed()); // Wrong face: stopped.
+  assert(collector.capture(0)); feed(collector,0,truth); assert(!collector.complete());
   assert(collector.capture(2)); feed(collector,2,truth); assert(!collector.complete()); // +Z still missing.
   assert(collector.capture(4)); feed(collector,4,truth);
   assert(collector.complete() && collector.result(measured) && measured.approval==storage::ImuApproval::Verified);
   testMisalignedFaces(truth);
   collector.begin(false,{}); assert(collector.capture(0));
   feed(collector,0,truth,20); assert(collector.samples()==20);
+  feed(collector,2,truth,10); // Within the settling time a wrong sample only restarts the window.
+  assert(collector.collecting() && !collector.samples() && !std::strcmp(collector.error(),"None"));
+  feed(collector,0,truth,20); assert(collector.samples()==20);
   sensors::Reading bad; bad.imuValid=true; bad.imuSequence=100000; bad.timeUs=1000000000;
-  bad.accelMps2[0]=std::numeric_limits<float>::quiet_NaN(); collector.add(bad); assert(!collector.samples());
+  bad.accelMps2[0]=std::numeric_limits<float>::quiet_NaN(); collector.add(bad);
+  assert(!collector.samples() && !collector.collecting() && !std::strcmp(collector.error(),"POSITION_OR_MOTION"));
+  // A noisy window stops too; the face is then captured again.
+  assert(collector.capture(0));
+  for (unsigned n=0;n<260;++n) {
+    sensors::Reading r; r.imuValid=true; r.imuSequence=200000+n; r.timeUs=2000000000ull+10000u*n;
+    for (unsigned i=0;i<3;++i) r.accelMps2[i]=truth.bias[i]+(i==0 ? G/truth.scale[i]:0)+(i==1 ? (n%2 ? .3f:-.3f):0);
+    collector.add(r);
+  }
+  assert(!collector.collecting() && !std::strcmp(collector.error(),"NOISY") && !(collector.mask()&1));
   collector.cancel(); assert(!collector.active());
 
   CalibrationFlash flash; storage::ImuCalibrationStore store(flash); assert(!store.load());
   assert(store.save(measured) && store.verified());
+  for (unsigned i=0;i<3;++i) assert(std::isnan(store.record().residual[i])); // Not verified yet.
+  { // Verification residuals travel in the calibration record (type 1) with its approval, and a reload reads them.
+    const float residual[3]={.01f,-.02f,NAN}; assert(store.approve(storage::ImuApproval::Verified,residual));
+    storage::ImuCalibrationStore reloaded(flash); reloaded.load(); const auto &r=reloaded.record();
+    assert(reloaded.verified() && r.residual[0]==.01f && r.residual[1]==-.02f && std::isnan(r.residual[2]));
+    assert(store.approve(storage::ImuApproval::InUse) && store.record().residual[1]==-.02f); // Other approval changes keep them.
+    assert(store.approve(storage::ImuApproval::Verified));
+  }
   const auto beforeInvalid=flash.writes; auto invalid=measured; invalid.bias[0]=std::numeric_limits<float>::quiet_NaN();
   assert(!store.save(invalid) && store.verified() && flash.writes==beforeInvalid);
   storage::ImuCalibrationStore reboot(flash); assert(reboot.load() && reboot.verified());
@@ -160,10 +182,10 @@ void run() {
   // Without identity, a failed custom calibration must be redone.
   factory.load(); // The revoked identity stays revoked.
   assert(!factory.identityAllowed() && factory.save(attempt) && factory.discard() && factory.needsCalibration());
-  // Wrong position retries; a stable correctly oriented but biased measurement fails.
+  // Wrong position stops the capture without failing; a stable correctly oriented but biased measurement fails.
   storage::ImuCalibrationRecord shifted; shifted.bias[0]=.8f;
   collector.begin(true,identity); assert(collector.capture(0)); feed(collector,2,identity);
-  assert(!collector.failed()); feed(collector,0,shifted);
+  assert(!collector.failed() && !collector.collecting()); assert(collector.capture(0)); feed(collector,0,shifted);
   assert(collector.failed() && !collector.complete() && !collector.result(measured));
 
   MemoryFlash settingsFlash; storage::ConfigurationStore settingsStore(settingsFlash);
@@ -219,9 +241,17 @@ void run() {
   assert(!controller.beginImuCalibration(source,false));
   for (unsigned face=0;face<6;++face) acquireFace(face);
   assert(!controller.imuCalibration().active() && store.present() && !store.verified() && store.record().revision==2);
+  // A new calibration is not verified yet: the residuals of the previous one no longer apply.
+  assert(std::isnan(store.record().residual[0]) && send(endpoint,"imu status").find("verification_residual")==std::string::npos);
   assert(controller.preflight(flight::FlightMode::Physical,true,&checks).has(flight::ArmBlocker::ImuVerificationRequired));
   assert(!controller.beginImuCalibration(source,true)); acquireFace(0); acquireFace(2); acquireFace(4);
   assert(!controller.imuCalibration().active() && store.verified() && !strcmp(controller.imuCalibrationState(),"verified"));
+  { // The passed verification's residuals are saved with the approval, survive a reload, and imu status reports them.
+    for (unsigned i=0;i<3;++i) assert(std::fabs(store.record().residual[i])<.01f);
+    storage::ImuCalibrationStore reloaded(flash); reloaded.load(); assert(std::fabs(reloaded.record().residual[2])<.01f);
+    const auto reply=send(endpoint,"imu status"); has(reply,"\"verification_residual_mps2\":[");
+    assert(reply.size()<700 && reply.find("RESPONSE_TOO_LARGE")==std::string::npos);
+  }
   assert(!controller.arm(source,flight::FlightMode::Physical,0,120,{},4096,&checks));
   for (unsigned n=0;n<500;++n) {
     nowUs+=10000; auto &r=source.reading; r={}; r.imuValid=r.baroValid=true;
@@ -246,6 +276,10 @@ void run() {
   assert(!controller.beginImuCalibration(source,true));
   truth.bias[0]+=.8f; acquireFace(0); truth.bias[0]-=.8f;
   assert(!controller.active() && store.needsCalibration() && !store.identityAllowed());
+  { // A failed verification keeps the face that failed; the faces not reached stay unmeasured.
+    const auto &r=store.record(); assert(r.residual[0]>.35f && std::isnan(r.residual[1]) && std::isnan(r.residual[2]));
+    has(send(endpoint,"imu status"),"null,null]");
+  }
   assert(!strcmp(controller.imuError(),"IMU_VERIFICATION_FAILED"));
   assert(!strcmp(controller.imuCalibrationState(),"invalid"));
   assert(!strcmp(controller.beginImuCalibration(source,true),"IMU_CALIBRATION_MISSING"));
@@ -254,8 +288,11 @@ void run() {
   assert(!controller.beginImuCalibration(source,false));
   for (unsigned face=0;face<6;++face) acquireFace(face);
   assert(!store.needsCalibration() && !store.verified() && !store.identityAllowed());
+  assert(std::isnan(store.record().residual[0])); // The new calibration has not been verified.
   assert(!controller.beginImuCalibration(source,true)); acquireFace(0); acquireFace(2); acquireFace(4);
-  assert(store.verified() && !store.identityAllowed());
+  assert(store.verified() && !store.identityAllowed() && !std::isnan(store.record().residual[1]));
+  { storage::ConfigurationStore settings(flash); assert(settings.clear(true)); } // Factory reset keeps the calibration and its residuals.
+  { storage::ImuCalibrationStore reset(flash); reset.load(); assert(reset.verified() && !std::isnan(reset.record().residual[1])); }
   // Simulations, including physical outputs, must leave calibration approval untouched.
   const auto beforeSimulation=flash.writes;
   navigation::SensorCalibration simulation; simulation.configured=true;

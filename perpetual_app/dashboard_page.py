@@ -1,10 +1,10 @@
 """Dashboard: applied configuration, sensors, preflight checks and actuator preparation before arming."""
 import time
 from PySide6.QtCore import Qt,Signal
-from PySide6.QtWidgets import QWidget,QFrame,QVBoxLayout,QHBoxLayout,QCheckBox,QHeaderView,QSizePolicy,QTableWidgetItem
+from PySide6.QtWidgets import QWidget,QFrame,QVBoxLayout,QHBoxLayout,QCheckBox,QHeaderView,QSizePolicy
 from .controller import REASONS
 from .arm_button import ArmButton
-from .imu_calibration_page import STATES as IMU_STATES,CAUSES as IMU_CAUSES
+from .imu_calibration_page import CAUSES as IMU_CAUSES
 from .widgets import label,button,card,row,table,fill_table,create_page
 from .i18n import t
 
@@ -12,6 +12,9 @@ CONFIG_ERRORS={'Missing':'No configuration saved on the board','Io':'Configurati
                'Corrupt':'Configuration data corrupted','UnsupportedVersion':'Incompatible configuration format',
                'InvalidConfiguration':'The saved rules fail verification'}
 
+
+
+IMU_REASONS=('IMU_CALIBRATION_MISSING','IMU_VERIFICATION_REQUIRED') # Preflight rows that open the calibration tab.
 
 class DashboardPage(QWidget):
     """Sends board commands itself; navigation to other pages is requested from the window through signals."""
@@ -139,29 +142,19 @@ class DashboardPage(QWidget):
                 if detail: text+=' · '+t(detail)
             if reason=='CONTINUITY_FAULT': text+=' · '+', '.join('PYRO '+str(i+1) for i in range(4) if s.preflight.get('failed_pyro_mask',0)&(1<<i))
             if reason=='SERVOS_NOT_PREPARED': text+=' · '+', '.join('SERVO '+str(i+1) for i in range(4) if s.preflight.get('unprepared_servo_mask',0)&(1<<i))
+            if reason in IMU_REASONS: # The firmware's cause, and a link to the calibration tab.
+                cause=IMU_CAUSES.get(s.preflight.get('imu_calibration_reason'))
+                text+=(' · '+t(cause) if cause else '')+t(' · Open calibration')
             if reason=='SERVOS_NOT_CONFIGURED': text+=' · '+', '.join('SERVO '+str(i+1) for i in range(4) if s.preflight.get('unconfigured_servo_mask',0)&(1<<i))
             rows.append((text,))
         if not rows:
             message=t('The board wakes up at the next command.') if sleeping else t('No blocker reported by the board.') if ready else t('Press Recheck to read the checks.') if connected else t('Connect the board to read the checks.')
             rows=[(message,)]
         fill_table(self.readiness_table,rows)
-        for i,reason in enumerate(reasons):
-            self.readiness_table.item(i,0).setToolTip(reason)
-            if reason in ('IMU_CALIBRATION_MISSING','IMU_VERIFICATION_REQUIRED'):
-                self.readiness_table.item(i,0).setData(Qt.ItemDataRole.UserRole,'imu')
-        imu_state=s.preflight.get('imu_calibration_state') if connected else None
-        if imu_state:
-            # Keep the IMU state in the same preflight table, including successful approval.
-            text=t('IMU calibration: {state}',state=t(IMU_STATES.get(imu_state,imu_state)))
-            cause=t(IMU_CAUSES.get(s.preflight.get('imu_calibration_reason'),''))
-            if cause: text+=' · '+cause
-            text+=t(' · Open calibration')
-            imu_row=next((i for i,r in enumerate(reasons) if r in ('IMU_CALIBRATION_MISSING','IMU_VERIFICATION_REQUIRED')),None)
-            if imu_row is None:
-                imu_row=self.readiness_table.rowCount(); self.readiness_table.insertRow(imu_row)
-                self.readiness_table.setItem(imu_row,0,QTableWidgetItem(text))
-            item=self.readiness_table.item(imu_row,0); item.setText(text); item.setData(Qt.ItemDataRole.UserRole,'imu')
-            item.setToolTip(t('Open Configuration → IMU calibration'))
+        for i in range(self.readiness_table.rowCount()):
+            reason=reasons[i] if i<len(reasons) else None; item=self.readiness_table.item(i,0); item.setToolTip(reason or '')
+            item.setData(Qt.ItemDataRole.UserRole,'imu' if reason in IMU_REASONS else None)
+            if reason in IMU_REASONS: item.setToolTip(t('Open Configuration → IMU calibration'))
         self.preflight_button.setEnabled(usable)
         blocked=connected and bool(reasons)
         if self.arm_button.property('blocked')!=blocked:

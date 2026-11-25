@@ -173,14 +173,15 @@ PollResult ArmingController::poll(FrameResult &result) {
       // After use (Boost reached, or a reset while armed) the failure means the sensor changed: the
       // factory identity is revoked for good. Before any use only this calibration attempt is dropped.
       const bool afterUse=boostConsumed_ || imuStore_->record().approval==storage::ImuApproval::InUse;
-      const bool stored=afterUse ? imuStore_->invalidate() : imuStore_->discard();
+      // The residuals stay with the invalidated coefficients; a discarded attempt is replaced by the identity.
+      const bool stored=afterUse ? imuStore_->invalidate(imuCalibration_.residuals()) : imuStore_->discard();
       imuError_=stored ? "IMU_VERIFICATION_FAILED" : "IMU_CALIBRATION_IO";
       cancelImuCalibration(); return {};
     }
     if (imuCalibration_.complete()) {
       storage::ImuCalibrationRecord record;
       if (!imuCalibration_.result(record)) imuError_="IMU_CALIBRATION_INVALID";
-      else if (!(imuCalibration_.verification() ? imuStore_->approve(storage::ImuApproval::Verified) : imuStore_->save(record))) imuError_="IMU_CALIBRATION_IO";
+      else if (!(imuCalibration_.verification() ? imuStore_->approve(storage::ImuApproval::Verified,imuCalibration_.residuals()) : imuStore_->save(record))) imuError_="IMU_CALIBRATION_IO";
       else boostConsumed_=false;
       cancelImuCalibration();
     }

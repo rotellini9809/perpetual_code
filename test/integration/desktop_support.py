@@ -76,6 +76,9 @@ class Native:
                         source='hoppino',duration_ms=32995,total_samples=6600,
                         samples=1 if self.active else 0,t_ms=0,phase=0,z_est=0,starts=0,reason='running' if self.active else 'stopped')
         if command=='sim events': return dict(starts=[],phases=[],output_mode=self.output_mode)
+        if command=='imu status': # The PC device has no IMU: a verified calibration, idle.
+            return dict(imu_calibration_state='verified',imu_calibration_reason='None',active=False,collecting=False,verification=False,
+                        face=0,face_mask=0,samples=0,target=240,last_error='None',window_error='None',revision=1,bias_mps2=[0,0,0],scale=[1,1,1])
         if command=='bluetooth status':
             ready=self.bluetooth_ready
             return dict(ready=ready,connected=ready and self.transport=='bluetooth',error='None' if ready else 'STARTING',baud=230400,uart_rx_overflows=0,

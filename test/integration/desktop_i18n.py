@@ -68,15 +68,18 @@ def check_language_switch(app,wait):
     set_language('en')
     controller=Controller(port_scanner=lambda:[]); controller.timer.stop()
     window=MainWindow(controller); window.show(); app.processEvents()
-    combo=window.settings_page.language
+    combo=window.settings_page.language; apply=window.settings_page.language_apply
     try:
         with patch.object(window.settings,'setValue') as save, patch('perpetual_app.window.QMessageBox.question',return_value=QMessageBox.No) as ask:
-            combo.setCurrentIndex(combo.findData('it'))
+            assert not apply.isEnabled(); combo.setCurrentIndex(combo.findData('it'))
+            assert apply.isEnabled() and not save.called # Choosing alone saves nothing.
+            apply.click()
             save.assert_called_once_with(SETTING,'it'); assert ask.called and not window.restart_requested and window.isVisible()
-            ask.reset_mock(); combo.setCurrentIndex(combo.findData('en')) # The running language needs no restart.
-            assert not ask.called and save.call_args.args==(SETTING,'en')
+            assert not apply.isEnabled() # Saved, waiting for a restart.
+            ask.reset_mock(); combo.setCurrentIndex(combo.findData('en')); assert apply.isEnabled(); apply.click() # The running language needs no restart.
+            assert not ask.called and save.call_args.args==(SETTING,'en') and not apply.isEnabled()
         with patch.object(window.settings,'setValue'), patch('perpetual_app.window.QMessageBox.question',return_value=QMessageBox.Yes):
-            combo.setCurrentIndex(combo.findData('it'))
+            combo.setCurrentIndex(combo.findData('it')); apply.click()
             assert window.restart_requested; wait(lambda:not window.isVisible()) # Normal close; main.py then relaunches.
         from perpetual_app import main
         with patch('perpetual_app.main.QProcess.startDetached') as start, patch.object(main.sys,'argv',['perpetual_app/main.py','--port','COM9']):

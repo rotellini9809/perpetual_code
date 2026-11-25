@@ -223,8 +223,9 @@ live in `airbrakes.py`, the editor in `airbrake_dialog.py`.
   (including firmware reasons inside refusals) and IMU procedure errors.
 - Numbers use a decimal point in every language (`use_decimal_point()`). Exported CSV/JSON stay
   English.
-- The language is chosen in Settings → Language and applies after a restart: the window saves it in
-  QSettings and offers to restart, then `main.py` relaunches after the normal close.
+- The language is chosen in Settings → Language and confirmed with **Apply**, enabled only when the
+  choice differs from the saved one. It applies after a restart: the window saves it in QSettings and
+  offers to restart, then `main.py` relaunches after the normal close.
 - Behavior test areas run in Italian (`start_app('it')`), so their assertions also check the
   catalog; `desktop/translations` checks the English default.
 
@@ -243,11 +244,11 @@ live in `airbrakes.py`, the editor in `airbrake_dialog.py`.
 | Live sensor detail window and 60-second history/plots | `sensor_details.py`; polling in `controller.py` |
 | Configuration view, rule/channel editing, draft footer | `configuration_page.py`; editors in `dialogs.py` |
 | Pure configuration model and firmware draft transactions | `configuration.py` |
-| Six-face IMU calibration and saved verification | `imu_calibration_page.py`; operations/polling in `controller.py`; Dashboard preflight row in `dashboard_page.py` |
+| Six-face IMU calibration and saved verification | `imu_calibration_page.py`; board picture from `board_preview` in `orientation.py`; operations/polling in `controller.py`; Dashboard preflight row in `dashboard_page.py` |
 | Airbrake presentation and editor | `airbrakes.py`, `airbrake_dialog.py` |
 | Recorded flight curves, actuator markers and phase overlays | `flight_plot.py`; CSV loading in `flight_data.py`, view in `recorded_flights_page.py` |
 | Euler display convention | `orientation.py`: ZYX in an X-up reference; stored NAV Z-up angles and BODY gyro axes stay unchanged |
 | Device settings, bistage and maintenance | `settings_page.py`; board operations in `controller.py` |
-| Board orientation preview and selector | `orientation.py`, embedded in `settings_page.py`; persistence in `controller.py` |
+| Board orientation preview and selector | `orientation.py` (`board_preview` is shared with IMU calibration), embedded in `settings_page.py`; persistence in `controller.py` |
 | Bluetooth name card, rename and the one reconnection after a radio restart | `settings_page.py`; `rename_bluetooth` and `_bluetooth_restart` in `controller.py`; firmware in `Jdy34Link` |
 | UI language and Italian catalog | `i18n.py`, `translations_it.py`; switch in `settings_page.py`/`window.py`; relaunch in `main.py` |

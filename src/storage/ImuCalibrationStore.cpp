@@ -6,27 +6,26 @@
 
 namespace storage {
 namespace {
-// Journal type 1 payload: approval, identity marker, revision, accel bias XYZ, accel scale XYZ.
-constexpr std::size_t RecordBytes = 30;
+// Journal type 1 payload: approval, identity marker, revision, accel bias XYZ, accel scale XYZ,
+// last verification residuals XYZ (NaN: face not measured).
+constexpr std::size_t RecordBytes = 42;
 bool validCoefficients(const ImuCalibrationRecord &r) {
-  for (unsigned i=0;i<3;++i)
+  for (unsigned i=0;i<3;++i) {
     if (!std::isfinite(r.bias[i]) || std::fabs(r.bias[i])>2 || !std::isfinite(r.scale[i]) || r.scale[i]<.8f || r.scale[i]>1.2f) return false;
+    if (!std::isnan(r.residual[i]) && !(std::fabs(r.residual[i])<100)) return false; // NaN: face not measured.
+  }
   return r.revision!=0;
 }
+void putFloat(uint8_t *p, float v) { uint32_t b; std::memcpy(&b,&v,4); binary::put(p,b,4); }
+float getFloat(const uint8_t *p) { uint32_t b=binary::get32(p,4); float v; std::memcpy(&v,&b,4); return v; }
 void encode(const ImuCalibrationRecord &r, uint8_t *p) {
   p[0]=uint8_t(r.approval); p[1]=r.identity ? 0x49 : 0xFF; binary::put(p+2,r.revision,4);
-  for (unsigned i=0;i<3;++i) {
-    uint32_t b,s; std::memcpy(&b,&r.bias[i],4); std::memcpy(&s,&r.scale[i],4);
-    binary::put(p+6+4*i,b,4); binary::put(p+18+4*i,s,4);
-  }
+  for (unsigned i=0;i<3;++i) { putFloat(p+6+4*i,r.bias[i]); putFloat(p+18+4*i,r.scale[i]); putFloat(p+30+4*i,r.residual[i]); }
 }
 bool decode(const uint8_t *p, ImuCalibrationRecord &r) {
   if (p[0]>3 || (p[1]!=0xFF && p[1]!=0x49)) return false;
   r.approval=ImuApproval(p[0]); r.identity=p[1]==0x49; r.revision=binary::get32(p+2,4);
-  for (unsigned i=0;i<3;++i) {
-    uint32_t b=binary::get32(p+6+4*i,4),s=binary::get32(p+18+4*i,4);
-    std::memcpy(&r.bias[i],&b,4); std::memcpy(&r.scale[i],&s,4);
-  }
+  for (unsigned i=0;i<3;++i) { r.bias[i]=getFloat(p+6+4*i); r.scale[i]=getFloat(p+18+4*i); r.residual[i]=getFloat(p+30+4*i); }
   return validCoefficients(r);
 }
 }
@@ -58,9 +57,10 @@ bool ImuCalibrationStore::save(const ImuCalibrationRecord &r) {
   if (!write(r)) { record_.approval=ImuApproval::Invalid; return false; }
   record_=r; present_=true; return true;
 }
-bool ImuCalibrationStore::approve(ImuApproval approval) {
+bool ImuCalibrationStore::approve(ImuApproval approval, const float *residual) {
   if (!present_ || (approval!=ImuApproval::Invalid && needsCalibration())) return false;
   auto r=record_; r.approval=approval;
+  if (residual) for (unsigned i=0;i<3;++i) r.residual[i]=residual[i];
   if (!write(r)) { record_.approval=ImuApproval::Invalid; return false; }
   record_=r; return true;
 }
@@ -91,8 +91,8 @@ bool ImuCalibrationStore::restoreIdentityForTesting() {
   load();
   return policyReadable_ && identityAllowed_ && !present_;
 }
-bool ImuCalibrationStore::invalidate() {
-  const bool saved=approve(ImuApproval::Invalid);
+bool ImuCalibrationStore::invalidate(const float *residual) {
+  const bool saved=approve(ImuApproval::Invalid,residual);
   if (present_) record_.approval=ImuApproval::Invalid;
   const bool revoked=revokeIdentity();
   return saved && revoked;

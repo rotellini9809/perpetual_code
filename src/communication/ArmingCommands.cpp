@@ -1,4 +1,5 @@
 #include "communication/ArmingCommands.h"
+#include <cmath>
 #include "storage/FlightRecorder.h"
 #include "hardware/SensorRates.h"
 #include "communication/ArmingReply.h"
@@ -53,6 +54,14 @@ bool ArmingCommands::dispatch(const char *command, const char *arguments, bool h
     if (store && store->present()) {
       const auto &r=store->record();
       data.add(R"(,"bias_mps2":[%.6g,%.6g,%.6g],"scale":[%.6g,%.6g,%.6g])",double(r.bias[0]),double(r.bias[1]),double(r.bias[2]),double(r.scale[0]),double(r.scale[1]),double(r.scale[2]));
+      if (!std::isnan(r.residual[0]) || !std::isnan(r.residual[1]) || !std::isnan(r.residual[2])) {
+        data.add(R"(,"verification_residual_mps2":[)");
+        for (unsigned i=0;i<3;++i) {
+          if (std::isnan(r.residual[i])) data.add(i ? ",null" : "null"); // Face not measured (a failed verification stops early).
+          else data.add(i ? ",%.4g" : "%.4g",double(r.residual[i]));
+        }
+        data.add("]");
+      }
     }
     return protocol::finish(command,data,error,hasId,id,out,capacity,true);
   }

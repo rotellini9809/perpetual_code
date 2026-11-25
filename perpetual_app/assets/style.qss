@@ -151,3 +151,34 @@ QFrame#bistageParameters QDoubleSpinBox:disabled { color: #a5afbb; background: #
 QLabel#flightStateSequence { color: #000000; }
 
 QLabel#controlWarning { color: #79552b; background: #fff5e5; border: 1px solid #efdfc5; border-radius: 6px; padding: 12px; }
+
+QFrame#imuStatus { background: #f6f8fa; border: 1px solid #dfe5eb; border-left: 5px solid #a7b5c2; border-radius: 10px; }
+QFrame#imuStatus[tone="ok"] { background: #eef8f2; border-color: #c6e4d2; border-left-color: #218653; }
+QFrame#imuStatus[tone="warn"] { background: #fdf6e7; border-color: #ecd9a8; border-left-color: #c08a1e; }
+QFrame#imuStatus[tone="bad"] { background: #fcf0ef; border-color: #efcdca; border-left-color: #c43d3d; }
+QFrame#imuStatus QLabel { background: transparent; }
+QLabel#imuState { font-size: 24px; font-weight: 700; color: #5c6d80; }
+QLabel#imuState[tone="ok"] { color: #187044; }
+QLabel#imuState[tone="warn"] { color: #8a5f10; }
+QLabel#imuState[tone="bad"] { color: #b13434; }
+QLabel#imuCause { color: #4f6073; font-size: 13px; }
+QLabel#imuValue { color: #183147; font-family: 'Cascadia Code', Consolas; font-size: 13px; min-width: 88px; }
+QPushButton#imuVerify[attention="true"] { color: white; background: #218653; border-color: #218653; }
+QPushButton#imuVerify[attention="true"]:hover { background: #197044; border-color: #197044; }
+QPushButton#imuVerify[attention="true"]:pressed { background: #125c37; border-color: #125c37; }
+QProgressBar#imuProgress { min-height: 10px; max-height: 10px; border-radius: 5px; }
+QProgressBar#imuProgress::chunk { border-radius: 5px; }
+QProgressBar#imuProgress[phase="done"] { background: #d4ecdd; }
+QProgressBar#imuProgress[phase="done"]::chunk { background: #218653; }
+QProgressBar#imuProgress[phase="stopped"] { background: #f6ecd4; }
+QProgressBar#imuProgress[phase="stopped"]::chunk { background: #c08a1e; }
+QLabel#hint[phase="loading"] { color: #167c76; }
+QLabel#hint[phase="done"] { color: #187044; font-weight: 600; }
+QProgressBar#imuMeter { background: rgba(33, 48, 68, 0.10); border-radius: 2px; min-height: 5px; max-height: 5px; }
+QProgressBar#imuMeter::chunk { background: #24968b; border-radius: 2px; }
+QLabel#imuFace { border-radius: 15px; font-weight: 700; color: #8c99a7; background: #f1f4f7; border: 1px solid #e0e6ed; }
+QLabel#imuFace[step="current"] { color: #167c76; background: #e5f3f1; border: 2px solid #24968b; }
+QLabel#imuFace[step="done"] { color: white; background: #218653; border-color: #218653; }
+QLabel#imuBoard { background: #f8fafb; border: 1px solid #e1e8ee; border-radius: 10px; }
+QLabel#imuError { padding: 10px 12px; border-radius: 6px; font-weight: 600; color: #a33030; background: #fcf0ef; border: 1px solid #efcdca; }
+QLabel#imuError[tone="warn"] { color: #79552b; background: #fff5e5; border-color: #efdfc5; }

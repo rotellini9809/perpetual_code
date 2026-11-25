@@ -143,8 +143,6 @@ class SensorDetails(QDialog):
 
     def receive(self,data):
         if not self.isVisible() or not self.controller.state.connected: return
-        if 'uptime_ms' not in data:
-            self.message.setText(t('Update the firmware: the timestamp needed for the plots is missing.')); self.message.show(); return
         if not self.history.append(data): return
         self.message.clear(); self.message.hide()
         self._render(data)

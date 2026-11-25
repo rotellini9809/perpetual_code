@@ -82,7 +82,7 @@ in the device journal ([format](STORAGE_FORMAT.md#device-journal-v1-block-0)).
 
 | Command | Effect |
 |---|---|
-| `imu status` | Passive: procedure progress, completed faces, errors, bias, scale, revision and approval |
+| `imu status` | Passive: procedure progress, completed faces, errors, bias, scale, revision and approval; `verification_residual_mps2` (corrected \|a\| minus g on +X, +Y, +Z, `null` for a face not reached) after the calibration's last verification, passed or failed |
 | `imu begin` | Start a six-face calibration |
 | `imu capture <axis>` | Capture one face, `+X` … `-Z`: that sensor axis must point up |
 | `imu verify` | Start a verification: new `+X`, `+Y` and `+Z` captures with the saved coefficients |
@@ -91,7 +91,10 @@ in the device journal ([format](STORAGE_FORMAT.md#device-journal-v1-block-0)).
 
 Six accepted faces save a new revision that **requires verification**; a successful verification
 approves it. A failed attempt saves nothing. Each capture needs at least 240 fresh samples over two
-continuous seconds with the board still; motion, invalid data or a gap over 100 ms restarts it.
+continuous seconds with the board still. During the first 0.5 s after the capture request (the board
+settling) a wrong sample only restarts the window; after that, a wrong position, motion or invalid data
+stops the capture (`POSITION_OR_MOTION`), as does a window noisier than the limit (`NOISY`), and the
+user captures that face again. A gap over 100 ms is not the user's doing and restarts the window.
 Acceptance limits:
 
 | Check | Limit |

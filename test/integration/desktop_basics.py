@@ -48,7 +48,7 @@ def check_sensor_history():
     assert history.series('pressure_pa',1)[0][-1][1] is None
     assert all(series[-1][1] is None for series in history.series('accel_mps2',3)) # Break curves across invalid readings.
     assert history.append(dict(reading,uptime_ms=130000)) and len(history.samples)==1
-    assert not history.append(reading) # Old firmware must not get fabricated local timestamps.
+    assert not history.append(reading) # No board timestamp: never a fabricated local one.
     assert history.append(dict(reading,uptime_ms=100)) and history.extent==(0,0) and len(history.samples)==1 # Reboot.
     history.clear(); history.append(dict(reading,uptime_ms=0xFFFFFFF0)); history.append(dict(reading,uptime_ms=0x20))
     assert history.elapsed_ms==48 and len(history.samples)==2 # uint32 rollover is continuous.

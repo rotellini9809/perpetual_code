@@ -105,14 +105,16 @@ after a flight.
 </p>
 
 1. Press **Calibrate on six faces**.
-2. The app tells you which face to point up (`+X`, `-X`, `+Y`, `-Y`, `+Z`, `-Z`). These are the
-   axes printed on the board, not the rocket's.
+2. The app shows which face to point up (`+X`, `-X`, `+Y`, `-Y`, `+Z`, `-Z`) with a picture of
+   the board; the faces already captured turn green. These are the axes printed on the board, not
+   the rocket's.
 3. Rest the board with that face pointing straight up (within about 2°: use a stand or a square
-   block), keep it still and press **Capture**. Wait for the progress bar to fill.
-4. Repeat for all six faces. If the board moves or the reading is noisy, that capture restarts by
-   itself.
+   block), keep it still and press **Capture**. Wait for the progress bar to fill and turn green.
+4. Repeat for all six faces. If the board moves, is not in position or the reading is noisy, the
+   capture stops and the bar turns ochre: put the face back up, keep the board still and press
+   **Capture** again.
 
-**Verify calibration** asks for three new captures (`+X`, `+Y` and `+Z`) to check the saved values;
+**Verify calibration** turns green when a verification is due. It asks for three new captures (`+X`, `+Y` and `+Z`) to check the saved values;
 here each face only needs to point roughly up (within 10°), so leaning the board on something is fine. After a
 real flight the board asks for this verification again before it can be armed.
 
