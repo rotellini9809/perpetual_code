@@ -5,7 +5,7 @@ from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (QMainWindow,QWidget,QFrame,QVBoxLayout,QHBoxLayout,QGridLayout,QStackedWidget,
     QComboBox,QLineEdit,QScrollArea,
     QPlainTextEdit,QCheckBox,QProgressBar,QMessageBox,QInputDialog,QSizePolicy)
-from .controller import Controller,SIMULATION_START
+from .controller import Controller,SIMULATION_START,DASHBOARD_PAGE,CONFIGURATION_PAGE,SETTINGS_PAGE
 from .flight_data import phase_name
 from .configuration import rule_label
 from .configuration_page import ConfigurationPage
@@ -39,6 +39,7 @@ class MainWindow(QMainWindow):
         self.dashboard_page.servo_editor_requested.connect(self.open_servo_editor)
         self.dashboard_page.sensor_details_requested.connect(self.show_sensor_details)
         self.settings_page.language_selected.connect(self.change_language)
+        # Same order as the sidebar and the *_PAGE indices in controller.py.
         for page in (self.dashboard_page,self.configuration_page,self._simulation(),self.recorded_flights_page,self.settings_page,self._console()):
             scroll=QScrollArea(); scroll.setWidgetResizable(True); scroll.setWidget(page); self.pages.addWidget(scroll)
         self.feedback=label(t('Connect the board to start.'),'hint'); self.feedback.setWordWrap(True); content.addWidget(self.feedback)
@@ -90,16 +91,16 @@ class MainWindow(QMainWindow):
     def show_configuration_issue(self):
         error=self.controller.state.status.get('config_error')
         settings=error in ('STATE_MACHINE_INVALID','AIRBRAKES_SETTING_INVALID')
-        self.navigate(4 if settings else 1)
+        self.navigate(SETTINGS_PAGE if settings else CONFIGURATION_PAGE)
         if settings:
             target=self.settings_page.bistage_parameters if error=='STATE_MACHINE_INVALID' else self.settings_page.airbrakes_enabled
-            self.pages.widget(4).ensureWidgetVisible(target)
+            self.pages.widget(SETTINGS_PAGE).ensureWidgetVisible(target)
 
     def open_imu_calibration(self):
-        self.navigate(1); self.configuration_page.tabs.setCurrentWidget(self.configuration_page.imu_page)
+        self.navigate(CONFIGURATION_PAGE); self.configuration_page.tabs.setCurrentWidget(self.configuration_page.imu_page)
 
     def open_servo_editor(self,channel,edit):
-        self.navigate(1); self.configuration_page.show_servo(channel,edit=edit)
+        self.navigate(CONFIGURATION_PAGE); self.configuration_page.show_servo(channel,edit=edit)
 
     def show_sensor_details(self):
         if self._sensor_details is None: self._sensor_details=SensorDetails(self.controller,self)
@@ -137,7 +138,7 @@ class MainWindow(QMainWindow):
         self.controller.simulate(self.sim_record.isChecked(),self.sim_physical.isChecked())
 
     def review_simulation_preflight(self):
-        self.navigate(0); self.dashboard_page.preflight_button.click()
+        self.navigate(DASHBOARD_PAGE); self.dashboard_page.preflight_button.click()
 
     def _console(self):
         page,box=create_page('Console',t('Manual requests and board replies.'))
@@ -148,7 +149,7 @@ class MainWindow(QMainWindow):
         return page
 
     def navigate(self,index):
-        if index!=0: self.dashboard_page.arm_button.cancel_hold(immediate=True)
+        if index!=DASHBOARD_PAGE: self.dashboard_page.arm_button.cancel_hold(immediate=True)
         self.pages.setCurrentIndex(index); self.controller.page=index
         for i,nav in enumerate(self.nav): nav.setChecked(i==index)
         self._render_feedback()
@@ -181,7 +182,7 @@ class MainWindow(QMainWindow):
 
     def connect_automatically(self, quiet=False):
         if self._closing or self.controller.connection is not None or self.controller.connection_busy: return
-        self.controller.connect_auto({t:self.settings.value('preferred_'+t,'') for t in ('usb','bluetooth')},quiet=quiet)
+        self.controller.connect_auto({transport:self.settings.value('preferred_'+transport,'') for transport in ('usb','bluetooth')},quiet=quiet)
 
     def render_connection(self,snapshot):
         names={'disconnected':t('Disconnected'),'connecting':t('Connecting'),'connected':t('Connected'),'waiting':t('Connected'),
@@ -190,71 +191,71 @@ class MainWindow(QMainWindow):
         if view==getattr(self,'_connection_view',None): return
         self._connection_view=view
         state=snapshot['state']; self.link.setText('●  '+names.get(state,state))
-        good=state in ('connected','waiting'); color='#187f73' if good else '#ab6943' if state in ('connecting','disconnecting') else '#8190a2'
-        self.link.setStyleSheet(f'color: {color}; background: {"#e7f3ef" if good else "#eef2f6"};')
+        link_up=state in ('connected','waiting'); color='#187f73' if link_up else '#ab6943' if state in ('connecting','disconnecting') else '#8190a2'
+        self.link.setStyleSheet(f'color: {color}; background: {"#e7f3ef" if link_up else "#eef2f6"};')
         transport=snapshot.get('transport')
         self.transport.setText(({'usb':'USB','bluetooth':'Bluetooth','serial':'Seriale'}.get(transport,transport)+' · '+snapshot.get('port','')) if transport else 'USB / Bluetooth · —')
         busy=self.controller.connection_busy
-        self.connect_button.setText(t('Disconnect') if good and not busy else t('Connect'))
+        self.connect_button.setText(t('Disconnect') if link_up and not busy else t('Connect'))
         self.connect_button.setEnabled(not busy and state!='disconnecting' and not self._closing)
         idle=self.controller.connection is None and not busy
         self.manual_port.setEnabled(idle); self.ports.setEnabled(idle); self.refresh_ports.setEnabled(idle)
         identity=snapshot.get('identity')
-        if good and identity and transport in ('usb','bluetooth') and self.settings.value('preferred_'+transport)!=identity:
+        if link_up and identity and transport in ('usb','bluetooth') and self.settings.value('preferred_'+transport)!=identity:
             self.settings.setValue('preferred_'+transport,identity)
 
     def _render_feedback(self):
-        s=self.controller.state
-        message=s.error or ('' if self.pages.currentIndex()==4 else s.message or ('' if s.connected else t('Connect the board to start.')))
+        state=self.controller.state
+        message=state.error or ('' if self.pages.currentIndex()==SETTINGS_PAGE else state.message or ('' if state.connected else t('Connect the board to start.')))
         self.feedback.setText(message); self.feedback.setVisible(bool(message))
-        style='color: #b14d40;' if s.error else 'color: #7b8998;'
+        style='color: #b14d40;' if state.error else 'color: #7b8998;'
         if self.feedback.styleSheet()!=style: self.feedback.setStyleSheet(style)
 
     def render(self):
-        s=self.controller.state; connected=s.connected; usable=connected and not s.foreground
-        self.render_connection(s.connection)
-        arming=s.status.get('arming_state','—')
-        state=arming if connected else 'unknown'
-        self.arming_state.setText({'disarmed':'DISARMED','armed':'ARMED','arming':'ARMING','preparing':t('Preparing memory'),'closing':'CLOSING'}.get(state,'—'))
-        if self.arming_state.property('state')!=state:
-            self.arming_state.setProperty('state',state)
+        state=self.controller.state; connected=state.connected; usable=connected and not state.foreground
+        self.render_connection(state.connection)
+        arming=state.status.get('arming_state','—')
+        arming_display=arming if connected else 'unknown'
+        self.arming_state.setText({'disarmed':'DISARMED','armed':'ARMED','arming':'ARMING','preparing':t('Preparing memory'),'closing':'CLOSING'}.get(arming_display,'—'))
+        if self.arming_state.property('state')!=arming_display:
+            self.arming_state.setProperty('state',arming_display)
             self.arming_state.style().unpolish(self.arming_state); self.arming_state.style().polish(self.arming_state)
         self._render_feedback()
-        self.dashboard_page.render(s)
-        self.configuration_page.render(s)
-        active=s.sim.get('active',False)
+        self.dashboard_page.render(state)
+        self.configuration_page.render(state)
+        active=state.sim.get('active',False)
         blocker=self.controller.simulation_blocker()
         self.sim_start.setEnabled(not blocker); self.sim_start.setToolTip(blocker)
         self.sim_blocker.setText(blocker); self.sim_blocker.setVisible(bool(blocker) and not active)
-        self.sim_stop.setEnabled(usable and s.owns_control and active); self.sim_record.setEnabled(usable and not active)
+        self.sim_stop.setEnabled(usable and state.owns_control and active); self.sim_record.setEnabled(usable and not active)
         self.sim_physical.setEnabled(usable and not active)
-        if active: self.sim_physical.setChecked(s.sim.get('output_mode')=='PHYSICAL')
-        self.sim_preflight_notice.setVisible(connected and self.sim_physical.isChecked() and not active and bool(s.sim_preflight))
-        self.sim_preflight_button.setEnabled(usable and s.owns_control)
-        self._render_sim(s)
-        self.settings_page.render(s)
+        if active: self.sim_physical.setChecked(state.sim.get('output_mode')=='PHYSICAL')
+        self.sim_preflight_notice.setVisible(connected and self.sim_physical.isChecked() and not active and bool(state.sim_preflight))
+        self.sim_preflight_button.setEnabled(usable and state.owns_control)
+        self._render_sim(state)
+        self.settings_page.render(state)
         self.command_input.setEnabled(usable); self.command_send.setEnabled(usable)
-        self.recorded_flights_page.render(s)
+        self.recorded_flights_page.render(state)
 
-    def _render_sim(self,s):
-        data=s.sim; stamp=data.get('t_ms',0)
-        starting=s.foreground_kind==SIMULATION_START
-        if starting: stamp=0
-        duration=data.get('duration_ms')
+    def _render_sim(self,state):
+        sim=state.sim; elapsed_ms=sim.get('t_ms',0)
+        starting=state.foreground_kind==SIMULATION_START
+        if starting: elapsed_ms=0
+        duration=sim.get('duration_ms')
         self.sim_progress.setRange(0,max(1,duration or 0))
-        self.sim_progress.setValue(stamp)
+        self.sim_progress.setValue(elapsed_ms)
         total=f'{duration/1000:.2f}' if duration else '—'
-        profile=t('Bistage test') if data.get('source')=='bistage_synthetic' else 'Hoppino'
-        progress=t('Running') if data.get('active') else data.get('reason') or t('Waiting')
-        self.sim_summary.setText(t('{profile} · {time} / {total} s · {state} · {starts} activations',profile=profile,time=f'{stamp/1000:.2f}',total=total,state=progress,starts=data.get('starts',0)))
-        if starting: self.sim_summary.setText(t('{operation}… Waiting for Perpetual to reply.',operation=s.foreground))
-        self.sim_phase.set(phase_name(data.get('phase'),data.get('bistage',False)) if data.get('samples') else '—')
-        self.sim_altitude.set(f'{data["z_est"]:.1f} m' if data.get('samples') and data.get('z_est') is not None else '—')
-        self.sim_samples.set(f'{data["samples"]:,}'.replace(',',' ') if 'samples' in data else '—')
-        events=[(at/1000,phase_name(p,data.get('bistage',False)),'') for p,at in s.events.get('phases',[])]
-        rules=s.base.rules if s.base else []
-        prefix='' if s.events.get('output_mode')=='PHYSICAL' else 'VIRTUAL '
-        events += [(stamp/1000,prefix+kind.upper(),t('Channel {channel} · {rule}',channel=channel,rule=rule_label(rules,rule))) for rule,kind,channel,stamp in s.events.get('starts',[])]
+        profile=t('Bistage test') if sim.get('source')=='bistage_synthetic' else 'Hoppino'
+        progress=t('Running') if sim.get('active') else sim.get('reason') or t('Waiting')
+        self.sim_summary.setText(t('{profile} · {time} / {total} s · {state} · {starts} activations',profile=profile,time=f'{elapsed_ms/1000:.2f}',total=total,state=progress,starts=sim.get('starts',0)))
+        if starting: self.sim_summary.setText(t('{operation}… Waiting for Perpetual to reply.',operation=state.foreground))
+        self.sim_phase.set(phase_name(sim.get('phase'),sim.get('bistage',False)) if sim.get('samples') else '—')
+        self.sim_altitude.set(f'{sim["z_est"]:.1f} m' if sim.get('samples') and sim.get('z_est') is not None else '—')
+        self.sim_samples.set(f'{sim["samples"]:,}'.replace(',',' ') if 'samples' in sim else '—')
+        events=[(at/1000,phase_name(phase,sim.get('bistage',False)),'') for phase,at in state.events.get('phases',[])]
+        rules=state.base.rules if state.base else []
+        prefix='' if state.events.get('output_mode')=='PHYSICAL' else 'VIRTUAL '
+        events += [(start_ms/1000,prefix+kind.upper(),t('Channel {channel} · {rule}',channel=channel,rule=rule_label(rules,rule))) for rule,kind,channel,start_ms in state.events.get('starts',[])]
         fill_table(self.event_table,[(f'{at:.3f} s',event,detail) for at,event,detail in sorted(events)])
 
     def send_console(self):

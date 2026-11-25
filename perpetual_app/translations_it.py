@@ -478,6 +478,8 @@ ITALIAN = {
     'Cancelling download…': 'Annullamento download…',
     'Opening local flight': 'Apertura volo locale',
     'Background update': 'Aggiornamento in background',
+    'Servo preview': 'Anteprima servo',
+    'Time: {time} s': 'Tempo: {time} s',
     'Operation not completed': 'Operazione non completata',
     'Configuration saved and verified': 'Configurazione salvata e verificata',
     'Valid draft · not saved yet': 'Bozza valida · non ancora salvata',

@@ -95,21 +95,21 @@ class SettingsPage(QWidget):
         states=('PAD','BOOST 1','COAST 1','BOOST 2','COAST 2','DESCENT','LANDED') if bistage else ('PAD','BOOST','COAST','DESCENT','LANDED')
         if bistage:
             cells=[]
-            for i,state in enumerate(states):
+            for i,name in enumerate(states):
                 if i: cells.append('<td align="center">→</td>')
-                cells.append('<td align="center">'+state+'</td>')
+                cells.append('<td align="center">'+name+'</td>')
             branch='<tr><td colspan="4"></td><td align="center" style="color: #000000">↓<br><span style="color: #c43d3d"><b>ABORT</b></span></td><td colspan="8"></td></tr>'
             self.flight_state_sequence.setText('<table cellspacing="6"><tr>'+''.join(cells)+'</tr>'+branch+'</table>')
         else: self.flight_state_sequence.setText((' → ').join(states))
 
-    def render(self,s):
-        self.orientation_panel.render(s)
-        self._render_machine(s)
-        self._render_airbrakes(s)
-        self._render_bluetooth(s)
-        maintenance=s.editable and not s.sim.get('active') and not s.status.get('sensor_hil_active')
+    def render(self,state):
+        self.orientation_panel.render(state)
+        self._render_machine(state)
+        self._render_airbrakes(state)
+        self._render_bluetooth(state)
+        maintenance=state.editable and not state.sim.get('active') and not state.status.get('sensor_hil_active')
         self.factory_reset_button.setEnabled(maintenance)
-        self.format_memory_button.setEnabled(maintenance and not s.dirty and not s.staged)
+        self.format_memory_button.setEnabled(maintenance and not state.dirty and not state.staged)
 
     def _apply_language(self):
         # Compared with the saved choice, not the running language: a choice saved without restarting stays applied.
@@ -119,16 +119,16 @@ class SettingsPage(QWidget):
     def _rename_bluetooth(self):
         if self.bluetooth_suffix.hasAcceptableInput(): self.controller.rename_bluetooth(self.bluetooth_suffix.text())
 
-    def _render_bluetooth(self,s):
-        info=s.bluetooth if s.connected else {}
+    def _render_bluetooth(self,state):
+        info=state.bluetooth if state.connected else {}
         name=info.get('name','')
-        if not s.connected: text=t('Connect the board to read the Bluetooth name.')
-        elif s.bluetooth_restart: text=t('Restarting the Bluetooth module to apply "{name}"…',name=s.bluetooth_restart)
+        if not state.connected: text=t('Connect the board to read the Bluetooth name.')
+        elif state.bluetooth_restart: text=t('Restarting the Bluetooth module to apply "{name}"…',name=state.bluetooth_restart)
         elif name: text=t('Current name: {name} · BLE: {name}_BLE',name=name)
         else: text=t('Bluetooth module not ready.')
         self.bluetooth_current.setText(text)
-        editable=(s.editable and bool(info.get('ready')) and not s.bluetooth_restart and
-                  not s.sim.get('active') and not s.status.get('sensor_hil_active'))
+        editable=(state.editable and bool(info.get('ready')) and not state.bluetooth_restart and
+                  not state.sim.get('active') and not state.status.get('sensor_hil_active'))
         self.bluetooth_suffix.setEnabled(editable)
         suffix=self.bluetooth_suffix.text()
         self.bluetooth_save.setEnabled(editable and self.bluetooth_suffix.hasAcceptableInput() and 'Perpetual-'+suffix!=name)
@@ -137,37 +137,37 @@ class SettingsPage(QWidget):
     def _edit_machine(self):
         self.controller.edit_setting('machine',(self.bistage_enabled.isChecked(),self.bistage_min_speed.value()))
 
-    def _render_airbrakes(self,s):
-        saved=s.airbrakes if s.connected else {}
-        local=s.local_setting('airbrakes')
-        observed=(s.connected,local,saved.get('ready'),bool(saved))
+    def _render_airbrakes(self,state):
+        saved=state.airbrakes if state.connected else {}
+        local=state.local_setting('airbrakes')
+        observed=(state.connected,local,saved.get('ready'),bool(saved))
         if observed!=self._rendered_airbrakes:
             self._rendered_airbrakes=observed
             self.airbrakes_enabled.blockSignals(True); self.airbrakes_enabled.setChecked(local); self.airbrakes_enabled.blockSignals(False)
-        editable=s.editable and not s.dirty and not s.staged and not s.sim.get('active') and not s.status.get('sensor_hil_active') and bool(saved)
+        editable=state.editable and not state.dirty and not state.staged and not state.sim.get('active') and not state.status.get('sensor_hil_active') and bool(saved)
         self.airbrakes_enabled.setEnabled(editable)
-        changed=not saved.get('ready',True) or s.setting_changed('airbrakes')
+        changed=not saved.get('ready',True) or state.setting_changed('airbrakes')
         self.airbrakes_save.setEnabled(editable and changed)
-        self.airbrakes_save.setText(t('Saved') if s.connected and saved and not changed else t('Save'))
+        self.airbrakes_save.setText(t('Saved') if state.connected and saved and not changed else t('Save'))
         text=t('Connect the board to read this setting.')
-        if s.connected:
+        if state.connected:
             if not saved.get('ready',True): text=t('Invalid setting: save it again.')
             elif 'enabled' in saved:
                 text=t('Unsaved change: press Save.') if changed else ''
         self.airbrakes_saved.setText(text)
         self.airbrakes_saved.setVisible(bool(text))
 
-    def _render_machine(self,s):
-        machine=s.machine if s.connected else {}
-        local=s.local_setting('machine')
-        observed=(s.connected,local,bool(machine))
+    def _render_machine(self,state):
+        machine=state.machine if state.connected else {}
+        local=state.local_setting('machine')
+        observed=(state.connected,local,bool(machine))
         if observed!=self._rendered_machine:
             self._rendered_machine=observed
             self.bistage_enabled.blockSignals(True); self.bistage_min_speed.blockSignals(True)
             self.bistage_enabled.setChecked(local[0]); self.bistage_min_speed.setValue(local[1])
             self.bistage_enabled.blockSignals(False); self.bistage_min_speed.blockSignals(False)
             self._update_machine_sequence(local[0])
-        editable=s.editable and not s.dirty and not s.staged and not s.sim.get('active') and not s.status.get('sensor_hil_active') and bool(machine)
+        editable=state.editable and not state.dirty and not state.staged and not state.sim.get('active') and not state.status.get('sensor_hil_active') and bool(machine)
         self.bistage_parameters.setEnabled(editable)
         self.bistage_enabled.setEnabled(editable)
         self.bistage_fields.setEnabled(editable and self.bistage_enabled.isChecked())
@@ -175,11 +175,11 @@ class SettingsPage(QWidget):
         if self.bistage_parameters.property('active')!=active:
             self.bistage_parameters.setProperty('active',active)
             self.bistage_parameters.style().unpolish(self.bistage_parameters); self.bistage_parameters.style().polish(self.bistage_parameters)
-        changed=not machine.get('machine_ready',True) or s.setting_changed('machine')
+        changed=not machine.get('machine_ready',True) or state.setting_changed('machine')
         self.machine_save.setEnabled(editable and changed)
-        self.machine_save.setText(t('Saved') if s.connected and machine and not changed else t('Save'))
+        self.machine_save.setText(t('Saved') if state.connected and machine and not changed else t('Save'))
         text=''
-        if s.connected:
+        if state.connected:
             if not machine.get('machine_ready',True): text=t('State machine to save: invalid setting on the board.')
         self.machine_saved.setText(text)
         self.machine_saved.setVisible(bool(text))

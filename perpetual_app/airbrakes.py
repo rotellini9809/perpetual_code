@@ -18,10 +18,10 @@ def control_description(flags,failed=0,conditions=(),rules=(),phase=None,bistage
     causes=[t('Collecting the 8 velocity samples in COAST 1') if bit==256 and velocity_check else t(text) for bit,text in REASONS if flags & bit]
     if flags & 4:
         requested=[]
-        for i,c in enumerate(conditions):
+        for i,condition in enumerate(conditions):
             if failed & (1<<i):
-                text=condition_text(c,rules)
-                requested.append(t('Required phase: {phase}',phase=text.removeprefix(t('Phase: '))) if c['type']=='phase' else t('Required condition: {condition}',condition=text))
+                text=condition_text(condition,rules)
+                requested.append(t('Required phase: {phase}',phase=text.removeprefix(t('Phase: '))) if condition['type']=='phase' else t('Required condition: {condition}',condition=text))
         causes.extend(requested or [t('Rule conditions not satisfied')])
     state='ABORT' if flags & 16 else t('Safety closure') if flags & (8|32|64|128) else t('Bistage check') if velocity_check else t('Inhibited') if flags & 256 else t('Waiting') if flags & 4 else t('Not active')
     return state,'; '.join(causes)
@@ -30,7 +30,7 @@ def control_description(flags,failed=0,conditions=(),rules=(),phase=None,bistage
 def recorded_conditions(configuration,bistage=False):
     conditions=[]
     for raw in configuration.get('airbrakes',{}).get('conditions',[]):
-        c=decode_condition(raw)
-        if c['type']=='phase': c['phase']=t(' or ').join(phase_name(i,bistage) for i in range(8) if raw['phase_mask'] & (1<<i)) or '—'
-        conditions.append(c)
+        condition=decode_condition(raw)
+        if condition['type']=='phase': condition['phase']=t(' or ').join(phase_name(i,bistage) for i in range(8) if raw['phase_mask'] & (1<<i)) or '—'
+        conditions.append(condition)
     return conditions

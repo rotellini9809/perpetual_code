@@ -58,10 +58,10 @@ class OrientationPanel(QWidget):
         self.image_opacity.setOpacity(1 if illustrated else .25)
         self.render(self.controller.state,update_selection=False)
 
-    def render(self,s,update_selection=True):
-        orientation=s.orientation if s.connected else {}
-        axis=s.local_setting('orientation')
-        observed=(s.connected,axis,orientation.get('orientation_ready'))
+    def render(self,state,update_selection=True):
+        orientation=state.orientation if state.connected else {}
+        axis=state.local_setting('orientation')
+        observed=(state.connected,axis,orientation.get('orientation_ready'))
         if update_selection and observed!=self._observed:
             self._observed=observed
             self.axis.blockSignals(True); self.axis.setCurrentIndex(self.axis.findData(axis) if axis in AXES else 0); self.axis.blockSignals(False)
@@ -69,11 +69,11 @@ class OrientationPanel(QWidget):
         ready=orientation.get('orientation_ready',False)
         selected=self.axis.currentData()
         self.saved.setText(t('Saved on the board: {axis}',axis=orientation['up_axis']) if ready else
-                           t('Orientation: — to set before arming.') if s.connected and orientation else t('Connect the board to read the orientation.'))
-        if s.connected and selected in AXES and (not ready or selected!=orientation.get('up_axis')):
+                           t('Orientation: — to set before arming.') if state.connected and orientation else t('Connect the board to read the orientation.'))
+        if state.connected and selected in AXES and (not ready or selected!=orientation.get('up_axis')):
             self.saved.setText(t('Unsaved preview.')+(t(' On the board: {axis}',axis=orientation['up_axis']) if ready else t(' Save to set the orientation.')))
-        editable=(s.editable and not s.dirty and not s.staged and not s.sim.get('active') and
-                  not s.status.get('sensor_hil_active'))
+        editable=(state.editable and not state.dirty and not state.staged and not state.sim.get('active') and
+                  not state.status.get('sensor_hil_active'))
         self.axis.setEnabled(editable)
         self.save.setEnabled(editable and self.axis.currentData() in AXES and (not ready or self.axis.currentData()!=orientation.get('up_axis')))
 

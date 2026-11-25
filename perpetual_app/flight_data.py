@@ -42,7 +42,7 @@ def load_flight(path):
             openings=[number(row,f'airbrake_{i}_pct') for i in range(1,5)]
             if 'airbrake_flags' in row:
                 flags=int(row['airbrake_flags']); failed=int(row['airbrake_failed_conditions']); mask=int(row['airbrake_channel_mask'])
-                if not 0<=flags<=511 or not 0<=failed<=255 or not 0<=mask<=15 or any(u is not None and not 0<=u<=100 for u in openings):
+                if not 0<=flags<=511 or not 0<=failed<=255 or not 0<=mask<=15 or any(opening is not None and not 0<=opening<=100 for opening in openings):
                     raise ValueError('Invalid airbrake data in the CSV')
                 air_mask|=mask; air_rows.append((stamp/1e6,*openings))
                 observed=(flags,failed,mask)
@@ -61,7 +61,7 @@ def load_flight(path):
     for i in range(0,len(rows),step):
         # Preserve gaps even when invalid readings fall between displayed points.
         bucket=rows[max(0,i-step+1):i+1]
-        plot.append((rows[i][0],*(rows[i][col] if all(r[col] is not None for r in bucket) else None for col in range(1,len(fields)+1))))
+        plot.append((rows[i][0],*(rows[i][column] if all(r[column] is not None for r in bucket) else None for column in range(1,len(fields)+1))))
     if (len(rows)-1)%step: plot.append(rows[-1])
     air_config=metadata.get('configuration',{}).get('airbrakes',{})
     air_mask|=air_config.get('channel_mask',0)

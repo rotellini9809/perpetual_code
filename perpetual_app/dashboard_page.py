@@ -42,11 +42,11 @@ class DashboardPage(QWidget):
         config.addLayout(summary); config.addStretch(1)
         self.arm_button=ArmButton(self.toggle_arming)
         config.addLayout(row(None,self.arm_button,None))
-        hardware,hw=card(t('Sensors'))
+        hardware,sensor_box=card(t('Sensors'))
         self.imu_label=label('—','sensorStatus'); self.baro_label=label('—','sensorStatus')
         for name,widget in (('IMU',self.imu_label),(t('Barometer'),self.baro_label)):
-            widget.setWordWrap(True); hw.addLayout(row(label(name+' ·'),widget,None))
-        self.sensor_refresh=button(t('Read sensor details'),self.sensor_details_requested.emit); hw.addWidget(self.sensor_refresh)
+            widget.setWordWrap(True); sensor_box.addLayout(row(label(name+' ·'),widget,None))
+        self.sensor_refresh=button(t('Read sensor details'),self.sensor_details_requested.emit); sensor_box.addWidget(self.sensor_refresh)
         overview=QHBoxLayout(); overview.setSpacing(18)
         overview.addWidget(self.config_card,3); overview.addWidget(hardware,2); box.addLayout(overview)
         columns=QHBoxLayout(); columns.setSpacing(18); box.addLayout(columns,1)
@@ -77,8 +77,8 @@ class DashboardPage(QWidget):
         self.servo_selection=[]; self.servo_states=[]
         for i in range(4):
             check=QCheckBox(f'SERVO {i+1} \u00b7'); check.setObjectName('actuatorName'); self.servo_selection.append(check)
-            state=label('','actuatorStatus'); self.servo_states.append(state)
-            outputs.addLayout(row(check,state,None))
+            status_label=label('','actuatorStatus'); self.servo_states.append(status_label)
+            outputs.addLayout(row(check,status_label,None))
             check.toggled.connect(lambda _:self.render(self.controller.state))
         self.airbrake_summary=label('','hint'); self.airbrake_summary.setWordWrap(True); outputs.addWidget(self.airbrake_summary)
         self.servo_empty=label('Nessun servo configurato.','hint'); self.servo_empty.setWordWrap(True); outputs.addWidget(self.servo_empty)
@@ -99,27 +99,27 @@ class DashboardPage(QWidget):
         elif arming=='disarmed': self.controller.command('arm',t('Arm request'))
 
     def prepare_selected_servos(self):
-        s=self.controller.state
-        selected=[i+1 for i,c in enumerate(self.servo_selection) if c.isChecked() and c.isEnabled() and not c.isHidden()]
-        if not selected or not s.base: return
-        missing=[i for i in selected if not s.base.servos[i-1]['calibrated']]
+        state=self.controller.state
+        selected=[i+1 for i,check in enumerate(self.servo_selection) if check.isChecked() and check.isEnabled() and not check.isHidden()]
+        if not selected or not state.base: return
+        missing=[i for i in selected if not state.base.servos[i-1]['calibrated']]
         if missing:
-            self.servo_editor_requested.emit(missing[0],bool(s.local and not s.local.servos[missing[0]-1]['calibrated']))
+            self.servo_editor_requested.emit(missing[0],bool(state.local and not state.local.servos[missing[0]-1]['calibrated']))
         else:
-            prepared=s.preflight.get('prepared_servo_mask',0)
+            prepared=state.preflight.get('prepared_servo_mask',0)
             pending=[channel for channel in selected if not prepared & (1<<(channel-1))]
             if pending: self.controller.prepare_servos(pending)
 
-    def render(self,s):
-        connected=s.connected; usable=connected and not s.foreground
-        status=s.status; arming=status.get('arming_state'); sleeping=connected and status.get('power_mode')=='sleeping'
+    def render(self,state):
+        connected=state.connected; usable=connected and not state.foreground
+        status=state.status; arming=status.get('arming_state'); sleeping=connected and status.get('power_mode')=='sleeping'
         self.power_badge.setVisible(sleeping)
-        self.board_name.setText((s.bluetooth.get('name') or '—') if connected else '—')
-        rules=s.base.rules if connected and s.base is not None else None
+        self.board_name.setText((state.bluetooth.get('name') or '—') if connected else '—')
+        rules=state.base.rules if connected and state.base is not None else None
         count=len(rules) if rules is not None else None
         self.config_value.setText((t('{count} rule applied',count=count) if count==1 else t('{count} rules applied',count=count)) if count is not None else
                                  t('No applied configuration read') if connected else t('Connect the board to read the configuration'))
-        for badge,saved,key,ready in ((self.bistage_badge,s.machine,'bistage','machine_ready'),(self.airbrake_badge,s.airbrakes,'enabled','ready')):
+        for badge,saved,key,ready in ((self.bistage_badge,state.machine,'bistage','machine_ready'),(self.airbrake_badge,state.airbrakes,'enabled','ready')):
             known=connected and saved.get(ready,False)
             active=bool(known and saved.get(key))
             badge.setVisible(active)
@@ -127,12 +127,12 @@ class DashboardPage(QWidget):
                 badge.setProperty('active',active); badge.style().unpolish(badge); badge.style().polish(badge)
             description=t('Enabled on the board') if active else t('Disabled on the board') if known else t('Setting not read from the board')
             badge.setToolTip(description); badge.setAccessibleDescription(description)
-        reasons=s.preflight.get('reasons',[]) if connected else []
+        reasons=state.preflight.get('reasons',[]) if connected else []
         config_error=status.get('config_error')
         settings_error=config_error in ('STATE_MACHINE_INVALID','AIRBRAKES_SETTING_INVALID')
         self.config_issue_button.setVisible('CONFIG_INVALID' in reasons)
         self.config_issue_button.setText(t('Open settings') if settings_error else t('Open configuration'))
-        ready=connected and not sleeping and s.preflight.get('ready',False) and not reasons
+        ready=connected and not sleeping and state.preflight.get('ready',False) and not reasons
         self.readiness_title.setText(t('Power saving') if sleeping else t('Ready to arm') if ready and connected else t('Arming blocked') if reasons else t('Preflight checks'))
         rows=[]
         for reason in reasons:
@@ -140,12 +140,12 @@ class DashboardPage(QWidget):
             if reason=='CONFIG_INVALID':
                 detail=CONFIG_ERRORS.get(config_error) or REASONS.get(config_error)
                 if detail: text+=' · '+t(detail)
-            if reason=='CONTINUITY_FAULT': text+=' · '+', '.join('PYRO '+str(i+1) for i in range(4) if s.preflight.get('failed_pyro_mask',0)&(1<<i))
-            if reason=='SERVOS_NOT_PREPARED': text+=' · '+', '.join('SERVO '+str(i+1) for i in range(4) if s.preflight.get('unprepared_servo_mask',0)&(1<<i))
+            if reason=='CONTINUITY_FAULT': text+=' · '+', '.join('PYRO '+str(i+1) for i in range(4) if state.preflight.get('failed_pyro_mask',0)&(1<<i))
+            if reason=='SERVOS_NOT_PREPARED': text+=' · '+', '.join('SERVO '+str(i+1) for i in range(4) if state.preflight.get('unprepared_servo_mask',0)&(1<<i))
             if reason in IMU_REASONS: # The firmware's cause, and a link to the calibration tab.
-                cause=IMU_CAUSES.get(s.preflight.get('imu_calibration_reason'))
+                cause=IMU_CAUSES.get(state.preflight.get('imu_calibration_reason'))
                 text+=(' · '+t(cause) if cause else '')+t(' · Open calibration')
-            if reason=='SERVOS_NOT_CONFIGURED': text+=' · '+', '.join('SERVO '+str(i+1) for i in range(4) if s.preflight.get('unconfigured_servo_mask',0)&(1<<i))
+            if reason=='SERVOS_NOT_CONFIGURED': text+=' · '+', '.join('SERVO '+str(i+1) for i in range(4) if state.preflight.get('unconfigured_servo_mask',0)&(1<<i))
             rows.append((text,))
         if not rows:
             message=t('The board wakes up at the next command.') if sleeping else t('No blocker reported by the board.') if ready else t('Press Recheck to read the checks.') if connected else t('Connect the board to read the checks.')
@@ -162,21 +162,21 @@ class DashboardPage(QWidget):
             self.arm_button.style().unpolish(self.arm_button); self.arm_button.style().polish(self.arm_button)
         disarming=arming in ('armed','arming','preparing','closing')
         self.arm_button.set_disarming(disarming)
-        self.arm_button.set_request_pending(bool(s.foreground))
-        self.arm_button.setEnabled(usable and s.owns_control and (arming in ('armed','arming','preparing') if disarming else ready and not reasons and not s.dirty and not s.staged and arming=='disarmed'))
+        self.arm_button.set_request_pending(bool(state.foreground))
+        self.arm_button.setEnabled(usable and state.owns_control and (arming in ('armed','arming','preparing') if disarming else ready and not reasons and not state.dirty and not state.staged and arming=='disarmed'))
         self.arm_button.setToolTip(t('Hold for 1.5 s to disarm; the firmware verifies the request.') if disarming else
             t('Preflight blocked by the board. Press Recheck after solving the problems.') if blocked else
             t('Requires a ready preflight from the board. Hold for 1.5 s; the board checks again before arming.'))
-        prepared=s.preflight.get('prepared_servo_mask',0)
+        prepared=state.preflight.get('prepared_servo_mask',0)
         held_outputs=bool(prepared) or bool(status.get('outputs_active'))
-        self.release_servos_button.setEnabled(usable and s.owns_control and arming=='disarmed' and held_outputs and
-            not s.sim.get('active') and not status.get('sensor_hil_active') and not status.get('estimate_replay_active'))
-        can_prepare=usable and s.owns_control and arming=='disarmed' and not s.dirty and not s.staged and bool(s.capabilities.get('physical_actions'))
-        plan=s.base if connected else None
+        self.release_servos_button.setEnabled(usable and state.owns_control and arming=='disarmed' and held_outputs and
+            not state.sim.get('active') and not status.get('sensor_hil_active') and not status.get('estimate_replay_active'))
+        can_prepare=usable and state.owns_control and arming=='disarmed' and not state.dirty and not state.staged and bool(state.capabilities.get('physical_actions'))
+        plan=state.base if connected else None
         assigned_servos=plan.servo_channels() if plan else set()
         # Configuration hints only: the airbrakes do not move on the pad, so the Dashboard neither
         # polls nor shows live control state; the recorded flight shows what they did.
-        enabled=s.airbrakes.get('enabled',False)
+        enabled=state.airbrakes.get('enabled',False)
         text=t('Disabled in Settings') if not enabled else t('No dedicated servo: configure the airbrakes in Rules.') if not plan or not plan.airbrakes['channel_mask'] else ''
         self.airbrake_summary.setText(t('Airbrakes')+' · '+text if text else '')
         self.airbrake_summary.setVisible(bool(text) and (bool(plan and plan.airbrakes['channel_mask']) or enabled))
@@ -188,15 +188,15 @@ class DashboardPage(QWidget):
             if not assigned and check.isChecked():
                 check.blockSignals(True); check.setChecked(False); check.blockSignals(False)
             is_prepared=bool(prepared & (1<<i))
-            state=self.servo_states[i]; state.setVisible(assigned)
-            state.setText(t('disabled') if air_channel and not enabled else t('prepared') if is_prepared else t('not prepared'))
+            status_label=self.servo_states[i]; status_label.setVisible(assigned)
+            status_label.setText(t('disabled') if air_channel and not enabled else t('prepared') if is_prepared else t('not prepared'))
             preparation='disabled' if air_channel and not enabled else 'prepared' if is_prepared else 'unprepared'
-            if state.property('preparation')!=preparation:
-                state.setProperty('preparation',preparation)
-                state.style().unpolish(state); state.style().polish(state)
+            if status_label.property('preparation')!=preparation:
+                status_label.setProperty('preparation',preparation)
+                status_label.style().unpolish(status_label); status_label.style().polish(status_label)
         self.servo_empty.setVisible(not assigned_servos)
         self.servo_empty.setText(t('No servo assigned to the rules.') if plan else t('Configuration not loaded: press Reload from board in Configuration.') if connected else t('Connect the board and read the configuration.'))
-        selected=[i+1 for i,c in enumerate(self.servo_selection) if c.isChecked() and c.isEnabled() and not c.isHidden()]
+        selected=[i+1 for i,check in enumerate(self.servo_selection) if check.isChecked() and check.isEnabled() and not check.isHidden()]
         missing=[i for i in selected if plan and not plan.servos[i-1]['calibrated']]
         self.prepare_servos_button.setText(t('Go to configuration') if missing else t('Prepare selected'))
         name='configureServo' if missing else 'primary'
@@ -204,10 +204,10 @@ class DashboardPage(QWidget):
             self.prepare_servos_button.setObjectName(name)
             self.prepare_servos_button.style().unpolish(self.prepare_servos_button); self.prepare_servos_button.style().polish(self.prepare_servos_button)
         pending=any(not prepared & (1<<(channel-1)) for channel in selected)
-        self.prepare_servos_button.setEnabled(usable and s.editable if missing else can_prepare and pending)
-        pyros=sorted({a['channel'] for r in plan.rules for a in r['outputs'] if a['kind']=='pyro'}) if plan else []
-        self.check_pyros_button.setEnabled(usable and arming=='disarmed' and not s.dirty and not s.staged and bool(pyros))
-        continuity=s.pyro_continuity
+        self.prepare_servos_button.setEnabled(usable and state.editable if missing else can_prepare and pending)
+        pyros=sorted({output['channel'] for rule in plan.rules for output in rule['outputs'] if output['kind']=='pyro'}) if plan else []
+        self.check_pyros_button.setEnabled(usable and arming=='disarmed' and not state.dirty and not state.staged and bool(pyros))
+        continuity=state.pyro_continuity
         failed=continuity.get('failed_pyro_mask')
         fresh=time.monotonic()<continuity.get('expires_at',0) # Manual checks expire after PYRO_CHECK_VALID_S.
         checked=connected and arming=='disarmed' and failed is not None and fresh and continuity.get('configured_pyro_mask')==sum(1<<(i-1) for i in pyros)
@@ -215,17 +215,17 @@ class DashboardPage(QWidget):
         armed=connected and arming in ('arming','preparing','armed')
         self.pyro_status.setVisible(not pyros)
         self.pyro_status.setText(t('No pyro assigned to the rules.') if plan else t('Configuration not loaded: press Reload from board in Configuration.') if connected else t('Connect the board to read the configuration.'))
-        for i,(entry,state) in enumerate(zip(self.pyro_rows,self.pyro_states)):
+        for i,(entry,status_label) in enumerate(zip(self.pyro_rows,self.pyro_states)):
             entry.setVisible(i+1 in pyros)
             present=armed or (checked and not (failed & (1<<i)))
-            state.setText(t('verified by the board at arming') if armed else (t('continuity present') if present else t('continuity missing')) if checked else t('continuity to check'))
+            status_label.setText(t('verified by the board at arming') if armed else (t('continuity present') if present else t('continuity missing')) if checked else t('continuity to check'))
             preparation='prepared' if present else 'unprepared'
-            if state.property('preparation')!=preparation:
-                state.setProperty('preparation',preparation)
-                state.style().unpolish(state); state.style().polish(state)
-        sensors=s.sensors if connected else {}
+            if status_label.property('preparation')!=preparation:
+                status_label.setProperty('preparation',preparation)
+                status_label.style().unpolish(status_label); status_label.style().polish(status_label)
+        sensors=state.sensors if connected else {}
         available={key:status.get(key,sensors.get(key)) for key in ('imu_ready','baro_ready')} if connected else {}
-        if sleeping: available=s.sensor_availability
+        if sleeping: available=state.sensor_availability
         observed=connected and bool(status or sensors)
         self.sensor_refresh.setEnabled(usable and any(available.values()))
         for widget,key in ((self.imu_label,'imu'),(self.baro_label,'baro')):

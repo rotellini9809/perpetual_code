@@ -90,16 +90,16 @@ class ConditionDialog(QDialog):
         for unit in (self.value_unit,self.upper_unit): unit.setText('m/s' if 'speed' in kind else 'm')
 
     def result_value(self):
-        kind=self.kind.currentData(); c=dict(type=kind)
-        if kind=='phase': c['phase']=self.phase.currentData()
-        elif kind in ('altitude','speed'): c.update(comparison=self.compare.currentText(),value=self.value.value())
-        elif kind in ('altitude_range','speed_range'): c.update(value=self.value.value(),upper=self.upper.value())
+        kind=self.kind.currentData(); condition=dict(type=kind)
+        if kind=='phase': condition['phase']=self.phase.currentData()
+        elif kind in ('altitude','speed'): condition.update(comparison=self.compare.currentText(),value=self.value.value())
+        elif kind in ('altitude_range','speed_range'): condition.update(value=self.value.value(),upper=self.upper.value())
         elif kind.startswith('since_'):
-            c['elapsed_ms']=self.elapsed.value()
+            condition['elapsed_ms']=self.elapsed.value()
             if kind=='since_rule_ms':
                 if self.reference.currentData() is None: raise ValueError('Select an existing reference rule.')
-                c['reference']=self.reference.currentData()
-        return c
+                condition['reference']=self.reference.currentData()
+        return condition
 
 
 class OutputDialog(QDialog):
@@ -140,12 +140,12 @@ class RuleDialog(QDialog):
 
     def render(self):
         self.conditions.setRowCount(len(self.rule['conditions']))
-        for i,c in enumerate(self.rule['conditions']):
-            self.conditions.setItem(i,0,QTableWidgetItem(f'{i+1:02d} · {c["type"]}')); self.conditions.setItem(i,1,QTableWidgetItem(condition_text(c,self._rules)))
+        for i,condition in enumerate(self.rule['conditions']):
+            self.conditions.setItem(i,0,QTableWidgetItem(f'{i+1:02d} · {condition["type"]}')); self.conditions.setItem(i,1,QTableWidgetItem(condition_text(condition,self._rules)))
         self.outputs.setRowCount(len(self.rule['outputs']))
-        for i,a in enumerate(self.rule['outputs']):
-            self.outputs.setItem(i,0,QTableWidgetItem(f'{a["kind"].upper()} {a["channel"]}'))
-            self.outputs.setItem(i,1,QTableWidgetItem(f'{a.get("delay_ms",0)} ms'))
+        for i,output in enumerate(self.rule['outputs']):
+            self.outputs.setItem(i,0,QTableWidgetItem(f'{output["kind"].upper()} {output["channel"]}'))
+            self.outputs.setItem(i,1,QTableWidgetItem(f'{output.get("delay_ms",0)} ms'))
 
     def add_condition(self):
         if len(self.rule['conditions'])>=8: return

@@ -18,7 +18,8 @@ class ConnectionSession(QObject):
         super().__init__(parent)
         self._executor=executor; self._factory=factory; self.port_scanner=port_scanner
         self.client=None; self.phase='idle'; self.snapshot=self._empty('disconnected')
-        self._generation=0; self._pending=0; self._candidates=[]; self._candidate=None
+        # _generation changes on every new attempt or disconnect: callbacks of an older one are ignored.
+        self._generation=0; self._pending_scans=0; self._candidates=[]; self._candidate=None
         self._preferred={}; self._failures=[]; self._close_reason=''; self._quiet=False
         self._finished.connect(self._complete, Qt.ConnectionType.QueuedConnection)
 
@@ -29,7 +30,7 @@ class ConnectionSession(QObject):
     def busy(self): return self.phase in ('searching','choosing','connecting','closing')
 
     @property
-    def idle(self): return self.client is None and not self.busy and not self._pending
+    def idle(self): return self.client is None and not self.busy and not self._pending_scans
 
     def _publish(self, snapshot, message='', error=None):
         self.snapshot=snapshot
@@ -37,18 +38,18 @@ class ConnectionSession(QObject):
 
     def _watch(self, name, future):
         generation=self._generation
-        def done(f):
-            try: result,error=f.result(),None
+        def done(completed):
+            try: result,error=completed.result(),None
             except Exception as e: result,error=None,e
             self._finished.emit(generation,name,result,error)
         future.add_done_callback(done)
 
     def _scan(self, name):
-        self._pending+=1
+        self._pending_scans+=1
         self._watch(name,self._executor.submit(self.port_scanner))
 
     def scan_ports(self):
-        if not self.busy and not self._pending: self._scan('ports')
+        if not self.busy and not self._pending_scans: self._scan('ports')
 
     def start(self, port=None, preferred=None, quiet=False):
         if self.client is not None or self.busy: return
@@ -86,13 +87,13 @@ class ConnectionSession(QObject):
         if self.phase!='choosing': return
         if port is None: self.disconnect(); return
         if port not in self._candidates: return
-        group=self._candidates[0].transport
-        self._candidates=[port]+[p for p in self._candidates if p.transport!=group]
+        transport=self._candidates[0].transport
+        self._candidates=[port]+[p for p in self._candidates if p.transport!=transport]
         self._try_next()
 
     def _connect_failed(self, error):
         raw=str(error); text=raw
-        if isinstance(error,PermissionError) or any(s in raw.casefold() for s in ('access is denied','accesso negato','permissionerror')):
+        if isinstance(error,PermissionError) or any(marker in raw.casefold() for marker in ('access is denied','accesso negato','permissionerror')):
             text='Port busy or access denied: close Serial Monitor and the other apps using this port'
         elif isinstance(error,TimeoutError):
             text='No response from the board: check the power supply and the MAIN firmware'
@@ -132,7 +133,7 @@ class ConnectionSession(QObject):
 
     @Slot(int,str,object,object)
     def _complete(self, generation, name, result, error):
-        if name in ('ports','discover'): self._pending-=1
+        if name in ('ports','discover'): self._pending_scans-=1
         if generation!=self._generation: return
         if name=='ports':
             if not error: self.ports_changed.emit(result)

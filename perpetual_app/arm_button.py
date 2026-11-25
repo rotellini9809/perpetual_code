@@ -119,38 +119,38 @@ class ArmButton(QPushButton):
 
     def paintEvent(self,event):
         option=QStyleOptionButton(); self.initStyleOption(option); option.text=''
-        p=QStylePainter(self); p.setRenderHint(QPainter.Antialiasing); p.drawControl(QStyle.CE_PushButton,option)
+        painter=QStylePainter(self); painter.setRenderHint(QPainter.Antialiasing); painter.drawControl(QStyle.CE_PushButton,option)
         box=QRectF(self.rect()).adjusted(1,1,-1,-1)
         if self._progress:
-            p.save(); clip=QPainterPath(); clip.addRoundedRect(box,7,7); p.setClipPath(clip)
+            painter.save(); clip=QPainterPath(); clip.addRoundedRect(box,7,7); painter.setClipPath(clip)
             edge=box.left()+box.width()*self._progress
             fill=QLinearGradient(box.left(),0,edge,0)
             fill.setColorAt(0,QColor('#982b30' if self._disarming else '#12653f')); fill.setColorAt(1,QColor('#ef7568' if self._disarming else '#55c68c'))
-            p.fillRect(QRectF(box.left(),box.top(),edge-box.left(),box.height()),fill)
+            painter.fillRect(QRectF(box.left(),box.top(),edge-box.left(),box.height()),fill)
             shine=QLinearGradient(edge-30,0,edge+8,0)
             shine.setColorAt(0,QColor(255,255,255,0)); shine.setColorAt(.75,QColor(255,255,255,65)); shine.setColorAt(1,QColor(255,255,255,0))
-            p.fillRect(QRectF(edge-30,box.top(),38,box.height()),shine)
-            p.fillRect(QRectF(box.left(),box.bottom()-3,edge-box.left(),3),QColor(255,255,255,180)); p.restore()
+            painter.fillRect(QRectF(edge-30,box.top(),38,box.height()),shine)
+            painter.fillRect(QRectF(box.left(),box.bottom()-3,edge-box.left(),3),QColor(255,255,255,180)); painter.restore()
         if self._completion_flash:
             # Gesture feedback only: actual arming/disarming still waits for the board.
             flash=self._completion_flash; inset=5*flash
-            p.save(); p.setPen(Qt.NoPen); p.setBrush(QColor(255,255,255,int(65*flash))); p.drawRoundedRect(box,7,7)
-            p.setBrush(Qt.NoBrush); p.setPen(QPen(QColor(255,255,255,int(220*flash)),2))
-            p.drawRoundedRect(box.adjusted(inset,inset,-inset,-inset),6,6); p.restore()
+            painter.save(); painter.setPen(Qt.NoPen); painter.setBrush(QColor(255,255,255,int(65*flash))); painter.drawRoundedRect(box,7,7)
+            painter.setBrush(Qt.NoBrush); painter.setPen(QPen(QColor(255,255,255,int(220*flash)),2))
+            painter.drawRoundedRect(box.adjusted(inset,inset,-inset,-inset),6,6); painter.restore()
         title=self.text(); subtitle=''
         if self._holding:
             title=t('KEEP HOLDING'); subtitle=f'{self._progress*self._hold_ms/1000:.1f} / {self._hold_ms/1000:.1f} s'
         elif self._submitted:
             title=t('SENDING REQUEST…'); subtitle=t('Waiting for the board')
         elif self.isEnabled(): subtitle=t('Hold · 1.5 s')
-        p.setPen(self.palette().buttonText().color()); font=QFont(self.font())
+        painter.setPen(self.palette().buttonText().color()); font=QFont(self.font())
         if subtitle:
             if self._holding or self._submitted: font.setPixelSize(12)
-            p.setFont(font); p.drawText(QRectF(4,4,self.width()-8,24),Qt.AlignCenter,title)
+            painter.setFont(font); painter.drawText(QRectF(4,4,self.width()-8,24),Qt.AlignCenter,title)
             font.setPixelSize(10); font.setWeight(QFont.Normal); font.setLetterSpacing(QFont.AbsoluteSpacing,.2)
-            p.setFont(font); p.drawText(QRectF(4,29,self.width()-8,15),Qt.AlignCenter,subtitle)
+            painter.setFont(font); painter.drawText(QRectF(4,29,self.width()-8,15),Qt.AlignCenter,subtitle)
         else:
-            p.setFont(font); p.drawText(self.rect(),Qt.AlignCenter,title)
+            painter.setFont(font); painter.drawText(self.rect(),Qt.AlignCenter,title)
 
 
 class ArmButtonPreview(QDialog):

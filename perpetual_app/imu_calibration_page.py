@@ -29,8 +29,8 @@ class ImuCalibrationPage(QWidget):
     DONE_MS=1500 # How long a completed capture stays shown before the bar returns to idle.
 
     def __init__(self,controller):
-        super().__init__(); self.controller=controller; self.next_face=0; self.last=None
-        self.before=None # (revision, bias) read before a six-face calibration, to show how much the bias moved.
+        super().__init__(); self.controller=controller; self.next_face=0; self.last_state=None
+        self.bias_before=None # (revision, bias) read before a six-face calibration, to show how much the bias moved.
         self.capturing=None; self.captured=None; self.reset_timer=QTimer(self,singleShot=True,interval=self.DONE_MS,timeout=self.clear_captured)
         self.window_samples=0
         box=QVBoxLayout(self); box.setContentsMargins(0,14,0,0); box.setSpacing(14)
@@ -95,9 +95,9 @@ class ImuCalibrationPage(QWidget):
         box.addStretch()
 
     def begin(self):
-        c=self.controller.state.imu_calibration; bias=c.get('bias_mps2')
+        imu=self.controller.state.imu_calibration; bias=imu.get('bias_mps2')
         # Only a measured calibration is worth comparing: the identity's zero bias was never measured.
-        self.before=(c.get('revision'),bias) if bias and len(bias)==3 and not c.get('identity_active') else None
+        self.bias_before=(imu.get('revision'),bias) if bias and len(bias)==3 and not imu.get('identity_active') else None
         self.controller.command('imu begin',t('Starting IMU calibration'))
 
     def capture(self):
@@ -105,50 +105,50 @@ class ImuCalibrationPage(QWidget):
 
     def clear_captured(self):
         self.captured=None
-        if self.last is not None: self.render(self.last)
+        if self.last_state is not None: self.render(self.last_state)
 
-    def render(self,s):
-        self.last=s; c=s.imu_calibration; active=c.get('active',False); collecting=c.get('collecting',False)
-        available=s.connected and bool(c); code=c.get('imu_calibration_state') if available else None
-        usable=available and s.owns_control and not s.foreground
+    def render(self,state):
+        self.last_state=state; imu=state.imu_calibration; active=imu.get('active',False); collecting=imu.get('collecting',False)
+        available=state.connected and bool(imu); code=imu.get('imu_calibration_state') if available else None
+        usable=available and state.owns_control and not state.foreground
         self.state_label.setText(t(STATES.get(code,'Not read')) if available else '—')
-        self.cause_label.setText(t(CAUSES.get(c.get('imu_calibration_reason'),'')) if available else
-                                 t('Connect the board to read the calibration.') if not s.connected else '')
+        self.cause_label.setText(t(CAUSES.get(imu.get('imu_calibration_reason'),'')) if available else
+                                 t('Connect the board to read the calibration.') if not state.connected else '')
         tone=TONES.get(code,'neutral'); restyle(self.status_panel,'tone',tone); restyle(self.state_label,'tone',tone)
-        self.coefficients.setVisible(available and ('bias_mps2' in c or 'scale' in c))
-        for key,values,text in (('bias',c.get('bias_mps2'),'{:+.4f}'),('scale',c.get('scale'),'{:.5f}')):
+        self.coefficients.setVisible(available and ('bias_mps2' in imu or 'scale' in imu))
+        for key,values,text in (('bias',imu.get('bias_mps2'),'{:+.4f}'),('scale',imu.get('scale'),'{:.5f}')):
             for axis in range(3):
                 value=values[axis] if available and values and len(values)==3 else None
                 self.values[key,axis].setText(text.format(value) if value is not None else '—')
-        if not s.connected: self.before=None # Another board may be connected next.
-        bias=c.get('bias_mps2'); before=self.before
-        drift=bool(available and before and bias and len(bias)==3 and c.get('revision') and c.get('revision')!=before[0] and not c.get('identity_active'))
+        if not state.connected: self.bias_before=None # Another board may be connected next.
+        bias=imu.get('bias_mps2'); bias_before=self.bias_before
+        drift=bool(available and bias_before and bias and len(bias)==3 and imu.get('revision') and imu.get('revision')!=bias_before[0] and not imu.get('identity_active'))
         for widget in (self.drift_caption,*self.drift): widget.setVisible(drift)
         if drift:
-            for axis,widget in enumerate(self.drift): widget.setText(f'{bias[axis]-before[1][axis]:+.4f}')
+            for axis,widget in enumerate(self.drift): widget.setText(f'{bias[axis]-bias_before[1][axis]:+.4f}')
             self.drift_caption.setToolTip(t('New bias minus the bias before this calibration.'))
         # Verification residuals, only once the calibration has been verified (passed or failed).
-        residuals=c.get('verification_residual_mps2') if available else None
+        residuals=imu.get('verification_residual_mps2') if available else None
         residuals=residuals if residuals and len(residuals)==3 and any(r is not None for r in residuals) else None
         for widget in (self.residual_caption,*self.residuals,*self.residual_meters,self.meter_hint): widget.setVisible(bool(residuals))
         for value,meter,residual in zip(self.residuals,self.residual_meters,residuals or [None]*3):
             share=min(abs(residual)/VERIFY_LIMIT,1) if residual is not None else 0
             value.setText(f'{residual:+.4f}' if residual is not None else '—'); meter.setValue(round(share*1000))
             meter.setToolTip(t('{percent} % of the acceptance limit',percent=f'{share*100:.1f}') if residual is not None else t('Face not measured: the verification stopped earlier.'))
-        idle=usable and s.status.get('arming_state')=='disarmed' and not s.sim.get('active') and not s.status.get('sensor_hil_active') and not s.status.get('estimate_replay_active')
-        self.begin_button.setEnabled(idle and not active and not s.dirty and not s.staged)
+        idle=usable and state.status.get('arming_state')=='disarmed' and not state.sim.get('active') and not state.status.get('sensor_hil_active') and not state.status.get('estimate_replay_active')
+        self.begin_button.setEnabled(idle and not active and not state.dirty and not state.staged)
         self.verify_button.setEnabled(self.begin_button.isEnabled() and code in ('required','verified'))
         restyle(self.verify_button,'attention',self.verify_button.isEnabled() and code=='required')
-        self.refresh_button.setEnabled(s.connected and not s.foreground)
+        self.refresh_button.setEnabled(state.connected and not state.foreground)
         self.cancel_button.setEnabled(usable and active)
         self.capture_button.setEnabled(usable and active and not collecting)
-        faces=(0,2,4) if c.get('verification') else range(6)
-        mask=c.get('face_mask',0); done=sum(bool(mask & (1<<f)) for f in faces)
-        self.next_face=next((f for f in faces if not mask & (1<<f)),0)
-        face=c.get('face',0) if collecting else self.next_face
+        faces=(0,2,4) if imu.get('verification') else range(6)
+        mask=imu.get('face_mask',0); done=sum(bool(mask & (1<<face_index)) for face_index in faces)
+        self.next_face=next((face_index for face_index in faces if not mask & (1<<face_index)),0)
+        face=imu.get('face',0) if collecting else self.next_face
         # Bar phases: idle (empty) -> collecting -> captured (full, green) for DONE_MS -> idle.
         # A capture the firmware stopped (wrong position, motion or noise) stays frozen in ochre until Capture.
-        target=max(c.get('target',240),1); samples=min(c.get('samples',0),target); window_error=c.get('window_error')
+        target=max(imu.get('target',240),1); samples=min(imu.get('samples',0),target); window_error=imu.get('window_error')
         if collecting:
             if self.capturing!=face: self.window_samples=0
             self.window_samples=max(self.window_samples,samples) if samples else 0; self.capturing=face; self.captured=None; self.reset_timer.stop()
@@ -176,8 +176,8 @@ class ImuCalibrationPage(QWidget):
                                   (t('Capturing…') if collecting else t('Then press Capture.'))) if active else
                                  t('The coefficients stay saved. A physical flight that reaches Boost requires a new verification.'))
         self.capture_button.setVisible(active); self.cancel_button.setVisible(active)
-        self.measurements.setText(t('Last window: |a| {norm} m/s² · maximum noise {noise} m/s²',norm=f'{c["norm_mps2"]:.3f}',noise=f'{c.get("noise_mps2",0):.3f}') if c.get('norm_mps2') else '')
-        error=c.get('last_error')
+        self.measurements.setText(t('Last window: |a| {norm} m/s² · maximum noise {noise} m/s²',norm=f'{imu["norm_mps2"]:.3f}',noise=f'{imu.get("noise_mps2",0):.3f}') if imu.get('norm_mps2') else '')
+        error=imu.get('last_error')
         if error in (None,'None'): error=window_error if active else None
         message=ERRORS.get(error,error if error not in (None,'None') else '')
         self.detail.setText(message); self.detail.setVisible(bool(message))

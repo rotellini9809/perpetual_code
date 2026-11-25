@@ -75,24 +75,24 @@ class RecordedFlightsPage(QWidget):
         self.flight_details.setSelectionMode(QTreeWidget.SelectionMode.NoSelection); self.flight_details.setFocusPolicy(Qt.NoFocus)
         box.addWidget(self.flight_details)
 
-    def render(self,s):
-        connected=s.connected; usable=connected and not s.foreground; arming=s.status.get('arming_state')
-        self.flights_empty.setVisible(connected and s.flights_loaded and not s.flights)
+    def render(self,state):
+        connected=state.connected; usable=connected and not state.foreground; arming=state.status.get('arming_state')
+        self.flights_empty.setVisible(connected and state.flights_loaded and not state.flights)
         self.list_flights_button.setEnabled(usable and arming=='disarmed')
-        download_state=s.download.get('state'); downloading=download_state in ('downloading','cancelling')
+        download_state=state.download.get('state'); downloading=download_state in ('downloading','cancelling')
         self.download_button.setText(t('Cancelling…') if download_state=='cancelling' else t('Cancel') if downloading else t('Download selected'))
         name='downloadCancel' if downloading else ''
         if self.download_button.objectName()!=name:
             self.download_button.setObjectName(name); self.download_button.style().unpolish(self.download_button); self.download_button.style().polish(self.download_button)
-        self.download_button.setEnabled((connected and download_state=='downloading') if downloading else usable and bool(s.flights) and arming=='disarmed')
-        self.open_flight_button.setEnabled(not s.foreground)
-        download=s.download; state=download.get('state')
-        if state in ('downloading','cancelling'):
+        self.download_button.setEnabled((connected and download_state=='downloading') if downloading else usable and bool(state.flights) and arming=='disarmed')
+        self.open_flight_button.setEnabled(not state.foreground)
+        download=state.download
+        if download_state in ('downloading','cancelling'):
             total=download.get('total')
             self.download_progress.setRange(0,100 if total else 0)
             if total: self.download_progress.setValue(min(99,download.get('done',0)*100//total))
             eta=download.get('eta_seconds')
-            if state=='cancelling': text=t('Cancelling…')
+            if download_state=='cancelling': text=t('Cancelling…')
             elif total is None: text=t('Preparing…')
             elif download.get('done',0)>=total: text=t('Finalizing…')
             elif eta is None: text=t('Estimating time…')
@@ -101,51 +101,51 @@ class RecordedFlightsPage(QWidget):
                 text=t('{time} remaining',time=f'~{hours} h {minutes:02d} min' if hours else f'~{minutes} min {seconds:02d} s' if minutes else f'~{seconds} s')
             self.download_progress.setFormat('%p% · '+text)
             self.download_feedback.setCurrentWidget(self.download_progress)
-        elif state in ('completed','failed','interrupted','cancelled'):
-            text=t('Downloaded to {path}',path=download['path']) if state=='completed' else t('Download cancelled') if state=='cancelled' else t('Download interrupted') if state=='interrupted' else 'Corrupted flight' if download.get('error_code')=='Corrupt' else 'Download not completed'
+        elif download_state in ('completed','failed','interrupted','cancelled'):
+            text=t('Downloaded to {path}',path=download['path']) if download_state=='completed' else t('Download cancelled') if download_state=='cancelled' else t('Download interrupted') if download_state=='interrupted' else 'Corrupted flight' if download.get('error_code')=='Corrupt' else 'Download not completed'
             self.download_result.setText(text); self.download_result.setToolTip(text)
-            self.download_result.setStyleSheet('color: #7b8998;' if state in ('completed','cancelled') else 'color: #b14d40;')
+            self.download_result.setStyleSheet('color: #7b8998;' if download_state in ('completed','cancelled') else 'color: #b14d40;')
             self.download_feedback.setCurrentWidget(self.download_result)
         else: self.download_feedback.setCurrentIndex(0)
-        if self._flight_entries != s.flights:
+        if self._flight_entries != state.flights:
             selected=self.flights_table.currentRow(); previous=self._flight_entries or []
             sequence=previous[selected]['sequence'] if 0<=selected<len(previous) else None
-            self._flight_entries=deepcopy(s.flights)
+            self._flight_entries=deepcopy(state.flights)
             names={1:t('Interrupted / open'),2:t('Completed'),3:t('Interrupted'),4:t('Memory full'),6:t('Corrupted')}
-            fill_table(self.flights_table,[(e['sequence'],names.get(e['status'],str(e['status'])),f'{e["committed_bytes"]/1024:.1f} KiB',f'{e["allocated_bytes"]/1024:.1f} KiB') for e in s.flights])
-            if s.flights: self.flights_table.selectRow(next((i for i,e in enumerate(s.flights) if e['sequence']==sequence),0))
-        data=s.flight
-        if not data:
+            fill_table(self.flights_table,[(entry['sequence'],names.get(entry['status'],str(entry['status'])),f'{entry["committed_bytes"]/1024:.1f} KiB',f'{entry["allocated_bytes"]/1024:.1f} KiB') for entry in state.flights])
+            if state.flights: self.flights_table.selectRow(next((i for i,entry in enumerate(state.flights) if entry['sequence']==sequence),0))
+        flight=state.flight
+        if not flight:
             self.airbrake_card.hide(); return
-        if self._flight_path==data['path'] and getattr(self,'_rendered_flight',None) is data: return
-        self._rendered_flight=data
-        self._flight_path=data['path']; self.flight_duration.set(f'{data["duration"]:.2f} s'); self.flight_peak.set(f'{data["max_altitude"]:.1f} m'); self.flight_count.set(str(data['samples']))
-        meta=data['metadata']; markers=[(e['t_ms']/1000,f'{e["kind"].upper()} {e["channel"]}') for e in meta.get('output_starts',[]) if e.get('state')=='recorded']
+        if self._flight_path==flight['path'] and getattr(self,'_rendered_flight',None) is flight: return
+        self._rendered_flight=flight
+        self._flight_path=flight['path']; self.flight_duration.set(f'{flight["duration"]:.2f} s'); self.flight_peak.set(f'{flight["max_altitude"]:.1f} m'); self.flight_count.set(str(flight['samples']))
+        meta=flight['metadata']; markers=[(start['t_ms']/1000,f'{start["kind"].upper()} {start["channel"]}') for start in meta.get('output_starts',[]) if start.get('state')=='recorded']
         self.flight_battery.curves=[(10,t('Battery voltage'),'V','#b58a26',0)]
-        if data.get('simulated_battery'):
+        if flight.get('simulated_battery'):
             self.flight_battery.curves=[(11,t('Battery voltage'),'V','#8b67bc',0)]
         for plot in self.flight_plots:
-            plot.set_data(data['rows'],markers,data['phases'])
-        air=data.get('airbrakes',{}); mask=air.get('channel_mask',0)
+            plot.set_data(flight['rows'],markers,flight['phases'])
+        airbrakes=flight.get('airbrakes',{}); mask=airbrakes.get('channel_mask',0)
         enabled=(meta.get('calibration') or {}).get('airbrakes_enabled') is True
         self.airbrake_card.setVisible(enabled)
         self.flight_airbrakes.curves=[(i,f'SERVO {i}','%',COLORS[i-1],0) for i in channels(mask)]
         if enabled:
             self.flight_airbrakes.setVisible(bool(mask))
-            self.flight_airbrakes.set_data(air.get('rows',[]),markers,air.get('phases',[]))
+            self.flight_airbrakes.set_data(airbrakes.get('rows',[]),markers,airbrakes.get('phases',[]))
             config=meta.get('configuration',{}); bistage=(meta.get('calibration') or {}).get('bistage',False)
             conditions=recorded_conditions(config,bistage); rules=config.get('rules',[])
-            fill_table(self.airbrake_conditions,[(condition_text(c,rules),) for c in conditions])
+            fill_table(self.airbrake_conditions,[(condition_text(condition,rules),) for condition in conditions])
             height=self.airbrake_conditions.horizontalHeader().sizeHint().height()+sum(self.airbrake_conditions.rowHeight(i) for i in range(len(conditions)))+2*self.airbrake_conditions.frameWidth()
             self.airbrake_conditions.setFixedHeight(min(240,max(90,height)))
             self.airbrake_note.setText(t('Commanded openings, not measured.') if mask else t('No servo dedicated to the airbrakes in this flight.'))
-        self.flight_file.setText(data['path'])
+        self.flight_file.setText(flight['path'])
         self.flight_details.clear()
         summary=meta.get('recording_summary',{})
         for key,value,hint in [
             (t('Flight ID'),meta.get('sequence','—'),t('Original identifier assigned by the board.')),
             (t('Flight type'),{0:t('Real'),1:t('Simulated')}.get(meta.get('sensor_mode'),t('Not available')),t('Type saved by the board: a simulation stays a simulation even with physical outputs enabled.')),
-            (t('Peak vertical speed'),f'{data["max_speed"]:.1f} m/s',t('Maximum absolute vertical speed, considering ascent and descent.')),
+            (t('Peak vertical speed'),f'{flight["max_speed"]:.1f} m/s',t('Maximum absolute vertical speed, considering ascent and descent.')),
             (t('Unsaved samples'),summary.get('dropped_samples','—'),t('Samples discarded by the recorder.'))]:
             item=QTreeWidgetItem(self.flight_details,[key,str(value)]); item.setToolTip(0,hint); item.setToolTip(1,hint)
         calibration=meta.get('calibration') or {}
@@ -177,25 +177,25 @@ class RecordedFlightsPage(QWidget):
             group=QTreeWidgetItem(self.flight_details,[t('Airbrakes'),t('Enabled') if calibration.get('airbrakes_enabled') else t('Disabled')])
             QTreeWidgetItem(group,[t('Channels'),', '.join(f'SERVO {i}' for i in channels(air_config['channel_mask']))])
             QTreeWidgetItem(group,[t('Control law version'),str(calibration.get('airbrake_law_version',t('Not available')))])
-            for c in recorded_conditions(meta.get('configuration',{})): QTreeWidgetItem(group,[t('Condition · AND'),condition_text(c,meta.get('configuration',{}).get('rules',[]))])
+            for condition in recorded_conditions(meta.get('configuration',{})): QTreeWidgetItem(group,[t('Condition · AND'),condition_text(condition,meta.get('configuration',{}).get('rules',[]))])
         rules=meta.get('configuration',{}).get('rules',[])
         starts=meta.get('output_starts')
-        recorded={(e.get('rule_id'),e.get('kind'),e.get('channel')) for e in starts or [] if e.get('state')=='recorded'}
-        activated={r['id'] for r in rules if any((r['id'],a['kind'],a['channel']) in recorded for a in r.get('outputs',[]))}
+        recorded={(start.get('rule_id'),start.get('kind'),start.get('channel')) for start in starts or [] if start.get('state')=='recorded'}
+        activated={rule['id'] for rule in rules if any((rule['id'],output['kind'],output['channel']) in recorded for output in rule.get('outputs',[]))}
         count=QTreeWidgetItem(self.flight_details,[t('Rules triggered'),f'{len(activated)} / {len(rules)}' if starts is not None and meta.get('configuration') else t('Not available')])
         count.setToolTip(0,t('Rules with at least one output activation recorded in the flight. A rule is counted once.'))
-        config=QTreeWidgetItem(self.flight_details,[t('Flight rules'),(t('{count} rule',count=len(rules)) if len(rules)==1 else t('{count} rules',count=len(rules))) if meta.get('configuration') else t('Not available')])
-        for r in rules:
-            timing=t('Activation delay: {delay} ms',delay=r['delay_ms']) if 'delay_ms' in r else t('Delay not available')
-            rule=QTreeWidgetItem(config,[rule_label(rules,r['id']),timing])
-            for condition in r.get('conditions',[]):
+        rules_item=QTreeWidgetItem(self.flight_details,[t('Flight rules'),(t('{count} rule',count=len(rules)) if len(rules)==1 else t('{count} rules',count=len(rules))) if meta.get('configuration') else t('Not available')])
+        for saved_rule in rules:
+            timing=t('Activation delay: {delay} ms',delay=saved_rule['delay_ms']) if 'delay_ms' in saved_rule else t('Delay not available')
+            rule_item=QTreeWidgetItem(rules_item,[rule_label(rules,saved_rule['id']),timing])
+            for condition in saved_rule.get('conditions',[]):
                 decoded=decode_condition(condition)
                 if decoded['type']=='phase':
                     decoded['phase']=t(' or ').join(phase_name(i,calibration.get('bistage',False)) for i in range(len(PHASES)) if condition['phase_mask'] & (1<<i)) or '—'
-                QTreeWidgetItem(rule,[t('Condition · AND'),condition_text(decoded,rules)])
-            for output in r.get('outputs',[]):
+                QTreeWidgetItem(rule_item,[t('Condition · AND'),condition_text(decoded,rules)])
+            for output in saved_rule.get('outputs',[]):
                 value=t('Channel delay {delay} ms',delay=output['delay_ms']) if 'delay_ms' in output else t('Delay not available')
-                item=QTreeWidgetItem(rule,[t('Output · {channel}',channel=f'{output["kind"].upper()} {output["channel"]}'),value])
+                item=QTreeWidgetItem(rule_item,[t('Output · {channel}',channel=f'{output["kind"].upper()} {output["channel"]}'),value])
                 item.setToolTip(1,t('Delay added to the rule delay, from the configuration saved with the flight.'))
 
     def _flight_overlays(self):

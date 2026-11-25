@@ -25,6 +25,9 @@ READS = dict(status='status',preflight='preflight',sensors='sensors',sim='sim st
              airbrakes='config airbrakes',airbrake_status='airbrake status')
 # A manual pyro continuity check is shown for this long; disarming clears it at once.
 PYRO_CHECK_VALID_S = 600
+# Page indices in the window's sidebar order; Controller.page holds the visible one.
+DASHBOARD_PAGE, CONFIGURATION_PAGE, SIMULATION_PAGE, FLIGHTS_PAGE, SETTINGS_PAGE, CONSOLE_PAGE = range(6)
+MAX_FLIGHTS = 48 # Flight directory slots on the board; `flights list` stops at the first empty one.
 
 REASONS = { # English; error messages use them as they are, the Dashboard checklist translates them with t().
     'IMU_CALIBRATION_MISSING':'IMU calibration missing',
@@ -155,12 +158,13 @@ class Controller(QObject):
         super().__init__()
         self.state = AppState()
         self._executor = ThreadPoolExecutor(max_workers=1,thread_name_prefix='Perpetual operations')
-        self._epoch, self._serial = 0, 0
+        # _epoch changes with every connection session: results of jobs from an older session are dropped.
+        self._epoch, self._job_counter = 0, 0
         self._jobs = {}
         self._foreground_job = None
-        self._last_status = self._last_sim = self._last_sensors = self._last_imu = 0
+        self._last_status = self._last_sim = self._last_sensors = self._last_imu = 0 # Monotonic times of the last background reads.
         self._want_events = False
-        self.page = 0
+        self.page = DASHBOARD_PAGE # Visible page: some background reads run only while it is shown.
         self._sensor_stream = False
         self._download_cancel = None
         self._bluetooth_restart = None # Reconnection after a rename over Bluetooth: port, expected name, timing.
@@ -180,8 +184,8 @@ class Controller(QObject):
 
     def _job(self, name, function, foreground=True, kind=OPERATION):
         if foreground and self.state.foreground: return False
-        self._serial += 1
-        job, epoch = self._serial,self._epoch
+        self._job_counter += 1
+        job, epoch = self._job_counter,self._epoch
         self._jobs[job]=(name,epoch)
         if foreground:
             self._foreground_job=job; self.state.foreground_kind=kind
@@ -256,8 +260,8 @@ class Controller(QObject):
         return dict(plan=plan,meta=meta,view=view)
 
     def save_airbrakes(self,enabled):
-        s=self.state
-        if not s.editable or s.dirty or s.staged or s.sim.get('active') or s.status.get('sensor_hil_active') or not s.airbrakes: return
+        state=self.state
+        if not state.editable or state.dirty or state.staged or state.sim.get('active') or state.status.get('sensor_hil_active') or not state.airbrakes: return
         client=self.connection
         def save():
             reply=self.request(client,'config airbrakes '+('on' if enabled else 'off'),60)
@@ -268,9 +272,9 @@ class Controller(QObject):
         self._job(t('Saving airbrakes'),save)
 
     def save_machine(self,bistage,minimum):
-        s=self.state
-        if not s.editable or s.dirty or s.staged: return
-        if s.sim.get('active') or s.status.get('sensor_hil_active'): return
+        state=self.state
+        if not state.editable or state.dirty or state.staged: return
+        if state.sim.get('active') or state.status.get('sensor_hil_active'): return
         if type(bistage) is not bool or not math.isfinite(minimum) or not 0<=minimum<=100000: return
         client=self.connection
         def save():
@@ -314,13 +318,13 @@ class Controller(QObject):
     def save_servo(self, channel, value):
         """Save one servo's settings straight to the board: the applied plan with only this servo changed.
         Other unsaved edits stay in the local draft, which is returned with the servo updated."""
-        s=self.state
-        draft=s.local.clone(); draft.servos[channel-1]=dict(value)
-        if not s.connected or not s.editable or s.base is None or s.config_view!='applied':
+        state=self.state
+        draft=state.local.clone(); draft.servos[channel-1]=dict(value)
+        if not state.connected or not state.editable or state.base is None or state.config_view!='applied':
             self.edit_plan(draft); return False
-        if s.staged:
-            self.edit_plan(draft); s.error='Apply or discard the draft validated on the board before saving the servo'; self.changed.emit(); return False
-        client,base=self.connection,s.base.clone()
+        if state.staged:
+            self.edit_plan(draft); state.error='Apply or discard the draft validated on the board before saving the servo'; self.changed.emit(); return False
+        client,base=self.connection,state.base.clone()
         target=base.clone(); target.servos[channel-1]=dict(value)
         def write():
             stage_plan(client,base,target)
@@ -373,9 +377,9 @@ class Controller(QObject):
         self._job(name or t('Command: {command}',command=command),send)
 
     def save_orientation(self,axis):
-        s=self.state
+        state=self.state
         if axis not in ('+X','-X','+Y','-Y','+Z','-Z'): return
-        if not s.editable or s.dirty or s.staged or s.sim.get('active') or s.status.get('sensor_hil_active'): return
+        if not state.editable or state.dirty or state.staged or state.sim.get('active') or state.status.get('sensor_hil_active'): return
         client=self.connection
         def save():
             response=self.request(client,'config orientation '+axis,60)
@@ -387,9 +391,9 @@ class Controller(QObject):
         self._job(t('Saving orientation'),save)
 
     def maintenance(self,format_memory=False):
-        s=self.state
-        if not s.editable or s.sim.get('active') or s.status.get('sensor_hil_active'): return
-        if format_memory and (s.dirty or s.staged): return
+        state=self.state
+        if not state.editable or state.sim.get('active') or state.status.get('sensor_hil_active'): return
+        if format_memory and (state.dirty or state.staged): return
         client=self.connection
         def perform():
             response=self.request(client,'flights format' if format_memory else 'config reset',60)
@@ -404,9 +408,9 @@ class Controller(QObject):
 
     def rename_bluetooth(self, suffix):
         """Rename the radio ('default' restores "Perpetual"). The module restarts to apply it."""
-        s=self.state
-        if not s.editable or s.sim.get('active') or s.status.get('sensor_hil_active') or 'name' not in s.bluetooth: return
-        client,connection=self.connection,dict(s.connection)
+        state=self.state
+        if not state.editable or state.sim.get('active') or state.status.get('sensor_hil_active') or 'name' not in state.bluetooth: return
+        client,connection=self.connection,dict(state.connection)
         def rename():
             reply=self.request(client,'bluetooth name '+suffix)
             if connection.get('transport')=='bluetooth': # This link drops now: reconnect once, then verify.
@@ -433,7 +437,7 @@ class Controller(QObject):
     def preview_servo(self, channel, pwm):
         if not self.state.editable or self._jobs: return False
         client=self.connection
-        return self._job('Anteprima servo',lambda:self.request(client,f'servo preview {channel} {pwm}'),False,PREVIEW)
+        return self._job(t('Servo preview'),lambda:self.request(client,f'servo preview {channel} {pwm}'),False,PREVIEW)
 
     def release_servo(self, channel):
         if not self.state.connected: return
@@ -444,16 +448,16 @@ class Controller(QObject):
         self._job(t('Releasing servos'),release,False)
 
     def simulation_blocker(self):
-        s=self.state
-        if not s.connected: return t('Connect the board to start the simulation.')
-        if s.foreground: return t('Operation in progress: {operation}',operation=s.foreground)
-        if not s.owns_control: return t('Board controlled by another connection.')
-        if s.sim.get('active') or s.status.get('simulation_active'): return t('Simulation running.')
-        if s.status.get('arming_state')!='disarmed': return t('The board must be disarmed to start the simulation.')
-        if s.status.get('sensor_hil_active') or s.status.get('estimate_replay_active'): return t('Stop the running test before starting the simulation.')
-        if not s.status.get('config_valid'): return t('Apply a valid configuration before starting the simulation.')
-        if s.dirty: return t('Apply or discard the configuration changes.')
-        if s.staged: return t('Apply or discard the draft validated on the board.')
+        state=self.state
+        if not state.connected: return t('Connect the board to start the simulation.')
+        if state.foreground: return t('Operation in progress: {operation}',operation=state.foreground)
+        if not state.owns_control: return t('Board controlled by another connection.')
+        if state.sim.get('active') or state.status.get('simulation_active'): return t('Simulation running.')
+        if state.status.get('arming_state')!='disarmed': return t('The board must be disarmed to start the simulation.')
+        if state.status.get('sensor_hil_active') or state.status.get('estimate_replay_active'): return t('Stop the running test before starting the simulation.')
+        if not state.status.get('config_valid'): return t('Apply a valid configuration before starting the simulation.')
+        if state.dirty: return t('Apply or discard the configuration changes.')
+        if state.staged: return t('Apply or discard the draft validated on the board.')
         return ''
 
     def simulate(self, record=False, physical=False):
@@ -488,7 +492,7 @@ class Controller(QObject):
         def read():
             self.request(client,'flights recover',600)
             entries=[]
-            for i in range(48):
+            for i in range(MAX_FLIGHTS):
                 entry=self.request(client,f'flights list {i}')
                 if not entry['available']: break
                 entries.append(entry)
@@ -558,20 +562,20 @@ class Controller(QObject):
         self.changed.emit()
 
     def _apply_error(self, error, kind):
-        s=self.state; command=error if isinstance(error,CommandError) else None
-        if command and command.command=='pyro continuity': s.pyro_continuity={}
-        s.error=error_text(error,s.local); s.message=t('Operation not completed')
-        if kind==DOWNLOAD and s.download.get('state') in ('downloading','cancelling'):
-            code=command.code if command else ''
-            s.download.update(state='failed',error_code=code)
-            if code=='Corrupt': s.error='Corrupted flight'
-        if command:
+        state=self.state; refusal=error if isinstance(error,CommandError) else None
+        if refusal and refusal.command=='pyro continuity': state.pyro_continuity={}
+        state.error=error_text(error,state.local); state.message=t('Operation not completed')
+        if kind==DOWNLOAD and state.download.get('state') in ('downloading','cancelling'):
+            code=refusal.code if refusal else ''
+            state.download.update(state='failed',error_code=code)
+            if code=='Corrupt': state.error='Corrupted flight'
+        if refusal:
             # Firmware refusals carry the reasons: show them where the user acts on them.
-            if (command.command=='arm' or command.command.startswith('servo arm')) and command.response.get('reasons'): s.preflight=command.response
-            if command.command.startswith('sim begin physical') and command.response.get('reasons'): s.sim_preflight=command.response
-            if command.code=='CONFIG_INVALID' and command.command in ('config validate','config apply'): s.staged=True
-            if command.response.get('store_error'): s.status['config_valid']=False; s.config_meta['available']=False
-        self.logged.emit('error',s.error)
+            if (refusal.command=='arm' or refusal.command.startswith('servo arm')) and refusal.response.get('reasons'): state.preflight=refusal.response
+            if refusal.command.startswith('sim begin physical') and refusal.response.get('reasons'): state.sim_preflight=refusal.response
+            if refusal.code=='CONFIG_INVALID' and refusal.command in ('config validate','config apply'): state.staged=True
+            if refusal.response.get('store_error'): state.status['config_valid']=False; state.config_meta['available']=False
+        self.logged.emit('error',state.error)
 
     def _apply_result(self, result, kind):
         self._apply_device_state(result)
@@ -581,65 +585,65 @@ class Controller(QObject):
         if kind!=POLL: # Background reads never replace the feedback of the user's last operation.
             self.state.error=result.get('preview_error',''); self.state.message=t('Configuration saved and verified') if result.get('applied') else t('Valid draft · not saved yet') if result.get('validated') else ''
             if result.get('bluetooth_restart'): self.state.message=t('The Bluetooth module is restarting to apply the name. Reconnecting…')
-        s=self.state
+        state=self.state
         restart=self._bluetooth_restart
         if 'bluetooth' in result and restart and restart['dropped']: # Reconnected after a rename: verify the name.
             self._bluetooth_restart=None
             if result['bluetooth'].get('name')!=restart['name']:
-                s.error='Bluetooth name not confirmed after the restart'; self.logged.emit('error',s.error)
-            s.bluetooth_restart=''
+                state.error='Bluetooth name not confirmed after the restart'; self.logged.emit('error',state.error)
+            state.bluetooth_restart=''
 
     def _apply_device_state(self, result):
-        s=self.state
-        if 'status' in result and result['status'].get('power_mode')!=s.status.get('power_mode'):
-            s.preflight={}; s.pyro_continuity={} # Power transitions invalidate earlier checks.
-        if 'status' in result and result['status'].get('arming_state')=='disarmed' and s.status.get('arming_state') not in (None,'disarmed'):
-            s.pyro_continuity={} # Back to disarmed (after a run, a flight or a cancel): igniters must be checked again.
-        if result.get('downloaded_path'): s.download.update(state='completed',path=result['downloaded_path'])
+        state=self.state
+        if 'status' in result and result['status'].get('power_mode')!=state.status.get('power_mode'):
+            state.preflight={}; state.pyro_continuity={} # Power transitions invalidate earlier checks.
+        if 'status' in result and result['status'].get('arming_state')=='disarmed' and state.status.get('arming_state') not in (None,'disarmed'):
+            state.pyro_continuity={} # Back to disarmed (after a run, a flight or a cancel): igniters must be checked again.
+        if result.get('downloaded_path'): state.download.update(state='completed',path=result['downloaded_path'])
         for key in ('status','preflight','pyro_continuity','sensors','capabilities','control','events','flights','flight','orientation','machine','imu_calibration','bluetooth'):
-            if key in result: setattr(s,key,result[key])
+            if key in result: setattr(state,key,result[key])
         if result.get('bluetooth_restart'):
-            restart=result['bluetooth_restart']; s.bluetooth_restart=restart['name']
+            restart=result['bluetooth_restart']; state.bluetooth_restart=restart['name']
             first=time.monotonic()+self.bluetooth_restart_delay
             self._bluetooth_restart=dict(restart,next=first,deadline=first+self.bluetooth_restart_window,dropped=False)
-        if 'flights' in result: s.flights_loaded=True
-        if result.get('preflight',{}).get('ready'): s.sim_preflight={}
-        if s.status.get('power_mode')!='sleeping': # Sleep is not a sensor fault: keep the last awake observation.
+        if 'flights' in result: state.flights_loaded=True
+        if result.get('preflight',{}).get('ready'): state.sim_preflight={}
+        if state.status.get('power_mode')!='sleeping': # Sleep is not a sensor fault: keep the last awake observation.
             for source in (result.get('sensors',{}),result.get('status',{})):
                 for key in ('imu_ready','baro_ready'):
-                    if key in source: s.sensor_availability[key]=source[key]
+                    if key in source: state.sensor_availability[key]=source[key]
         if 'sensors' in result: self.sensors_received.emit(result['sensors'])
 
     def _apply_configuration(self, result):
-        s=self.state
+        state=self.state
         if 'configuration' in result:
-            s.pyro_continuity={}
-            config=result['configuration']; s.config_meta=config['meta']
-            if not (s.dirty and not result.get('applied')): # Keep the user's unsaved local edits.
-                s.config_view=config['view']
-                s.base=config['plan'] if config['view']=='applied' else None
-                s.local=config['plan'].clone() if config['plan'] else Plan()
-            if result.get('applied'): s.validated=False; s.staged=False
+            state.pyro_continuity={}
+            config=result['configuration']; state.config_meta=config['meta']
+            if not (state.dirty and not result.get('applied')): # Keep the user's unsaved local edits.
+                state.config_view=config['view']
+                state.base=config['plan'] if config['view']=='applied' else None
+                state.local=config['plan'].clone() if config['plan'] else Plan()
+            if result.get('applied'): state.validated=False; state.staged=False
             # Saving one servo keeps the other unsaved edits: the draft returns with the servo updated.
-            if result.get('servo_draft') is not None and s.base is not None: s.local=result['servo_draft']
-        if result.get('validated'): s.validated=True; s.staged=True
+            if result.get('servo_draft') is not None and state.base is not None: state.local=result['servo_draft']
+        if result.get('validated'): state.validated=True; state.staged=True
         if result.get('discarded'):
-            s.local=s.base.clone() if s.base else Plan(); s.validated=False; s.staged=False
+            state.local=state.base.clone() if state.base else Plan(); state.validated=False; state.staged=False
 
     def _apply_settings(self, result):
-        s=self.state
+        state=self.state
         for key in ('airbrakes','airbrake_status'):
-            if key in result: setattr(s,key,result[key])
-        if result.get('reset_settings'): s.setting_drafts.clear()
-        elif result.get('saved_setting'): s.setting_drafts.pop(result['saved_setting'],None)
+            if key in result: setattr(state,key,result[key])
+        if result.get('reset_settings'): state.setting_drafts.clear()
+        elif result.get('saved_setting'): state.setting_drafts.pop(result['saved_setting'],None)
 
     def _apply_simulation(self, result):
-        s=self.state
+        state=self.state
         if 'sim' not in result: return
-        old=s.sim; s.sim=result['sim']
-        if s.sim.get('active'): s.sim_preflight={}
-        if s.sim.get('error') not in (None,'None',''): s.error=REASONS.get(s.sim['error'],s.sim['error'])
-        if 'events' not in result and any(old.get(k)!=s.sim.get(k) for k in ('starts','active','phase')): self._want_events=True
+        previous_sim=state.sim; state.sim=result['sim']
+        if state.sim.get('active'): state.sim_preflight={}
+        if state.sim.get('error') not in (None,'None',''): state.error=REASONS.get(state.sim['error'],state.sim['error'])
+        if 'events' not in result and any(previous_sim.get(k)!=state.sim.get(k) for k in ('starts','active','phase')): self._want_events=True
 
     @Slot()
     def tick(self):
@@ -665,29 +669,29 @@ class Controller(QObject):
         if self._want_events:
             self._want_events=False
             self._poll(lambda:dict(events=client.request('sim events')))
-        elif (self.state.sim.get('active') or self.state.status.get('simulation_active') or self.page==2) and now-self._last_sim>=1.2:
-            previous=self.state.sim.get('active',False)
+        elif (self.state.sim.get('active') or self.state.status.get('simulation_active') or self.page==SIMULATION_PAGE) and now-self._last_sim>=1.2:
+            was_running=self.state.sim.get('active',False)
             def poll_sim():
                 sim=client.request('sim status'); result=dict(sim=sim)
-                if previous and not sim['active']:
+                if was_running and not sim['active']:
                     result['status']=client.request('status'); result['events']=client.request('sim events')
                 return result
             self._last_sim=now; self._poll(poll_sim)
         elif now-self._last_status>=4:
-            previous=self.state.status.get('power_mode')
+            previous_power=self.state.status.get('power_mode')
             previous_arming=self.state.status.get('arming_state')
             radio=self.state.bluetooth # Read once at connection; the module may still be starting then.
             bluetooth_pending=bool(radio) and (not radio.get('ready') or ('name' in radio and not radio['name']))
             def poll_status():
                 status=client.request('status'); result=dict(status=status,control=client.request('control status'))
-                if previous=='sleeping' and status.get('power_mode')=='active':
+                if previous_power=='sleeping' and status.get('power_mode')=='active':
                     result['preflight']=client.request('preflight'); result['sensors']=client.request('sensors')
                 elif previous_arming in ('armed','arming','preparing','closing') and status.get('arming_state')=='disarmed':
                     result['preflight']=client.request('preflight')
                 if bluetooth_pending: result['bluetooth']=client.request('bluetooth status') # Until it is ready.
                 return result
             self._last_status=now; self._poll(poll_status)
-        elif self.state.imu_calibration and (self.page==1 or self.state.imu_calibration.get('active')) and now-self._last_imu>=.75:
+        elif self.state.imu_calibration and (self.page==CONFIGURATION_PAGE or self.state.imu_calibration.get('active')) and now-self._last_imu>=.75:
             was_active=self.state.imu_calibration.get('active')
             def poll_imu():
                 imu=self.request(client,READS['imu_calibration']); result=dict(imu_calibration=imu)

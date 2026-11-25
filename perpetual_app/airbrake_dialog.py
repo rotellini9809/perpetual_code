@@ -29,7 +29,7 @@ class AirbrakeDialog(QDialog):
         hint=label(t('The general enable is in Settings. Selecting no servo removes the airbrake assignment.'),'hint'); hint.setWordWrap(True); layout.addWidget(hint)
         buttons(self,layout,self.finish); self.render()
 
-    def render(self): fill_table(self.conditions,[(condition_text(c,self.rules),) for c in self.rule['conditions']])
+    def render(self): fill_table(self.conditions,[(condition_text(condition,self.rules),) for condition in self.rule['conditions']])
 
     def add_condition(self):
         if len(self.rule['conditions'])>=8: return
@@ -47,7 +47,7 @@ class AirbrakeDialog(QDialog):
         if i>=0: del self.rule['conditions'][i]; self.render()
 
     def finish(self):
-        mask=sum(1<<i for i,c in enumerate(self.channels) if c.isChecked() and c.isEnabled())
+        mask=sum(1<<i for i,check in enumerate(self.channels) if check.isChecked() and check.isEnabled())
         if mask and not self.rule['conditions']:
             QMessageBox.information(self,t('Airbrake conditions'),t('Add at least one condition.')); return
         self.rule['channel_mask']=mask; self.accept()
